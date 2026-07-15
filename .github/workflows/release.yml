@@ -1,0 +1,188 @@
+# Release pipeline for Charter.
+#
+# Trigger: pushing a tag `v*` (e.g. v0.1.0-preview.1). Version is derived from the tag (leading
+# `v` stripped). Ships two channels:
+#   * native self-contained single-file binaries (5 RIDs) → GitHub Release assets + a Homebrew tap
+#     (via .github/workflows/bump-tap.yml), so consumers need NO .NET runtime.
+#   * (opt-in) a NuGet dotnet-tool — enable by setting repo variable PUBLISH_NUGET=true after you
+#     configure NuGet Trusted Publishing for ServantSoftware.Charter + a NUGET_USER secret.
+#
+# Throwaway `-ci.` dry-run tags (e.g. v0.0.0-ci.1) exercise the binaries + tap without publishing
+# to NuGet. macOS codesign/notarize auto-skips until the six MACOS_* secrets exist.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet build Charter.sln -c Release
+      - run: dotnet test Charter.sln -c Release --no-build
+
+  create-release:
+    name: create GitHub Release
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create or reuse the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing."
+          else
+            PRE=""
+            case "$TAG" in *-*) PRE="--prerelease" ;; esac
+            gh release create "$TAG" --title "$TAG" --generate-notes $PRE
+          fi
+
+  binaries:
+    name: binary (${{ matrix.rid }})
+    needs: [create-release]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-latest,   rid: osx-arm64,   archive: tar, smoke: true  }
+          - { runner: macos-latest,   rid: osx-x64,     archive: tar, smoke: false }
+          - { runner: ubuntu-latest,  rid: linux-x64,   archive: tar, smoke: true  }
+          - { runner: ubuntu-latest,  rid: linux-arm64, archive: tar, smoke: false }
+          - { runner: windows-latest, rid: win-x64,     archive: zip, smoke: true  }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish self-contained single-file
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          dotnet publish src/Charter.Cli -c Release -r "${{ matrix.rid }}" \
+            --self-contained true \
+            -p:Version="$VER" \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=none \
+            -p:DebugSymbols=false \
+            -o "publish/${{ matrix.rid }}"
+          # dotnet names the apphost after the project (Charter.Cli). Rename to `charter` so the
+          # formula/installers/smoke find it. A global -p:AssemblyName would ALSO rename
+          # Charter.Core → charter.dll and collide on publish (NETSDK1152).
+          DIR="publish/${{ matrix.rid }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            mv "$DIR/Charter.Cli.exe" "$DIR/charter.exe"
+          else
+            mv "$DIR/Charter.Cli" "$DIR/charter" && chmod +x "$DIR/charter"
+          fi
+
+      - name: Codesign + notarize (macOS — auto-skips until signing secrets exist)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        env:
+          CERT_P12_BASE64:      ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD:        ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY:        ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_ID:        ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID:     ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          BIN="publish/${{ matrix.rid }}/charter"
+          if [ -z "${CERT_P12_BASE64:-}" ]; then
+            echo "::warning::No macOS signing secrets set — shipping an UNSIGNED binary for ${{ matrix.rid }}."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"; KCPW="$(uuidgen)"
+          security create-keychain -p "$KCPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPW" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          codesign --force --timestamp --options runtime \
+            --entitlements .github/macos/entitlements.plist \
+            --sign "$SIGN_IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          echo "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k "$BIN" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/cert.p12"
+
+      - name: Smoke — run the binary
+        if: ${{ matrix.smoke }}
+        shell: bash
+        run: |
+          DIR="publish/${{ matrix.rid }}"
+          BIN="$DIR/charter"; [ "${{ matrix.archive }}" = "zip" ] && BIN="$DIR/charter.exe"
+          "$BIN" --version
+
+      - name: Package
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          NAME="charter-$VER-${{ matrix.rid }}"
+          DIR="publish/${{ matrix.rid }}"
+          mkdir -p dist
+          sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ( cd "$DIR" && 7z a -tzip "$GITHUB_WORKSPACE/dist/$NAME.zip" ./* >/dev/null )
+          else
+            export COPYFILE_DISABLE=1
+            tar -C "$DIR" -czf "dist/$NAME.tar.gz" .
+          fi
+          ( cd dist && for f in *; do sha256 "$f" > "$f.sha256"; done )
+
+      - name: Upload assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+
+  publish:
+    name: pack and publish to NuGet.org
+    needs: [test]
+    # Opt-in: set repo variable PUBLISH_NUGET=true after configuring NuGet Trusted Publishing for
+    # ServantSoftware.Charter + a NUGET_USER secret. Always skips throwaway -ci. dry-run tags.
+    if: ${{ !contains(github.ref_name, '-ci.') && vars.PUBLISH_NUGET == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - name: Pack (version from tag)
+        run: dotnet pack src/Charter.Cli -c Release -o nupkg -p:Version="${GITHUB_REF_NAME#v}"
+      - name: NuGet login (OIDC → short-lived API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Push to NuGet.org
+        run: dotnet nuget push "nupkg/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

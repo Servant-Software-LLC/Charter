@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Build policy (ImplicitUsings, Nullable, TreatWarningsAsErrors, analyzers) is centralised in
+       the repo-root Directory.Build.props. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>charter</ToolCommandName>
+    <PackageId>ServantSoftware.Charter</PackageId>
+    <Version>0.1.0-preview.1</Version>
+
+    <Authors>Servant Software LLC</Authors>
+    <Company>Servant Software LLC</Company>
+    <Description>Charter turns an AI-authored, block-structured plan into a rich, reviewable deliverable a human annotates in place — the front door to the Guardrails pipeline.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>Copyright (c) Servant Software LLC</Copyright>
+    <RepositoryUrl>https://github.com/Servant-Software-LLC/Charter.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Servant-Software-LLC/Charter</PackageProjectUrl>
+    <PackageTags>charter;mdx;plan;review;annotation;agentic;llm;cli;guardrails</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.9" />
+    <PackageReference Include="Spectre.Console" Version="0.51.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Charter.Core\Charter.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

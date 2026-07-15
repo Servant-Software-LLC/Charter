@@ -1,0 +1,4 @@
+# Keep shell scripts LF so the bash shebang runs when a macOS/Linux user downloads the
+# installer via `curl … | bash`, even from a Windows (core.autocrlf=true) checkout.
+/install.sh eol=lf
+*.sh text eol=lf

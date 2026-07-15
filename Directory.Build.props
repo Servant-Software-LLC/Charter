@@ -1,0 +1,14 @@
+<Project>
+
+  <!-- Repo-wide build policy, inherited by every project (src + tests), mirroring the Guardrails
+       house style. Deterministic locked restore (packages.lock.json), analyzer pinning, and the
+       CI-only RestoreLockedMode gate are intentionally deferred until Charter's dependency set is
+       real and pinned — layer them in here the way Guardrails does at that point. -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>8.0</AnalysisLevel>
+  </PropertyGroup>
+
+</Project>

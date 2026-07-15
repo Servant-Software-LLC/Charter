@@ -1,0 +1,20 @@
+## .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.suo
+.vs/
+
+## Charter build/dist output
+publish/
+dist/
+*.nupkg
+
+## Editors
+.idea/
+*.swp
+.DS_Store
