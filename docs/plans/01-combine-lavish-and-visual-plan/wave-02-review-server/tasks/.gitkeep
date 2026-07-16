@@ -1,0 +1,3 @@
+# JIT stub — wave 2 (lean review server) is authored just-in-time after wave 1 materializes.
+# `guardrails run` honest-halts here (NextWaveUnauthored); re-invoke /plan-breakdown against the
+# integration worktree to author wave-02-review-server/tasks/, then /guardrails-review this wave.

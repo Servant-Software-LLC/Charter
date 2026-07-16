@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests + minimal NotImplementedException stubs for the Charter.Core renderer: block model with content-derived stable IDs, Markdig markdown->HTML rendering, and the anchor->markdown source-map (incl. anchor-survival across an unrelated-block edit)",
+  "stableId": "cr01ts",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Core.Tests/", "src/Charter.Core/BlockModel.cs", "src/Charter.Core/CharterRenderer.cs", "src/Charter.Core/SourceMap.cs"]
+}

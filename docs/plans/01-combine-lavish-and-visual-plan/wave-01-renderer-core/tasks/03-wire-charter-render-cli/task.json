@@ -1,0 +1,6 @@
+{
+  "description": "Add the `charter render <plan.mdx> -o <out.html>` command to Charter.Cli, wired to the Charter.Core renderer, and prove it renders a sample .mdx to a portable HTML file end to end",
+  "stableId": "cr03cli",
+  "dependsOn": ["02-implement-core-renderer"],
+  "writeScope": ["src/Charter.Cli/"]
+}

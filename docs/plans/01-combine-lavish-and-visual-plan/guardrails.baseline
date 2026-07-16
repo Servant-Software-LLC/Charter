@@ -1,0 +1,19 @@
+{
+  "Version": 1,
+  "Files": {
+    "guardrails.json": "57f134417a6cd7ee9d2e6f590314a37df8391186e76da78c6b2f3211ecda2b0e",
+    "wave-01-renderer-core/guardrails/01-core-builds.ps1": "155ca1a65ec5c52a2932cac33a1f41d2a759a7f4a0e0c9fcb0583e442332a8cb",
+    "wave-01-renderer-core/tasks/01-author-tests-core-renderer/action.prompt.md": "9feb149eb75732128f5811bcd9145a35407d72108e2958c30e1a350d168c8f0e",
+    "wave-01-renderer-core/tasks/01-author-tests-core-renderer/guardrails/01-tests-build.ps1": "2410a29f989fbb25d5b23861f68db8b54e72cd627b60e77134e0346476bf40fd",
+    "wave-01-renderer-core/tasks/01-author-tests-core-renderer/guardrails/02-tests-fail-on-stubs.ps1": "7d8a900b13e9d65a952c6d48cb89880e32c8cf6de3e4193e8e0ea706bb286f80",
+    "wave-01-renderer-core/tasks/01-author-tests-core-renderer/task.json": "e3e521e080e5472c8781f9e5dd08999f80186429f68a33cf02caf12b55527f67",
+    "wave-01-renderer-core/tasks/02-implement-core-renderer/action.prompt.md": "e9261dc628e1754081d0a6bbec8df615f19ecf873a689f969b9c364432f9cd4b",
+    "wave-01-renderer-core/tasks/02-implement-core-renderer/guardrails/01-core-tests-pass.ps1": "3c12c588021b026a8d1f310d1237908b232ad0d18116d2e064b2d2af6da349e8",
+    "wave-01-renderer-core/tasks/02-implement-core-renderer/task.json": "82d5ab4815d8931bba83b8e27e0abd90abe9a9d61ccb29a0573f0254e4e3dcfc",
+    "wave-01-renderer-core/tasks/03-wire-charter-render-cli/action.prompt.md": "9c3a2ea4a7a2a101e83f49e1662000e71aff761e26f8af9146e43e6e09083414",
+    "wave-01-renderer-core/tasks/03-wire-charter-render-cli/guardrails/01-render-command-wired.ps1": "7a34b6f4da69d1106f67877e209c95d02771f4cb2cd39e5b900321fc97a1c4a8",
+    "wave-01-renderer-core/tasks/03-wire-charter-render-cli/guardrails/02-render-smoke.ps1": "4b3ba4286741c0a55702f4bfc5694fe587d69a872376767665771d1e0a0dc926",
+    "wave-01-renderer-core/tasks/03-wire-charter-render-cli/task.json": "02d3170d2a263892d97da572e236a5136522d643698c026a53f7e602646fabd6",
+    "wave-02-review-server/tasks/.gitkeep": "6cde6bb04d6bc2a330a9029a82fc6b46e225f83bd43d6edba9a9dba2b655aeff"
+  }
+}

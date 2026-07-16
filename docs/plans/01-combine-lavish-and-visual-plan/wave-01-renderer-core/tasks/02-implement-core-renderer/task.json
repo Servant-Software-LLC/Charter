@@ -1,0 +1,6 @@
+{
+  "description": "Implement the Charter.Core renderer over the stubs (block model + content-derived stable IDs, Markdig-based markdown->HTML, anchor->markdown source-map) so the authored tests pass; do NOT edit the tests",
+  "stableId": "cr02impl",
+  "dependsOn": ["01-author-tests-core-renderer"],
+  "writeScope": ["src/Charter.Core/"]
+}
