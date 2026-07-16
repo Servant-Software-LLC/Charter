@@ -139,8 +139,9 @@ artifacts, so `plan-breakdown` emits them as a **WAVED** plan (native, #254): a 
   then resume.
 - **A review gate per wave.** Each wave is a mini-plan with its own review marker; the honest-halt at a
   stub wave is the pause where the human reviews that wave's draft before it runs
-  (`/guardrails-review <plan>/<wave>` → `guardrails mark-reviewed <plan>/<wave>`). *(A per-wave
-  `graph`/`diagram.html` view is a noted Guardrails follow-up; today the whole-plan diagram exists.)*
+  (`/guardrails-review <plan>/<wave>` → `guardrails mark-reviewed <plan>/<wave>`). *(As of Guardrails
+  preview.41 the whole-plan diagram is **wave-aware** — labeled wave subgraphs, a barrier edge, and a
+  visible JIT-stub node — and a per-wave `graph <plan>/<wave>` view exists (#355/#356).)*
 
 One breakdown pass, JIT within later waves as their upstream materializes, a review gate per wave — which
 is exactly why a separate M0 vertical slice is unnecessary here.
