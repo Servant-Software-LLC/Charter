@@ -94,30 +94,56 @@ ID → markdown line range)** so a human's annotation on the *rendered HTML* rou
    contract.
 7. **Telemetry off / opt-in** — a deliberate departure from Lavish's default-on model.
 
-## Milestones (M0 spike first; real unknowns front-loaded)
+## Milestones = Guardrails waves (real unknowns front-loaded)
 
-- **M0 — end-to-end spike (throwaway).** One block → render with a stable ID → serve → annotate →
-  long-poll → **map the anchor back to a markdown line** → emit markdown that passes
-  `guardrails validate`. Proves the whole loop, the anchor source-map, and the handoff *before* any
-  polish. Pins the reviewed-markdown handoff shape as a fixture.
-- **M1 — renderer core + source-map.** Markdig + prose/heading/list/callout/table/code; content-derived
-  stable IDs; anchor→markdown source-map; `charter render plan.mdx -o plan.html`. *Accept:* golden HTML
-  per block **and** an anchor-survival test (annotate a block, edit an *unrelated* block, re-render,
-  anchor still resolves).
-- **M2 — lean review server.** `Charter.Server` behind `IReviewServer`; **spike Kestrel vs
+These milestones are **ordered stages** — each builds on the prior stage's *materialized* output — so
+they map to Guardrails **waves** (see *Guardrails execution mapping* below). There is **no separate M0
+throwaway spike**: the end-to-end walkthrough it would have given is already provided by the DAG plus
+wave-by-wave review, and the risk it would have proven is folded into each wave's acceptance guardrails,
+front-loaded as far as it deterministically can be.
+
+- **Wave 1 (M1) — renderer core + source-map.** Markdig + prose/heading/list/callout/table/code;
+  content-derived stable IDs; anchor→markdown source-map; `charter render plan.mdx -o plan.html`.
+  *Accept:* golden HTML per block; an **anchor-survival test** (annotate a block, edit an *unrelated*
+  block, re-render, the anchor still resolves to the right markdown line); and a **handoff fixture** — a
+  sample emitted markdown that passes `guardrails validate` (pins the handoff shape now). The deepest
+  *deterministic* risk — the source↔render anchor map — is proven here, first.
+- **Wave 2 (M2) — lean review server.** `Charter.Server` behind `IReviewServer`; **spike Kestrel vs
   HttpListener for single-file/AOT size**; serve artifact + inject SDK + live reload (watch the *file*);
   loopback-only + per-session capability key + path-confinement, all tested. Read-only preview.
-- **M3 — annotation + feedback loop.** Lean embedded JS SDK (element + text-range + node annotation,
-  postMessage) + a minimal server contract (`/api/sessions`, `/api/:key/prompts`, `/api/poll`
-  long-poll, `/events` SSE); session store; anchor→markdown round-trip. **Choose the browser-test
-  harness here (Playwright).** *Accept:* a headless test queues an annotation and `poll` returns it with
-  the correct source anchor.
-- **M4 — rich + interactive blocks.** Mermaid (theme-aware, node-anchored annotation via node
+- **Wave 3 (M3) — annotation + feedback loop.** Lean embedded JS SDK (element + text-range + node
+  annotation, postMessage) + a minimal server contract (`/api/sessions`, `/api/:key/prompts`,
+  `/api/poll` long-poll, `/events` SSE); session store. **Choose the browser-test harness here
+  (Playwright).** *Accept:* a headless test queues an annotation and `poll` returns it with the correct
+  markdown source anchor — proving the *browser* half of the round-trip (the deterministic half landed
+  in wave 1).
+- **Wave 4 (M4) — rich + interactive blocks.** Mermaid (theme-aware, node-anchored annotation via node
   identity), `:::comparison`, `:::question` controls that submit structured answers, `:::diff`.
-- **M5 — export + Guardrails handoff.** Minimal self-contained HTML export (inline local assets,
-  `file://` redaction, size caps) + emit canonical reviewed markdown; the M0 `guardrails validate`
-  fixture is the acceptance gate.
-- **M6 — agent skill + polish.** Bundled `charter` `SKILL.md` + playbooks; distribution polish.
+- **Wave 5 (M5) — export + Guardrails handoff.** Minimal self-contained HTML export (inline local
+  assets, `file://` redaction, size caps) + emit canonical reviewed markdown; the **wave-1 handoff
+  fixture** is the acceptance gate.
+- **Wave 6 (M6) — agent skill + polish.** Bundled `charter` `SKILL.md` + playbooks; distribution polish.
+
+## Guardrails execution mapping (waves + JIT)
+
+Charter's milestones are ordered stages whose later stages build on earlier ones' *materialized*
+artifacts, so `plan-breakdown` emits them as a **WAVED** plan (native, #254): a nested
+`<plan>/<wave-NN>/…` layout, one wave per milestone, each with its own entry gate → task DAG → exit gate.
+
+- **One `/plan-breakdown` over the whole plan** produces the wave folders. Waves that are fully
+  designable up front are authored now; a wave that references artifacts an upstream wave hasn't produced
+  yet is left as a **stub** (declared dir, empty `tasks/`).
+- **JIT staged-breakdown per stub wave.** `guardrails run` executes the ready waves, then **honest-halts**
+  at the first stub wave and prints the materialized *integration worktree*. Re-invoke `/plan-breakdown`
+  in JIT mode to author that wave **against the real upstream code** (no guessing at signatures/paths),
+  then resume.
+- **A review gate per wave.** Each wave is a mini-plan with its own review marker; the honest-halt at a
+  stub wave is the pause where the human reviews that wave's draft before it runs
+  (`/guardrails-review <plan>/<wave>` → `guardrails mark-reviewed <plan>/<wave>`). *(A per-wave
+  `graph`/`diagram.html` view is a noted Guardrails follow-up; today the whole-plan diagram exists.)*
+
+One breakdown pass, JIT within later waves as their upstream materializes, a review gate per wave — which
+is exactly why a separate M0 vertical slice is unnecessary here.
 
 ## Out of scope for v1 (each tracked as an issue)
 
@@ -166,7 +192,7 @@ switch. Tracked in [#6](https://github.com/Servant-Software-LLC/Charter/issues/6
 
 ## Open items to pin early
 
-- The exact **reviewed-markdown handoff shape** — defined + fixtured in M0.
+- The exact **reviewed-markdown handoff shape** — defined + fixtured in wave 1 (M1).
 - **Store concurrency** — single-writer or locking for the session JSON (Lavish does whole-file
   read-modify-write; a concurrent `poll` + `prompts` can race).
 - The **JS vendor → bundle → test pipeline** (a small node toolchain in CI) + the vendored-SDK
