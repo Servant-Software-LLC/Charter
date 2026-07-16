@@ -171,7 +171,21 @@ Anchor source-map correctness is the deepest (the source↔render split Lavish n
 AOT/size under self-contained single-file; browser-test determinism (mitigated by a chosen harness in
 M3); JS re-port drift (mitigated by keeping the SDK lean and purpose-built, not a Lavish clone).
 
-## Libraries & references
+## References
+
+**Prior art — the two ideas Charter combines**
+
+- **[Lavish (lavish-axi)](https://github.com/kunchenguid/lavish-axi)** by Kun Chen (MIT) — the
+  comment-in-place review loop (local loopback server + in-browser annotation of elements / text ranges /
+  diagram nodes + long-poll feedback + live reload + self-contained export) that Charter reimplements
+  lean in C#; its SDK JS is adapted with attribution.
+- **[Builder.io visual-plan / Agent-Native Plans](https://github.com/BuilderIO/skills/tree/main/skills/visual-plan)**
+  ([rationale](https://www.builder.io/blog/claude-code-plan)) — the block-authoring model (a validated
+  block *schema* + a `question-form` / `visual-intake` elicitation surface) that Charter reproduces with
+  markdown+directives. Its sibling [`/visual-recap`](https://github.com/BuilderIO/skills/tree/main/skills/visual-recap)
+  motivates the recap-mode extension ([#1](https://github.com/Servant-Software-LLC/Charter/issues/1)).
+
+**Libraries**
 
 - **[Markdig](https://github.com/xoofx/markdig)** ([NuGet](https://www.nuget.org/packages/Markdig)) — the
   C# CommonMark processor. Its [custom containers](https://github.com/xoofx/markdig/blob/master/src/Markdig.Tests/Specs/CustomContainerSpecs.md)
