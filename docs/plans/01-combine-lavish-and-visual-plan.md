@@ -22,14 +22,14 @@ head-to-head study.
 - **The essence of "MDX blocks" is a validated block *schema*, not JSX.** Builder.io's pipeline is
   MDX → typed components → **normalized to JSON, validated with Zod** → renderer; the load-bearing
   part is the strict schema ("type-safety for natural language"). Real MDX **cannot run in C#** (needs
-  a JS runtime), so **markdown + `:::` directives via Markdig, each validated against a C# record, is
+  a JS runtime), so **markdown + `:::` directives via [Markdig](https://github.com/xoofx/markdig), each validated against a C# record, is
   the correct C# reproduction of Builder's actual architecture** — not a weaker substitute.
 - **Hybrid split by concern:** expressive markdown/directives for narrative + visuals (strict format
   degrades LLM *reasoning*), plus a **schema-validated `:::question` block** rendered to native HTML
   `<form>` inputs for elicitation. This `:::question` block **reproduces visual-plan's `question-form`**
   — the input gap it fills is in *base markdown* (CommonMark has no input primitive), **not** in
   visual-plan, which already elicits via `question-form` and its `visual-intake` mode. It borrows
-  Adaptive Cards' `Input`/`Action.Submit` *shape* as a template, not a dependency. Plus a
+  [Adaptive Cards](https://adaptivecards.io/)' `Input`/`Action.Submit` *shape* as a template, not a dependency. Plus a
   **`:::custom-html` escape hatch** for raw-HTML ceiling cases.
 - **No more-expressive *viable* standard exists.** Raw HTML is absolutely more expressive but least
   constrainable/anchorable — against Charter's "reviewable, validated" differentiator.
@@ -170,6 +170,18 @@ tested in C#, not silently inherited.
 Anchor source-map correctness is the deepest (the source↔render split Lavish never had); server
 AOT/size under self-contained single-file; browser-test determinism (mitigated by a chosen harness in
 M3); JS re-port drift (mitigated by keeping the SDK lean and purpose-built, not a Lavish clone).
+
+## Libraries & references
+
+- **[Markdig](https://github.com/xoofx/markdig)** ([NuGet](https://www.nuget.org/packages/Markdig)) — the
+  C# CommonMark processor. Its [custom containers](https://github.com/xoofx/markdig/blob/master/src/Markdig.Tests/Specs/CustomContainerSpecs.md)
+  (`:::name`) plus generic attributes (`{#id key=val}`) back Charter's block directives; each block
+  payload is validated against a C# record.
+- **[Adaptive Cards](https://adaptivecards.io/)** (Microsoft) — its typed `Input.*` + `Action.Submit`
+  shape is the *design template* for the `:::question` schema (see the
+  [schema explorer](https://adaptivecards.io/explorer/)). **Not a dependency:** the
+  [.NET HTML renderer](https://learn.microsoft.com/en-us/adaptive-cards/sdk/rendering-cards/net-html/render-a-card)
+  supports only schema 1.0 and isn't a document format — so Charter borrows the shape, not the library.
 
 ## Acknowledgements
 
