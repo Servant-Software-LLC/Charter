@@ -40,7 +40,7 @@ Charter stays an **independent, single node-free binary** in its own stack — t
 - **Lean, purpose-built surface:** serve artifact + inject SDK + annotate (element / text-range /
   diagram-node) + long-poll feedback + live reload. We own a **small** server contract, not Lavish's
   ~18 routes.
-- **Explicitly OUT for v1:** hosted export/share, default-on telemetry, the layout-audit gate,
+- **Explicitly OUT for v1:** hosted export/share, telemetry (none in v1), the layout-audit gate,
   publish, multi-artifact sessions, review-round diffing (see *Out of scope*).
 - **Honest cost:** a few thousand LOC of C# + a **lean embedded JS SDK adapted from Lavish (MIT,
   attributed)** — *not* the ~7k-LOC full clone (which couples us to an actively-developed upstream and
@@ -128,8 +128,9 @@ Deferred features — every one has a tracking issue so it outlives this plan:
 - Review-round versioning + diff — [#3](https://github.com/Servant-Software-LLC/Charter/issues/3)
 - Recap mode (build-from-diff) — [#1](https://github.com/Servant-Software-LLC/Charter/issues/1) (see *Natural extension* above)
 
-**Not a deferral — a decision:** default-on telemetry. Charter's policy is telemetry **off / opt-in**
-(see *Trust, security & telemetry*), the deliberate opposite of Lavish's default-on — so it gets no issue.
+**Telemetry:** v1 ships **none** (a decision — zero analytics dependency). Any *future* telemetry must be
+vendor-neutral (no SDK lock-in) and is tracked in [#6](https://github.com/Servant-Software-LLC/Charter/issues/6);
+Charter will never adopt Lavish's default-on model. See *Trust, security & telemetry*.
 
 ## Natural extension — recap mode (v2, not v1)
 
@@ -153,8 +154,15 @@ plan-only assumptions out of the block model and the source-map. **Tracked in
 ## Trust, security & telemetry
 
 Loopback-only default; per-session capability key; path-confinement + CSRF on state-changing routes;
-export redaction of absolute `file://` paths; **telemetry OFF / opt-in**. These are reimplemented and
-tested in C#, not silently inherited.
+export redaction of absolute `file://` paths. These are reimplemented and tested in C#, not silently
+inherited.
+
+**Telemetry: none in v1** — zero analytics dependency, zero data egress. If ever added it must be
+**vendor-neutral**: a best-effort `HttpClient` POST of a tiny self-defined event to a *configurable*
+endpoint (BCL only), or OpenTelemetry (OTLP) — **never a vendor SDK** (Application Insights / Segment /
+Mixpanel / …). A default-*off* flag does **not** avoid lock-in: the dependency is compiled into the
+binary regardless of the runtime default, so the safeguard is *not adding a vendor SDK*, not the off
+switch. Tracked in [#6](https://github.com/Servant-Software-LLC/Charter/issues/6).
 
 ## Open items to pin early
 

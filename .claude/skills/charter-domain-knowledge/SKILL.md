@@ -86,7 +86,9 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 4. **Loopback + capability** — `127.0.0.1` default, per-session capability key, path-confined serving.
 5. **Feeds Guardrails via plain markdown** — no MDX crosses the handoff.
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`.
-7. **Telemetry off / opt-in** — deliberate departure from Lavish's default-on.
+7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag
+   does not prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a
+   vendor SDK. Deliberate departure from Lavish's default-on. (Plan → *Trust, security & telemetry*; #6.)
 
 ## Where truth lives
 
