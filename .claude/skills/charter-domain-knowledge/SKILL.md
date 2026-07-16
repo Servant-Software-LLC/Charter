@@ -42,7 +42,9 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
 - **`:::question` (elicitation):** body is a validated payload — each question has `id`, `title`,
   `mode` (single-select / multi-select / free-text / boolean / number), `options`, and a `target`
   (`human` / `agent`). Renders to a native HTML `<form>`; submitting posts structured answers back
-  through the review loop.
+  through the review loop. Reproduces **visual-plan's `question-form`** — the input gap this fills is
+  in *base markdown* (CommonMark has no input primitive), not in visual-plan (which elicits via
+  `question-form` and its `visual-intake` mode).
 - **Anchors + source-map:** every block gets a content-derived **stable ID**. The renderer carries a
   **source-map (anchor ID → markdown line range)** so a human annotation on the *rendered HTML*
   round-trips to the *markdown source* the agent edits. This is the deepest correctness concern —

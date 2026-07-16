@@ -26,8 +26,11 @@ head-to-head study.
   the correct C# reproduction of Builder's actual architecture** — not a weaker substitute.
 - **Hybrid split by concern:** expressive markdown/directives for narrative + visuals (strict format
   degrades LLM *reasoning*), plus a **schema-validated `:::question` block** rendered to native HTML
-  `<form>` inputs for elicitation (borrow Adaptive Cards' `Input`/`Action.Submit` *shape* as a
-  template, not a dependency), plus a **`:::custom-html` escape hatch** for raw-HTML ceiling cases.
+  `<form>` inputs for elicitation. This `:::question` block **reproduces visual-plan's `question-form`**
+  — the input gap it fills is in *base markdown* (CommonMark has no input primitive), **not** in
+  visual-plan, which already elicits via `question-form` and its `visual-intake` mode. It borrows
+  Adaptive Cards' `Input`/`Action.Submit` *shape* as a template, not a dependency. Plus a
+  **`:::custom-html` escape hatch** for raw-HTML ceiling cases.
 - **No more-expressive *viable* standard exists.** Raw HTML is absolutely more expressive but least
   constrainable/anchorable — against Charter's "reviewable, validated" differentiator.
 
@@ -120,6 +123,24 @@ ID → markdown line range)** so a human's annotation on the *rendered HTML* rou
 
 Hosted share/publish; default-on telemetry; the layout-audit gate; multi-artifact sessions; review-round
 diffing. Each is a real Lavish feature we are *choosing* not to clone yet — noted so the estimate is honest.
+
+## Natural extension — recap mode (v2, not v1)
+
+Charter's renderer and review loop are **direction-agnostic**: the same block catalog and
+comment-in-place surface work whether the blocks describe a change *to be made* (a plan) or a change
+*already made* (a recap of a diff). This mirrors Builder.io's sibling **`/visual-recap`**, whose whole
+premise is *"the same plan data model serves both directions."*
+
+So a `charter recap <PR | branch | diff>` mode is a cheap, high-value future addition — the only
+genuinely new piece is a **diff → blocks** input adapter (map schema/API/file/architecture changes to
+`:::diagram` / `:::file-tree` / `:::diff` / table blocks); the renderer, server, annotation loop, and
+export are all reused unchanged.
+
+**Open question (for the architect):** in this ecosystem a post-execution recap overlaps with
+Guardrails' own completion reporting (and its `uber-report`). De-conflict before building — Charter
+should own the *render + review surface* (blocks + annotation over a diff), not duplicate Guardrails'
+execution reporting. Deferred to v2, noted here so the v1 architecture stays **recap-ready**: keep
+plan-only assumptions out of the block model and the source-map.
 
 ## Trust, security & telemetry
 
