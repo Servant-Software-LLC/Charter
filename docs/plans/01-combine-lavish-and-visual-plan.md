@@ -140,7 +140,8 @@ export are all reused unchanged.
 Guardrails' own completion reporting (and its `uber-report`). De-conflict before building — Charter
 should own the *render + review surface* (blocks + annotation over a diff), not duplicate Guardrails'
 execution reporting. Deferred to v2, noted here so the v1 architecture stays **recap-ready**: keep
-plan-only assumptions out of the block model and the source-map.
+plan-only assumptions out of the block model and the source-map. **Tracked in
+[#1](https://github.com/Servant-Software-LLC/Charter/issues/1)** so it outlives this plan.
 
 ## Trust, security & telemetry
 
