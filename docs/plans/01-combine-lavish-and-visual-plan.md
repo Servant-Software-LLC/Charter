@@ -119,10 +119,17 @@ ID → markdown line range)** so a human's annotation on the *rendered HTML* rou
   fixture is the acceptance gate.
 - **M6 — agent skill + polish.** Bundled `charter` `SKILL.md` + playbooks; distribution polish.
 
-## Out of scope for v1 (named deliberately)
+## Out of scope for v1 (each tracked as an issue)
 
-Hosted share/publish; default-on telemetry; the layout-audit gate; multi-artifact sessions; review-round
-diffing. Each is a real Lavish feature we are *choosing* not to clone yet — noted so the estimate is honest.
+Deferred features — every one has a tracking issue so it outlives this plan:
+- Hosted share/publish — [#4](https://github.com/Servant-Software-LLC/Charter/issues/4)
+- Layout-audit gate (overflow/clipping/overlap) — [#5](https://github.com/Servant-Software-LLC/Charter/issues/5)
+- Multi-artifact sessions — [#2](https://github.com/Servant-Software-LLC/Charter/issues/2)
+- Review-round versioning + diff — [#3](https://github.com/Servant-Software-LLC/Charter/issues/3)
+- Recap mode (build-from-diff) — [#1](https://github.com/Servant-Software-LLC/Charter/issues/1) (see *Natural extension* above)
+
+**Not a deferral — a decision:** default-on telemetry. Charter's policy is telemetry **off / opt-in**
+(see *Trust, security & telemetry*), the deliberate opposite of Lavish's default-on — so it gets no issue.
 
 ## Natural extension — recap mode (v2, not v1)
 
@@ -156,7 +163,7 @@ tested in C#, not silently inherited.
   read-modify-write; a concurrent `poll` + `prompts` can race).
 - The **JS vendor → bundle → test pipeline** (a small node toolchain in CI) + the vendored-SDK
   attribution/version-pin contract.
-- **Review rounds / versioning / diff** — v2; note the model needs a round concept before round 2.
+- **Review rounds / versioning / diff** — v2 ([#3](https://github.com/Servant-Software-LLC/Charter/issues/3)); the model needs a round concept before round 2.
 
 ## Risks
 
