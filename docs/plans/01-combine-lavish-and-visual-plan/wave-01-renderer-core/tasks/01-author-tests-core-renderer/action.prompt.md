@@ -43,10 +43,17 @@ Produce:
    - **Renderer golden tests** — for prose/heading/list, a `:::note` callout, a GFM table, and a fenced
      code block, `Render` emits the expected HTML fragment carrying the block's stable `id`. Use small
      inline expected-HTML strings (golden-per-block).
-   - **Source-map + anchor-survival test** — `Build` maps a known block's `Id` to its correct markdown
-     line; and the load-bearing one: annotate/resolve a block's anchor, then edit an **unrelated**
-     block above it, re-`Build`, and assert the original anchor **still resolves to the right block**
-     (content-derived IDs are stable under unrelated edits, unlike positional selectors).
+   - **Source-map test** (name it with `SourceMap`) — `Build` maps a known block's `Id` to its correct
+     markdown line.
+   - **Anchor-survival test** (name it `Anchor_SurvivesUnrelatedBlockEdit`) — the load-bearing proof:
+     resolve a block's anchor, edit an **unrelated** block above it, re-`Build`, and assert the original
+     anchor **still resolves to the right block** (content-derived IDs are stable under unrelated edits,
+     unlike positional selectors).
+
+   **Required coverage (a guardrail greps the CoreRenderer test files for these — each MUST appear):**
+   `StableId`, a `.Render(` call, `SourceMap`, and `Anchor` + `Surviv` (the anchor-survival test). A
+   missing token fails the task. These are lower-bound presence checks — they do not substitute for
+   writing real, meaningful tests.
 
 **Completion criteria (match this task's guardrails):** the solution BUILDS with the tests + stubs
 present, and `dotnet test --filter "Category=CoreRenderer"` FAILS (the stubs throw). Failing is

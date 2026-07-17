@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=32e83de61944b71250e3de773990327f8684b1b9500dfd1288f0ffb37c1fbaa3 -->
+<!-- guardrails:graph v1 source-sha256=9b6ca6ccb8893aae995ff9c19eccd6fbee29256f8a48fc5244d05a124250511e -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -97,6 +97,7 @@
   subgraph task_wave_01_renderer_core_01_author_tests_core_renderer["wave-01-renderer-core/01-author-tests-core-renderer"]
     task_wave_01_renderer_core_01_author_tests_core_renderer_gr_0["01-tests-build"]:::guardrail
     task_wave_01_renderer_core_01_author_tests_core_renderer_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_wave_01_renderer_core_01_author_tests_core_renderer_gr_2["03-covers-key-behaviors"]:::guardrail
   end
   style task_wave_01_renderer_core_01_author_tests_core_renderer fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_wave_01_renderer_core_02_implement_core_renderer["wave-01-renderer-core/02-implement-core-renderer"]
@@ -120,6 +121,7 @@
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click task_wave_01_renderer_core_01_author_tests_core_renderer_gr_0 href "tasks/01-author-tests-core-renderer/guardrails/01-tests-build.ps1" "01-tests-build" _blank
   click task_wave_01_renderer_core_01_author_tests_core_renderer_gr_1 href "tasks/01-author-tests-core-renderer/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_01_renderer_core_01_author_tests_core_renderer_gr_2 href "tasks/01-author-tests-core-renderer/guardrails/03-covers-key-behaviors.ps1" "03-covers-key-behaviors" _blank
   click task_wave_01_renderer_core_02_implement_core_renderer_gr_0 href "tasks/02-implement-core-renderer/guardrails/01-core-tests-pass.ps1" "01-core-tests-pass" _blank
   click task_wave_01_renderer_core_03_wire_charter_render_cli_gr_0 href "tasks/03-wire-charter-render-cli/guardrails/01-render-command-wired.ps1" "01-render-command-wired" _blank
   click task_wave_01_renderer_core_03_wire_charter_render_cli_gr_1 href "tasks/03-wire-charter-render-cli/guardrails/02-render-smoke.ps1" "02-render-smoke" _blank

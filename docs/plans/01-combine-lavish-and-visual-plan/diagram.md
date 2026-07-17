@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=58bf4a859e3ece816d25fddf4bf2e2de5ee382d159845345db92ad93d219e5e6 -->
+<!-- guardrails:graph v1 source-sha256=a2deef92d9d547c2ba821bcd95af1dd3ef98dc94b11e037d4407defec2399f16 -->
 
 ```mermaid
 flowchart TD
@@ -12,6 +12,7 @@ flowchart TD
     subgraph task_wave_01_renderer_core_01_author_tests_core_renderer["01-author-tests-core-renderer"]
       task_wave_01_renderer_core_01_author_tests_core_renderer_gr_0["01-tests-build"]:::guardrail
       task_wave_01_renderer_core_01_author_tests_core_renderer_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_01_renderer_core_01_author_tests_core_renderer_gr_2["03-covers-key-behaviors"]:::guardrail
     end
     style task_wave_01_renderer_core_01_author_tests_core_renderer fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_01_renderer_core_02_implement_core_renderer["02-implement-core-renderer"]

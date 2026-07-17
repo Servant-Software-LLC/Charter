@@ -1,3 +1,7 @@
+---
+maxTurns: 75  # turn-expensive (#94): discovers the Markdig API + implements 3 coupled Core components (block model, renderer, source-map) in one task — the #176-coupling trade-off noted at breakdown.
+---
+
 ## Harness contract (do not remove)
 - Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in
   the appended sections; write ONLY new/changed keys as a JSON object to
