@@ -1,0 +1,101 @@
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading.Tasks;
+using Charter.Server;
+using Xunit;
+
+namespace Charter.Server.Tests;
+
+/// <summary>
+/// Loopback serve integration test: start a real <see cref="ReviewServer"/> on default (loopback,
+/// ephemeral-port) options and drive it over the wire. It must (a) serve the rendered plan + injected SDK
+/// marker to a request carrying the session capability key, on a <c>127.0.0.1</c> address; (b) reject a
+/// request WITHOUT the key; and (c) reject a raw <c>..</c>-traversal request line (defense-in-depth — the
+/// authoritative confinement proof is <see cref="PathConfinementTests"/>).
+/// </summary>
+[Trait("Category", "ReviewServer")]
+public class LoopbackServeTests
+{
+    private const string Marker = "data-charter-sdk";
+    private const string PlanHeadingText = "Charter Review Loopback Plan";
+
+    [Fact]
+    public async Task Server_ServesRenderedPlanWithSdk_ToKeyedRequest_AndRejectsUnauthorizedAndTraversal()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            var options = new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 };
+
+            // Ephemeral port (Port = 0); the OS-chosen port is read back from Address. Disposed via `using`.
+            using var server = ReviewServer.Start(session, options);
+
+            // Address is a loopback (127.0.0.1) URI on the OS-chosen ephemeral port.
+            Assert.Equal("127.0.0.1", server.Address.Host);
+            Assert.True(server.Address.Port > 0, "an ephemeral port should have been chosen and reported");
+
+            using var client = new HttpClient();
+
+            // (a) A GET carrying the session's capability key returns 200 with the rendered plan + SDK marker.
+            var keyedUri = new UriBuilder(server.Address) { Query = "key=" + session.Key.Value }.Uri;
+            using var keyedResponse = await client.GetAsync(keyedUri);
+            Assert.Equal(HttpStatusCode.OK, keyedResponse.StatusCode);
+            var body = await keyedResponse.Content.ReadAsStringAsync();
+            Assert.Contains(PlanHeadingText, body); // the rendered plan content is served
+            Assert.Contains(Marker, body);          // with the serve-time SDK injected
+
+            // (b) A GET WITHOUT the capability key is rejected (non-200).
+            using var unkeyedResponse = await client.GetAsync(server.Address);
+            Assert.NotEqual(HttpStatusCode.OK, unkeyedResponse.StatusCode);
+
+            // (c) A raw ../ traversal request line is rejected (non-200). Defense-in-depth only.
+            var traversalStatus = await SendRawTraversalStatusAsync(server.Address);
+            Assert.NotEqual(200, traversalStatus);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    private static string WriteTempPlan()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "charter-plan-" + Guid.NewGuid().ToString("N") + ".mdx");
+        File.WriteAllText(path, "# " + PlanHeadingText + "\n\nA paragraph inside the plan under review.\n");
+        return path;
+    }
+
+    /// <summary>
+    /// Send a <c>..</c>-traversal as a RAW request line and return the HTTP status code from the response.
+    /// <see cref="HttpClient"/> / <see cref="Uri"/> normalize <c>../</c> away per RFC 3986 dot-segment
+    /// rules BEFORE anything is sent, so a traversal built as a normal request URI never reaches the server
+    /// and proves nothing. Writing the raw line over a <see cref="TcpClient"/> actually transmits the
+    /// escaping path; under <c>HttpListener</c> the server stack refuses it (non-200) — defense-in-depth.
+    /// </summary>
+    private static async Task<int> SendRawTraversalStatusAsync(Uri address)
+    {
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(address.Host, address.Port);
+        var stream = tcp.GetStream();
+
+        var raw = "GET /../../secret.txt HTTP/1.1\r\n" +
+                  "Host: " + address.Host + ":" + address.Port + "\r\n" +
+                  "Connection: close\r\n\r\n";
+        var bytes = Encoding.ASCII.GetBytes(raw);
+        await stream.WriteAsync(bytes, 0, bytes.Length);
+
+        using var reader = new StreamReader(stream, Encoding.ASCII);
+        var statusLine = await reader.ReadLineAsync() ?? string.Empty;
+
+        // Status line shape: "HTTP/1.1 <code> <reason>".
+        var parts = statusLine.Split(' ');
+        return parts.Length >= 2 && int.TryParse(parts[1], out var code) ? code : 0;
+    }
+}
