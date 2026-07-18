@@ -61,14 +61,23 @@ Produce:
      `</body>` when present.
    - **Capability-key tests** — a `Create()`d key `Matches` its own `Value`; a different or empty/`null`
      presented key does NOT match.
-   - **Path-confinement tests** — an in-root relative path resolves to a path under `root`; a `..`
-     traversal and an absolute path outside `root` each resolve to `null`.
+   - **Path-confinement tests (the AUTHORITATIVE confinement proof)** — call `PathConfinement.Resolve`
+     DIRECTLY (not over HTTP): an in-root relative path resolves to a path under `root`; a `..` traversal
+     and an absolute path outside `root` each resolve to `null`. This unit test is transport-independent
+     and is the load-bearing proof of confinement — an HTTP-level traversal test cannot stand in for it
+     (see the integration test's traversal note).
    - **Loopback serve integration test** — start a real server with `ReviewServer.Start(...)` on the
      default (loopback) options, then over `HttpClient`: (a) a GET carrying the session's capability key
      returns 200, with a body containing the rendered plan content AND the `data-charter-sdk` marker, and
-     `Address` is a `127.0.0.1` loopback URI; (b) a GET WITHOUT the key is rejected (non-200); (c) a GET of
-     a `..`-traversal path is rejected (non-200). Bind an ephemeral port (`Port = 0`), read the chosen port
-     from `Address`, and `Dispose()` the server in a `finally`/`using`.
+     `Address` is a `127.0.0.1` loopback URI; (b) a GET WITHOUT the key is rejected (non-200); (c) an
+     escaping/`..`-traversal request is rejected (non-200) — DEFENSE-IN-DEPTH only. NOTE: `HttpClient` /
+     `System.Uri` strip `../` via RFC-3986 dot-segment normalization BEFORE sending, so a traversal built
+     as a normal request URI never reaches the server and proves nothing; send the traversal as a RAW
+     request line (a `TcpClient`/`Socket` writing `GET /../<file> HTTP/1.1\r\n…`) so the escaping path is
+     actually transmitted. Under `HttpListener` the escaping request is refused by the server stack
+     (http.sys) rather than by Charter's own code, so this leg is defense-in-depth; the authoritative
+     confinement proof is the direct `PathConfinement.Resolve` unit test above. Bind an ephemeral port
+     (`Port = 0`), read the chosen port from `Address`, and `Dispose()` the server in a `finally`/`using`.
 
    **Required coverage (a guardrail greps the ReviewServer test files for these — each MUST appear):**
    `Inject`, `Capability`, `Confin`, `Loopback` (or `127.0.0.1`), and a `.Start(` call. A missing token

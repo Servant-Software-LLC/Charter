@@ -52,12 +52,24 @@ try {
     catch { $status = [int]$_.Exception.Response.StatusCode }
     if ($status -eq 200) { Write-Output "smoke: a request WITHOUT a capability key returned 200 - the per-session capability key is not enforced."; exit 1 }
 
-    # (3) path traversal (with the valid key) -> non-200 (path-confinement)
-    $traversal = "$baseUrl../Program.cs?$keyQuery"
+    # (3) path traversal -> non-200 (defense-in-depth). NOTE: Invoke-WebRequest / System.Uri strip "../"
+    #     via RFC-3986 dot-segment removal BEFORE sending, so an HttpClient-built traversal never reaches
+    #     the server and proves nothing. Send a RAW request line so the escaping path is actually
+    #     transmitted. Charter's own PathConfinement.Resolve is authoritatively proven by the unit tests;
+    #     under HttpListener an escaping request is refused by the server stack (http.sys) before it reaches
+    #     Charter, so this leg only asserts the running server does not SERVE a "../" path (non-200).
+    $u = [System.Uri]$url
     $tstatus = 0
-    try { $r = Invoke-WebRequest -Uri $traversal -UseBasicParsing -TimeoutSec 10; $tstatus = [int]$r.StatusCode }
-    catch { $tstatus = [int]$_.Exception.Response.StatusCode }
-    if ($tstatus -eq 200) { Write-Output "smoke: a path-traversal request ($traversal) returned 200 - path-confinement is not enforced."; exit 1 }
+    try {
+        $sock = [System.Net.Sockets.TcpClient]::new(); $sock.Connect($u.Host, $u.Port); $sock.ReceiveTimeout = 10000
+        $ns = $sock.GetStream()
+        $raw = "GET /../Program.cs?$keyQuery HTTP/1.1`r`nHost: $($u.Host):$($u.Port)`r`nConnection: close`r`n`r`n"
+        $rb = [System.Text.Encoding]::ASCII.GetBytes($raw); $ns.Write($rb, 0, $rb.Length); $ns.Flush()
+        $line = ([System.IO.StreamReader]::new($ns)).ReadLine()
+        $sock.Close()
+        if ($line -match '^HTTP/\S+\s+(\d{3})') { $tstatus = [int]$Matches[1] }
+    } catch { $tstatus = 0 }   # refused / connection closed = not served = pass
+    if ($tstatus -eq 200) { Write-Output "smoke: a raw '../' traversal request returned 200 - the running server served an escaping path."; exit 1 }
 
     Write-Output "smoke: charter review served the plan over loopback with SDK injection, capability enforcement, and path-confinement."
     exit 0
