@@ -1,0 +1,6 @@
+{
+  "description": "Add the `charter review <plan.mdx>` command to Charter.Cli (referencing Charter.Server), rendering + serving the plan read-only over the loopback review server with SDK injection, capability key, and path-confinement; prove it end to end with a serve smoke",
+  "stableId": "cr07cli",
+  "dependsOn": ["03-implement-review-server"],
+  "writeScope": ["src/Charter.Cli/"]
+}

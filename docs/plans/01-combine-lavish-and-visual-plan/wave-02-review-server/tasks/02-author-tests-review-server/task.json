@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests + minimal NotImplementedException stubs for Charter.Server: serve-time SDK injection, per-session capability key, path-confinement, and a loopback serve integration test (start server -> GET with/without key, traversal rejected)",
+  "stableId": "cr05ts",
+  "dependsOn": ["01-scaffold-server-projects"],
+  "writeScope": ["tests/Charter.Server.Tests/", "src/Charter.Server/SdkInjector.cs", "src/Charter.Server/CapabilityKey.cs", "src/Charter.Server/PathConfinement.cs", "src/Charter.Server/ReviewServerOptions.cs", "src/Charter.Server/ReviewSession.cs", "src/Charter.Server/IReviewServer.cs", "src/Charter.Server/ReviewServer.cs"]
+}

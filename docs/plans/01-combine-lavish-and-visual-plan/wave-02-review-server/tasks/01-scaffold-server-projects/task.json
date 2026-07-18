@@ -1,0 +1,6 @@
+{
+  "description": "Scaffold the new wave-2 projects: src/Charter.Server (class library referencing Charter.Core) and tests/Charter.Server.Tests (xUnit, referencing Charter.Server), both registered in Charter.sln; structure only, no behavior",
+  "stableId": "cr04scaf",
+  "dependsOn": [],
+  "writeScope": ["src/Charter.Server/", "tests/Charter.Server.Tests/", "Charter.sln"]
+}

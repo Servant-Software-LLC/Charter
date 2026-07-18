@@ -1,0 +1,6 @@
+{
+  "description": "Implement Charter.Server over the stubs (SDK injection, capability key, path-confinement, loopback HTTP server composing them) so the Category=ReviewServer tests pass; choose the HTTP transport (HttpListener preferred for the lean single-file goal); do NOT edit the tests",
+  "stableId": "cr06impl",
+  "dependsOn": ["02-author-tests-review-server"],
+  "writeScope": ["src/Charter.Server/"]
+}
