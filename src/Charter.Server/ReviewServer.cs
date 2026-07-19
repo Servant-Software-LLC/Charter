@@ -24,10 +24,12 @@ namespace Charter.Server;
 /// </remarks>
 public sealed class ReviewServer : IReviewServer
 {
-    // Wave-2 SDK is a minimal marked placeholder; the wave-3 annotation SDK replaces the body. The
-    // deliverable here is the injection MECHANISM plus the stable data-charter-sdk marker.
-    private const string SdkScript =
-        "<script data-charter-sdk>/* Charter review SDK — wave-2 placeholder; wave-3 wires the annotation loop. */</script>";
+    // The serve-time annotation SDK: the real sdk/charter-annotate.js (embedded at build time), wrapped in a
+    // marked <script data-charter-sdk> element. Wave-2 injected a placeholder here; wave-3 replaces the body
+    // with the real SDK while keeping the injection MECHANISM and the stable data-charter-sdk marker. Read once
+    // from the embedded resource at startup. Injection stays serve-time only (invariant 1): the saved artifact
+    // remains SDK-free.
+    private static readonly string SdkScript = SdkResource.ScriptElement;
 
     // How long a /api/poll long-poll waits for an annotation before returning (empty). The store fast-paths
     // when one is already queued, so this only bounds an otherwise-idle wait.
