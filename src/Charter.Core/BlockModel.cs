@@ -34,6 +34,18 @@ public enum BlockKind
 
     /// <summary>A <c>:::warn</c> callout container.</summary>
     Warn,
+
+    /// <summary>A <c>:::diagram</c> container.</summary>
+    Diagram,
+
+    /// <summary>A <c>:::comparison</c> container.</summary>
+    Comparison,
+
+    /// <summary>A <c>:::question</c> container.</summary>
+    Question,
+
+    /// <summary>A <c>:::diff</c> container.</summary>
+    Diff,
 }
 
 /// <summary>
