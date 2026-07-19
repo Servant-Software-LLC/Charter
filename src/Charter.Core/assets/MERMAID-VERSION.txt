@@ -1,0 +1,15 @@
+Mermaid diagram runtime — vendored offline for the portable Charter artifact.
+
+Package:  mermaid
+Version:  11.16.0
+Source:   https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js
+File:     mermaid.min.js  (self-contained UMD/IIFE build; exposes globalThis.mermaid)
+License:  MIT — https://github.com/mermaid-js/mermaid/blob/master/LICENSE
+
+Pre-fetched during the wave-4 /plan-breakdown (the guardrails run environment has no
+network tool in its allowedTools, so it cannot fetch this itself — see Guardrails #370).
+Do NOT replace with a CDN <script src> — it must ship inside the rendered HTML so a saved
+:::diagram opens standalone with no network (Charter load-bearing invariant 1).
+
+To update: download the pinned dist/mermaid.min.js for the new version, replace this file
+and mermaid.min.js, and update the Version line above.

@@ -2,3 +2,7 @@
 # installer via `curl … | bash`, even from a Windows (core.autocrlf=true) checkout.
 /install.sh eol=lf
 *.sh text eol=lf
+
+# Vendored minified runtime (Mermaid): keep byte-exact — EOL/text normalization could
+# corrupt the pinned library. Treat as-is.
+src/Charter.Core/assets/mermaid.min.js -text

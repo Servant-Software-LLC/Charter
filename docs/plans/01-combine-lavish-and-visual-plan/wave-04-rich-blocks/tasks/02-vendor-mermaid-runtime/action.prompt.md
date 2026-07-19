@@ -27,15 +27,13 @@ first and mirror that mechanism, but in `Charter.Core`.
 
 Three deliverables:
 
-1. **The vendored library** at `src/Charter.Core/assets/mermaid.min.js` — a **pinned, real** Mermaid
-   minified build (a specific version, e.g. from the `mermaid` npm package's `dist/mermaid.min.js`).
-   Record the exact version in a short header comment or an adjacent `assets/MERMAID-VERSION.txt`
-   (version-pin + license attribution — Mermaid is MIT). It MUST be the real minified library (hundreds of
-   KB), not a hand-written stub or a truncated file.
-   - **If you cannot obtain the real pinned build** (no network access to fetch it, no local copy), do NOT
-     commit a placeholder or a partial file — write
-     `{"needsHuman": "Vendor mermaid.min.js (pinned version) into src/Charter.Core/assets/ — the offline library could not be fetched in this environment"}`
-     to the state-out path and stop. A truncated/fake library is worse than an honest halt.
+1. **The vendored library — ALREADY PRESENT; do NOT fetch.** The pinned Mermaid runtime is already
+   vendored offline at `src/Charter.Core/assets/mermaid.min.js` (Mermaid **v11.16.0**, MIT), with its
+   version-pin + license attribution in `src/Charter.Core/assets/MERMAID-VERSION.txt`. It was pre-fetched
+   during the breakdown because the run environment has **no network tool** in its `allowedTools` and so
+   cannot download it (see Guardrails #370). Do NOT re-download, replace, truncate, or stub it, and do NOT
+   emit `needsHuman` for it — simply CONFIRM it is present and non-trivial (a ~3.5 MB real minified build
+   that exposes `globalThis.mermaid`), then proceed to the embed + loader below.
 2. **The csproj embed** — add an `<EmbeddedResource>` to `src/Charter.Core/Charter.Core.csproj` including
    `assets/mermaid.min.js` with `<LogicalName>Charter.Core.mermaid.min.js</LogicalName>` (the stable
    manifest key the loader reads it back by), mirroring the Server csproj's SDK embed.
