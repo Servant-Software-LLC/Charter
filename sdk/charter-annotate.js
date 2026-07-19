@@ -77,6 +77,11 @@ window.CharterAnnotate = (function () {
     if (data.type === 'annotate' && data.detail) {
       submit(data.detail);
     }
+    // `{ channel, type: 'answer', detail: <answer> }` submits a :::question answer
+    // programmatically — lets a host frame / headless driver drive the answer path too.
+    if (data.type === 'answer' && data.detail) {
+      postAnswer(data.detail);
+    }
   }
 
   // ---- anchoring: the three kinds -----------------------------------------------------
@@ -171,6 +176,119 @@ window.CharterAnnotate = (function () {
     });
   }
 
+  // ---- :::question answer submit: POST the answer to /api/{key}/answers + emit over the
+  // boundary. This is the elicitation half of the loop (parallel to the annotation submit()
+  // above): a rendered :::question <form> is intercepted on submit, its structured answer
+  // collected from the native controls, and POSTed to the wave-4 /answers route. Same narrow
+  // boundary as everything else (invariant 6): the ONLY crossings are the postMessage channel
+  // (page side) and the HTTP POST to the defined route (server side).
+
+  // Resolve the question mode. Prefer an explicit attribute the renderer stamps on the block
+  // root / form (data-question-mode | data-mode); fall back to inferring it from the controls
+  // present so the SDK still works if the renderer emits the form without a mode hint.
+  function resolveMode(root, form) {
+    var m = root.getAttribute('data-question-mode') ||
+            root.getAttribute('data-mode') ||
+            form.getAttribute('data-question-mode') ||
+            form.getAttribute('data-mode');
+    if (m) return m.trim();
+    if (form.querySelector('input[type="radio"]')) return 'single';
+    var boxes = form.querySelectorAll('input[type="checkbox"]');
+    if (boxes.length > 1) return 'multi';
+    if (boxes.length === 1) return 'bool';
+    if (form.querySelector('input[type="number"]')) return 'number';
+    return 'free-text';
+  }
+
+  // Collect the selected value(s) from the native controls, shaped by mode:
+  //   single  -> one selected radio value        (array with 0 or 1 entry)
+  //   multi   -> every checked checkbox value     (array)
+  //   bool    -> the single checkbox's state      (boolean)
+  //   free-text / number (and any unknown mode) -> the field value (string)
+  function collectValues(form, mode) {
+    if (mode === 'multi' || mode === 'multi-select') {
+      var picked = [];
+      var boxes = form.querySelectorAll('input[type="checkbox"]:checked');
+      for (var i = 0; i < boxes.length; i++) picked.push(boxes[i].value);
+      return picked;
+    }
+    if (mode === 'single' || mode === 'single-select') {
+      var radio = form.querySelector('input[type="radio"]:checked');
+      return radio ? [radio.value] : [];
+    }
+    if (mode === 'bool') {
+      var box = form.querySelector('input[type="checkbox"]');
+      return box ? !!box.checked : false;
+    }
+    var field = form.querySelector(
+      'textarea, input[type="number"], input[type="text"], ' +
+      'input:not([type="radio"]):not([type="checkbox"]):not([type="submit"])' +
+      ':not([type="button"]):not([type="hidden"])'
+    );
+    return field ? field.value : '';
+  }
+
+  // Build the structured answer from a rendered :::question <form> and its block root (the
+  // element carrying the stable block id + the question id — usually the form itself, else its
+  // nearest [data-question-id] ancestor).
+  function collectAnswer(form, root) {
+    var mode = resolveMode(root, form);
+    return {
+      questionId: root.getAttribute('data-question-id') ||
+                  root.getAttribute('data-question') || null,
+      anchorId: anchorIdOf(root),   // the block's stable id, parallel to an annotation anchor
+      mode: mode,
+      values: collectValues(form, mode),
+      target: root.getAttribute('data-target') ||
+              root.getAttribute('data-question-target') ||
+              form.getAttribute('data-target') || null
+    };
+  }
+
+  // POST the answer to /api/{key}/answers and emit answer-submitting / answer-submitted /
+  // answer-error over the boundary, exactly as submit() does for annotations. The key rides
+  // the path segment (URL-encoded) from the same ?key= capability key the SDK already reads.
+  function postAnswer(answer) {
+    if (!answer || !answer.questionId) {
+      emit('answer-error', { reason: 'no-question-id', answer: answer });
+      return Promise.resolve(null);
+    }
+    var payload = {
+      questionId: answer.questionId,
+      anchorId: answer.anchorId || null,
+      mode: answer.mode || null,
+      values: (answer.values === undefined ? null : answer.values),
+      target: answer.target || null
+    };
+    emit('answer-submitting', payload);
+    var url = '/api/' + encodeURIComponent(state.key || '') + '/answers';
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      emit(res.ok ? 'answer-submitted' : 'answer-error', { status: res.status, payload: payload });
+      return res.ok ? res : null;
+    }).catch(function (err) {
+      emit('answer-error', { reason: 'network', message: String(err), payload: payload });
+      return null;
+    });
+  }
+
+  // Intercept the native submit of a rendered :::question <form>. Non-question forms (none of
+  // which Charter emits today) are left to submit normally — we only claim a form that carries
+  // (or sits under) a data-question-id.
+  function onSubmit(ev) {
+    var form = ev && ev.target;
+    if (!form || form.nodeType !== 1 || form.tagName !== 'FORM') return;
+    var root = form.hasAttribute('data-question-id')
+      ? form
+      : (form.closest ? form.closest('[data-question-id]') : null);
+    if (!root) return;
+    ev.preventDefault();
+    postAnswer(collectAnswer(form, root));
+  }
+
   // ---- capture UI: Alt+click to anchor an element / diagram-node; select text to anchor
   // a range. Kept deliberately minimal (a native prompt) — the review panel UI is not part
   // of this lean SDK.
@@ -231,6 +349,7 @@ window.CharterAnnotate = (function () {
       window.addEventListener('message', onMessage, false);
       document.addEventListener('click', onClick, true);
       document.addEventListener('mouseup', onMouseUp, false);
+      document.addEventListener('submit', onSubmit, true);
     }
     openEvents();
 
@@ -250,6 +369,7 @@ window.CharterAnnotate = (function () {
       window.removeEventListener('message', onMessage, false);
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('mouseup', onMouseUp, false);
+      document.removeEventListener('submit', onSubmit, true);
     }
     if (state.events) {
       try { state.events.close(); } catch (e) { /* ignore */ }
@@ -265,6 +385,7 @@ window.CharterAnnotate = (function () {
     init: init,        // entry point
     on: on,            // subscribe to boundary events locally
     annotate: submit,  // submit an annotation programmatically
+    answer: postAnswer, // submit a :::question answer programmatically
     dispose: dispose
   };
   return api;
