@@ -1,0 +1,6 @@
+{
+  "description": "Wire the real SDK into the server: embed sdk/charter-annotate.js into Charter.Server.csproj as an EmbeddedResource and replace the wave-2 placeholder SdkScript in ReviewServer.cs so the served, SDK-injected HTML carries the real annotation SDK (the CharterAnnotate namespace) instead of the placeholder comment; keep the data-charter-sdk marker and the saved artifact SDK-free",
+  "stableId": "cr12wire",
+  "dependsOn": ["04-implement-annotation-api", "05-build-annotation-sdk"],
+  "writeScope": ["src/Charter.Server/"]
+}

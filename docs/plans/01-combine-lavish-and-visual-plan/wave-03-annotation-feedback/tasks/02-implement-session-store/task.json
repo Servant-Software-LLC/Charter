@@ -1,0 +1,6 @@
+{
+  "description": "Implement the AnnotationStore over the wave-3 stubs (thread-safe single-writer/locked Enqueue + Drain, and a WaitForPendingAsync long-poll signal) so the Category=AnnotationStore tests pass, including the concurrency race; do NOT edit the tests",
+  "stableId": "cr08impl",
+  "dependsOn": ["01-author-tests-session-store"],
+  "writeScope": ["src/Charter.Server/AnnotationStore.cs", "src/Charter.Server/Annotation.cs"]
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests (Category=AnnotationApi) for the Charter.Server annotation HTTP API, driven in-process over HttpClient against a real ReviewServer: the M3 round-trip acceptance (POST an annotation to /api/{key}/prompts -> GET /api/poll returns it carrying the correct markdown SOURCE LINE resolved via SourceMap.LineForAnchor), plus /api/sessions, the /events SSE reload stream, and CSRF/same-origin rejection on the state-changing POST. Tests only, no stubs (they compile against the existing ReviewServer + Annotation surface and FAIL at runtime because the endpoints are not routed yet)",
+  "stableId": "cr09ts",
+  "dependsOn": ["02-implement-session-store"],
+  "writeScope": ["tests/Charter.Server.Tests/"]
+}

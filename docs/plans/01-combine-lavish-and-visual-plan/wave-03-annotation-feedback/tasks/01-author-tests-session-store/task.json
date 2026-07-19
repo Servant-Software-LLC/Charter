@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests + minimal NotImplementedException stubs for the Charter.Server annotation session store: a thread-safe (single-writer/locked) AnnotationStore that Enqueue-s and Drain-s Annotation items, plus the Annotation record + AnnotationKind enum (element/text-range/diagram-node) it holds; include a concurrency race test (concurrent Enqueue + Drain lose no annotations)",
+  "stableId": "cr07ts",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Server.Tests/", "src/Charter.Server/AnnotationStore.cs", "src/Charter.Server/Annotation.cs"]
+}

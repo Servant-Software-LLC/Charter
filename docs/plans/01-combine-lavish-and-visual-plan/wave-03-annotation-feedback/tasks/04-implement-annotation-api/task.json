@@ -1,0 +1,6 @@
+{
+  "description": "Implement the annotation HTTP API in Charter.Server so the Category=AnnotationApi tests pass: route /api/sessions, POST /api/{key}/prompts (resolve the annotation's anchorId to its markdown source line via Charter.Core.SourceMap.LineForAnchor, enqueue into a per-session AnnotationStore), /api/poll (long-poll drain), and /events (SSE reload), gating state-changing routes on the capability key + a CSRF/same-origin check; extend ReviewServer.Handle without breaking the wave-2 read-only serve. Do NOT edit the tests",
+  "stableId": "cr10impl",
+  "dependsOn": ["03-author-tests-annotation-api"],
+  "writeScope": ["src/Charter.Server/"]
+}

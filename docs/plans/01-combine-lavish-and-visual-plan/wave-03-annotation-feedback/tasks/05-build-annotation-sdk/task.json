@@ -1,0 +1,6 @@
+{
+  "description": "Author the lean embedded JS annotation SDK at sdk/charter-annotate.js (adapted from Lavish, MIT-attributed): element + text-range + diagram-node annotation over a postMessage boundary, exposing the CharterAnnotate namespace; the saved artifact stays SDK-free - this file is injected only at serve time",
+  "stableId": "cr11sdk",
+  "dependsOn": [],
+  "writeScope": ["sdk/"]
+}
