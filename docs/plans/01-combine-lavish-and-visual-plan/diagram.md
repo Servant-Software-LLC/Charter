@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=6362d1909fe24b62a81895651cbab231b65d21a7c5bfeb4a0af019d9e3272db9 -->
+<!-- guardrails:graph v1 source-sha256=f2f76e6e3eb71c1e6bd249530256a35b7b6c64c09746dd8ef77a396891123566 -->
 
 ```mermaid
 flowchart TD
@@ -60,6 +60,17 @@ flowchart TD
     wave_2_guardrails_0["01-server-builds-and-tests"]:::guardrail
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3_preflights["Wave 3 Entry Gate"]
+  end
+  style wave_3_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3["Wave 3 — annotation-feedback"]
+    wave_3_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_3_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_3_guardrails["Wave 3 Exit Gate"]
+  end
+  style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -73,8 +84,11 @@ flowchart TD
   task_wave_02_review_server_02_author_tests_review_server --> task_wave_02_review_server_03_implement_review_server
   task_wave_02_review_server_03_implement_review_server --> task_wave_02_review_server_04_wire_review_cli
   task_wave_02_review_server_04_wire_review_cli --> wave_2_guardrails
+  wave_3_preflights --> wave_3_stub
+  wave_3_stub --> wave_3_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
-  wave_2_guardrails --> plan_guardrails
+  wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
+  wave_3_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

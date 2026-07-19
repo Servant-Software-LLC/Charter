@@ -1,0 +1,4 @@
+# JIT stub wave — M3: annotation + feedback loop (embedded JS SDK + minimal server contract).
+# Declared-but-empty tasks/ so the wave is numbered and `guardrails run` honest-halts here.
+# Authored later via /plan-breakdown in JIT mode against the materialized wave-2 code.
+# Keeps the "one wave visible ahead" invariant (see Guardrails #365).
