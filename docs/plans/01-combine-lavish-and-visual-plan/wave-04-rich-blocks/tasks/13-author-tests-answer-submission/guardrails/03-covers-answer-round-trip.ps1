@@ -15,6 +15,10 @@ $required = [ordered]@{
     'question id'        = 'questionId|question-id'
     'target routing'     = '(?i)target'
     'CSRF / same-origin' = 'Origin'
+    # Pin the ROUND-TRIP: an Assert whose statement references a round-tripped field (questionId/values/target).
+    # A POST-only status test (Assert.Equal(OK, resp.StatusCode)) never asserts on a drained field, so it
+    # fails this - closing the hole where task 14 could ship a hollow store whose GET returns [].
+    'drained round-trip assertion' = 'Assert\.\w+\([^;]*(questionId|values|target)'
     'a real test attribute' = '(?m)^\s*\[(Fact|Theory)\]'
 }
 $missing = @()

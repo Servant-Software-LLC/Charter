@@ -14,6 +14,7 @@ $required = [ordered]@{
     'classification'           = 'BlockKind\.Diagram'
     'mermaid markup'           = 'mermaid'
     'theme-aware init'         = 'mermaid\.initialize|mermaid\.run'
+    'inlined library bytes'    = '__esbuild_esm_mermaid_nm|MermaidResource\.Library'
     'source-map round-trip'    = 'SourceMap'
     'a real test attribute'    = '(?m)^\s*\[(Fact|Theory)\]'
 }

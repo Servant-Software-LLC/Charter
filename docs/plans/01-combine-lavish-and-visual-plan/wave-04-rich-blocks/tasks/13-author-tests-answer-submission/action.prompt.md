@@ -61,7 +61,9 @@ retry. If you hit a compile error from a missing symbol in another file, do NOT 
 
 **Required coverage (a guardrail greps the AnswerApi test files — each MUST appear):**
 `[Trait("Category","AnswerApi")]`, an `answers` token, a `questionId` token, a `target` token, a CSRF token
-(`Origin`), and a real `[Fact]`/`[Theory]`.
+(`Origin`), a **drained round-trip assertion** — an `Assert.…(…)` call whose statement references the
+round-tripped `questionId`/`values`/`target` (proving the GET-drained value is checked, not just the POST
+status) — and a real `[Fact]`/`[Theory]`.
 
 **Completion criteria (match this task's guardrails):** `tests/Charter.Server.Tests` BUILDS (all referenced
 types already exist), and `dotnet test --filter "Category=AnswerApi"` FAILS (the answers routes are not

@@ -41,9 +41,14 @@ graph (e.g. `:::diagram` / `graph TD; A-->B;` / `:::`):
    contains at least one `:::diagram` must inline the **vendored** Mermaid runtime and a theme-aware
    `mermaid.initialize(...)` / `mermaid.run(...)` bootstrap in the output — assert the rendered string
    contains a Mermaid init/config token (e.g. `mermaid.initialize`) AND a theme setting token (e.g.
-   `theme`), and assert it does **NOT** contain a CDN `src="http…mermaid` link (the saved artifact must
-   render diagrams with no network). Also assert a document with **no** diagram does NOT inline the runtime
-   (the init is emitted only when a diagram is present).
+   `theme`), **AND (load-bearing) a distinctive interior token of the vendored Mermaid library itself** —
+   assert the RENDERED HTML output contains the stable minified marker `__esbuild_esm_mermaid_nm` (present
+   in `src/Charter.Core/assets/mermaid.min.js`), proving the ~3.5 MB library **BYTES** are actually inlined
+   into the artifact. State it plainly: emitting only the `mermaid.initialize` / `mermaid.run` call
+   **WITHOUT** the library bytes is a **FAIL** — a saved `:::diagram` would not render offline (invariant 1).
+   Also assert it does **NOT** contain a CDN `src="http…mermaid` link (the saved artifact must render
+   diagrams with no network). Also assert a document with **no** diagram does NOT inline the runtime (the
+   init is emitted only when a diagram is present).
 4. **Source-map round-trip.** `SourceMap.Build(md).LineForAnchor(block.Id)` resolves the diagram block's
    stable id to its 1-based markdown start line.
 
@@ -56,7 +61,8 @@ to the state-out path and stop (task `01-add-block-kinds` is its ancestor and sh
 
 **Required coverage (a guardrail greps the DiagramBlock test file — each MUST appear):**
 `[Trait("Category","DiagramBlock")]`, `BlockKind.Diagram`, a `mermaid` token, a `mermaid.initialize`-shaped
-init token, `SourceMap`, and at least one real `[Fact]` or `[Theory]` attribute. Lower-bound presence checks
+init token, the inlined-library marker `__esbuild_esm_mermaid_nm` (or `MermaidResource.Library`),
+`SourceMap`, and at least one real `[Fact]` or `[Theory]` attribute. Lower-bound presence checks
 — they do not substitute for the real golden assertions above.
 
 **Completion criteria (match this task's guardrails):** `tests/Charter.Core.Tests` BUILDS with the

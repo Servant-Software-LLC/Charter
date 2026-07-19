@@ -10,10 +10,11 @@ $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')
 $code = [regex]::Replace($code, '//[^\r\n]*', ' ')
 $missing = @()
 foreach ($member in @('Diagram', 'Comparison', 'Question', 'Diff')) {
-    # An enum member is NAME in a value position - followed by `,` or the closing `}` (the last member may
-    # omit the comma). Word-boundary rather than line-anchored so it holds for one-member-per-line (the file's
-    # style) AND an inline `{ A, B, C }` enum; comment-stripping above rules out a doc-comment `<see cref>` match.
-    if ($code -notmatch "(?m)\b$member\s*(,|\})") {
+    # An enum member is NAME in a value position - followed by `=` (an explicit value, e.g. `Diagram = 10,`),
+    # `,`, or the closing `}` (the last member may omit the comma). Word-boundaries rather than line-anchored so
+    # it holds for one-member-per-line (the file's style) AND an inline `{ A, B, C }` enum; comment-stripping
+    # above rules out a doc-comment `<see cref>` match.
+    if ($code -notmatch "\b$member\b\s*(=|,|\})") {
         $missing += $member
     }
 }

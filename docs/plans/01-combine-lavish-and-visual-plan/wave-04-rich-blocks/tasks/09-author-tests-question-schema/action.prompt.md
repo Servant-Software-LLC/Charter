@@ -47,8 +47,10 @@ retry. If you hit a compile error from a missing symbol in another file, do NOT 
 `{"needsHuman": "<what is missing>"}` and stop.
 
 **Required coverage (a guardrail greps the QuestionSchema test file — each MUST appear):**
-`[Trait("Category","QuestionSchema")]`, `QuestionSpec`, a validation/known-bad token (`Validate`,
-`Throws`, or `Assert.False`), the five mode names or a `mode` token, `target`, and a real `[Fact]`/`[Theory]`.
+`[Trait("Category","QuestionSchema")]`, `QuestionSpec`, a known-bad **negative-assertion** token
+(`Assert.Throws`, `Assert.False`, or a known-bad marker `invalid`/`missing`/`unknown` — a bare `Validate`
+no longer satisfies this, since a valid-only suite can call it), the five mode names or a `mode` token,
+`target`, and a real `[Fact]`/`[Theory]`.
 
 **Completion criteria (match this task's guardrails):** `tests/Charter.Core.Tests` BUILDS (the stub supplies
 `QuestionSpec` so the tests are type-correct), and `dotnet test --filter "Category=QuestionSchema"` FAILS

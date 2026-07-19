@@ -11,7 +11,7 @@ $required = [ordered]@{
     'diagram-node annotation (preserved)'   = '(diagram|node)'
     'MIT attribution (preserved)'           = 'MIT'
     'Lavish attribution (preserved)'        = 'Lavish'
-    'answers route (new)'                   = 'answers'
+    'answers route (new)'                   = '[''"`]/api/[^''"`]*answers|fetch\([\s\S]{0,40}answers|answers[\s\S]{0,40}fetch\('
     'answer POST over HTTP boundary (new)'  = 'fetch|XMLHttpRequest'
     'question-form submit hook (new)'       = 'submit'
 }
