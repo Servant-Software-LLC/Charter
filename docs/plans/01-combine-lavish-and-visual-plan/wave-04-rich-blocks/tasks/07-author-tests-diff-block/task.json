@@ -1,0 +1,6 @@
+{
+  "description": "Author failing golden-HTML xUnit tests (Category=DiffBlock) in tests/Charter.Core.Tests for the :::diff block: BlockDocument.Parse classifies a :::diff container to BlockKind.Diff; CharterRenderer.Render emits a diff whose block root carries the content-derived stable id AND each diff LINE carries its own content-derived per-sub-element anchor (the 'annotatable per-line' invariant), with added/removed lines distinguishable; and SourceMap.LineForAnchor resolves each per-line sub-anchor to its 1-based markdown source line. Tests only, no stubs - they compile against the existing renderer surface + BlockKind.Diff and FAIL at RUNTIME because :::diff still classifies to Note.",
+  "stableId": "cr40dfts",
+  "dependsOn": ["01-add-block-kinds"],
+  "writeScope": ["tests/Charter.Core.Tests/"]
+}

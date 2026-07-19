@@ -1,0 +1,6 @@
+{
+  "description": "Implement QuestionSpec parsing + validation in src/Charter.Core/QuestionSpec.cs (fill real logic over the task-09 stub) so the Category=QuestionSchema tests pass: parse a JSON body (System.Text.Json; a JSON body is also valid YAML, so a YAML parser could be added later without changing the contract) into the QuestionSpec record, and validate (required id/title, mode in the five allowed modes, options required + non-empty for single/multi, target in human/agent) rejecting the known-bad sample. Disjoint from the renderer chain (own file) so it runs in parallel. Do NOT edit the tests.",
+  "stableId": "cr40qsimpl",
+  "dependsOn": ["09-author-tests-question-schema"],
+  "writeScope": ["src/Charter.Core/QuestionSpec.cs"]
+}

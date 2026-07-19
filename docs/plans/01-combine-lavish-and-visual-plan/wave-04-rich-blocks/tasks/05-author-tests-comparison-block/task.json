@@ -1,0 +1,6 @@
+{
+  "description": "Author failing golden-HTML xUnit tests (Category=ComparisonBlock) in tests/Charter.Core.Tests for the :::comparison block: BlockDocument.Parse classifies a :::comparison container to BlockKind.Comparison; CharterRenderer.Render emits a structured comparison whose block root carries the block's content-derived stable id AND each row/option carries its OWN content-derived per-sub-element anchor (the 'annotatable per-row/option' invariant); and SourceMap.LineForAnchor resolves BOTH the block id and each per-row sub-anchor to their 1-based markdown source lines (the sub-block anchor model). Tests only, no stubs - they compile against the existing renderer surface + BlockKind.Comparison and FAIL at RUNTIME because :::comparison still classifies to Note (and no per-row sub-anchors exist).",
+  "stableId": "cr40cmts",
+  "dependsOn": ["01-add-block-kinds"],
+  "writeScope": ["tests/Charter.Core.Tests/"]
+}

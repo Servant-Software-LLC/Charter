@@ -1,0 +1,6 @@
+{
+  "description": "Extend the embedded JS SDK (sdk/charter-annotate.js) to wire :::question <form> SUBMIT to the server: on a rendered question form's submit, collect the structured answer (questionId, mode, selected values, target) and POST it to /api/{key}/answers over the existing postMessage/HTTP boundary (invariant 6), riding the ?key= capability key - WITHOUT disturbing the existing element/text-range/diagram-node annotation behavior or the CharterAnnotate namespace/MIT-Lavish attribution. Static checks only (no JS toolchain - the browser SUBMIT behavior is verified by the server-side AnswerApi round-trip + surfaced as a real-browser decision/honest-halt, Charter #8). The saved artifact stays SDK-free (invariant 1): this file is injected only at serve time and the existing Charter.Server csproj embed picks up the change on rebuild.",
+  "stableId": "cr40sdk",
+  "dependsOn": [],
+  "writeScope": ["sdk/"]
+}

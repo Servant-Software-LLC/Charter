@@ -1,0 +1,6 @@
+{
+  "description": "Implement the :::diff block in Charter.Core so the Category=DiffBlock tests pass: classify a :::diff container (Info==\"diff\") to BlockKind.Diff in CharterMarkdown.Describe, render a diff whose block root carries the content-derived stable id and each diff line carries its own content-derived per-line sub-anchor (added/removed lines distinguishable), and reuse the SourceMap sub-anchor descent (established by 06-implement-comparison-block) to register each per-line sub-anchor -> its own 1-based source line. Serialized after 06-implement-comparison-block to avoid an overlapping-writeScope merge collision on the shared Describe/Render/SourceMap files. Do NOT edit the tests.",
+  "stableId": "cr40dfimpl",
+  "dependsOn": ["07-author-tests-diff-block", "06-implement-comparison-block"],
+  "writeScope": ["src/Charter.Core/BlockModel.cs", "src/Charter.Core/CharterRenderer.cs", "src/Charter.Core/SourceMap.cs"]
+}

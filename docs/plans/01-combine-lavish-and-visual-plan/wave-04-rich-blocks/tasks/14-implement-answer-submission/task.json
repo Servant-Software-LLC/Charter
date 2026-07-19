@@ -1,0 +1,6 @@
+{
+  "description": "Implement the :::question answer-submission route in Charter.Server so the Category=AnswerApi tests pass: add a DEDICATED POST /api/{key}/answers (capability-key + CSRF/same-origin gated, reusing AnnotationApi.IsAllowedOrigin) that parses a structured answer (questionId, mode, values, target in human/agent) and enqueues it into a per-session AnswerStore (mirroring AnnotationStore), plus GET /api/answers?key=... to drain them - WITHOUT changing the existing /api/{key}/prompts + /api/poll annotation contract (unifying answers into poll is deferred to avoid re-baselining the wave-3 poll golden, #193). Preserve target for the downstream handoff. Extend ReviewServer.HandleApiAsync; the round-trip test drives the REAL ReviewServer.Start, proving the route is wired. Do NOT edit the tests.",
+  "stableId": "cr40animpl",
+  "dependsOn": ["13-author-tests-answer-submission"],
+  "writeScope": ["src/Charter.Server/"]
+}

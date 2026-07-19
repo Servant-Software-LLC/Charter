@@ -1,0 +1,6 @@
+{
+  "description": "Implement the :::question block's rendering in Charter.Core so the Category=QuestionForm tests pass: classify a :::question container (Info==\"question\") to BlockKind.Question in CharterMarkdown.Describe, parse the body via QuestionSpec.Parse, and render a native HTML <form> whose controls match the mode (radio/checkbox/text/textarea/number/bool) with each option label, carrying the block's content-derived stable id and the question id for answer correlation; register the block id in SourceMap. Serialized after 08-implement-diff-block to avoid an overlapping-writeScope merge collision on the shared Describe/Render/SourceMap files; depends on 10-implement-question-schema for real parsing. Do NOT edit the tests.",
+  "stableId": "cr40qfimpl",
+  "dependsOn": ["11-author-tests-question-form", "10-implement-question-schema", "08-implement-diff-block"],
+  "writeScope": ["src/Charter.Core/BlockModel.cs", "src/Charter.Core/CharterRenderer.cs", "src/Charter.Core/SourceMap.cs"]
+}

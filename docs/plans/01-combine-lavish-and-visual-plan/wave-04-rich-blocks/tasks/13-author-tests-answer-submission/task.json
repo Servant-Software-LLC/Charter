@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests (Category=AnswerApi) in tests/Charter.Server.Tests for the :::question answer-submission route, driven in-process over HttpClient against a real ReviewServer: POST a structured answer (questionId, mode, selected values, target in human/agent) to a DEDICATED POST /api/{key}/answers (capability-key + CSRF/same-origin gated, mirroring /prompts and NOT changing the existing /api/poll annotation contract), then retrieve it via GET /api/answers?key=... and assert it round-trips carrying the questionId, the selected values, and the target; a foreign-Origin POST is rejected even with a valid key; a keyless GET is rejected. Tests only, no stubs - they compile against the existing ReviewServer surface + HttpClient and FAIL at RUNTIME because /api/{key}/answers + /api/answers are not routed yet.",
+  "stableId": "cr40ants",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Server.Tests/"]
+}

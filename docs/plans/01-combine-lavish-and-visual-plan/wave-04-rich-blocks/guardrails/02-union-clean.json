@@ -1,0 +1,4 @@
+{
+  "description": "Union soundness (GR2028): no git conflict markers on the wave-4 Core/Server/SDK/test surface after the renderer-chain + schema + answer + SDK fan-in merges",
+  "scope": "integration"
+}

@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=51018e62f3a123f9c4547d26afd4d898cfb58582ff2c47334e09ffb605fe03bd -->
+<!-- guardrails:graph v1 source-sha256=68dc09b0f379b2172c366e702141c79005dc769986dd91a4b7156246cb1ad631 -->
 
 ```mermaid
 flowchart TD
@@ -103,16 +103,104 @@ flowchart TD
   end
   style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4_preflights["Wave 4 Entry Gate"]
+    wave_4_preflights_0["01-wave3-annotation-materialized"]:::preflight
   end
   style wave_4_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4["Wave 4 — rich-blocks"]
-    wave_4_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_4_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_04_rich_blocks_01_add_block_kinds["01-add-block-kinds"]
+      task_wave_04_rich_blocks_01_add_block_kinds_gr_0["01-block-kinds-declared"]:::guardrail
+      task_wave_04_rich_blocks_01_add_block_kinds_gr_1["02-core-builds"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_01_add_block_kinds fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_02_vendor_mermaid_runtime["02-vendor-mermaid-runtime"]
+      task_wave_04_rich_blocks_02_vendor_mermaid_runtime_gr_0["01-mermaid-vendored-offline"]:::guardrail
+      task_wave_04_rich_blocks_02_vendor_mermaid_runtime_gr_1["02-core-builds"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_02_vendor_mermaid_runtime fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_03_author_tests_diagram_block["03-author-tests-diagram-block"]
+      task_wave_04_rich_blocks_03_author_tests_diagram_block_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_rich_blocks_03_author_tests_diagram_block_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_rich_blocks_03_author_tests_diagram_block_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_03_author_tests_diagram_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_04_implement_diagram_block["04-implement-diagram-block"]
+      task_wave_04_rich_blocks_04_implement_diagram_block_gr_0["01-diagram-tests-pass"]:::guardrail
+      task_wave_04_rich_blocks_04_implement_diagram_block_gr_1["02-renderer-inlines-not-cdn"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_04_implement_diagram_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_05_author_tests_comparison_block["05-author-tests-comparison-block"]
+      task_wave_04_rich_blocks_05_author_tests_comparison_block_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_rich_blocks_05_author_tests_comparison_block_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_rich_blocks_05_author_tests_comparison_block_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_05_author_tests_comparison_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_06_implement_comparison_block["06-implement-comparison-block"]
+      task_wave_04_rich_blocks_06_implement_comparison_block_gr_0["01-comparison-tests-pass"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_06_implement_comparison_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_07_author_tests_diff_block["07-author-tests-diff-block"]
+      task_wave_04_rich_blocks_07_author_tests_diff_block_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_rich_blocks_07_author_tests_diff_block_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_rich_blocks_07_author_tests_diff_block_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_07_author_tests_diff_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_08_implement_diff_block["08-implement-diff-block"]
+      task_wave_04_rich_blocks_08_implement_diff_block_gr_0["01-diff-tests-pass"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_08_implement_diff_block fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_09_author_tests_question_schema["09-author-tests-question-schema"]
+      task_wave_04_rich_blocks_09_author_tests_question_schema_gr_0["01-build-passes"]:::guardrail
+      task_wave_04_rich_blocks_09_author_tests_question_schema_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_04_rich_blocks_09_author_tests_question_schema_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_09_author_tests_question_schema fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_10_implement_question_schema["10-implement-question-schema"]
+      task_wave_04_rich_blocks_10_implement_question_schema_gr_0["01-question-schema-tests-pass"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_10_implement_question_schema fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_11_author_tests_question_form["11-author-tests-question-form"]
+      task_wave_04_rich_blocks_11_author_tests_question_form_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_rich_blocks_11_author_tests_question_form_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_rich_blocks_11_author_tests_question_form_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_11_author_tests_question_form fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_12_implement_question_form["12-implement-question-form"]
+      task_wave_04_rich_blocks_12_implement_question_form_gr_0["01-question-form-tests-pass"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_12_implement_question_form fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_13_author_tests_answer_submission["13-author-tests-answer-submission"]
+      task_wave_04_rich_blocks_13_author_tests_answer_submission_gr_0["01-build-passes"]:::guardrail
+      task_wave_04_rich_blocks_13_author_tests_answer_submission_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_rich_blocks_13_author_tests_answer_submission_gr_2["03-covers-answer-round-trip"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_13_author_tests_answer_submission fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_14_implement_answer_submission["14-implement-answer-submission"]
+      task_wave_04_rich_blocks_14_implement_answer_submission_gr_0["01-answer-tests-pass"]:::guardrail
+      task_wave_04_rich_blocks_14_implement_answer_submission_gr_1["02-annotation-contract-preserved"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_14_implement_answer_submission fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_rich_blocks_15_extend_sdk_question_submit["15-extend-sdk-question-submit"]
+      task_wave_04_rich_blocks_15_extend_sdk_question_submit_gr_0["01-sdk-answer-submit-surface"]:::guardrail
+    end
+    style task_wave_04_rich_blocks_15_extend_sdk_question_submit fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_4 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_4_guardrails["Wave 4 Exit Gate"]
+    wave_4_guardrails_0["01-rich-blocks-complete"]:::guardrail
+    wave_4_guardrails_1["02-union-clean"]:::guardrail
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_5_preflights["Wave 5 Entry Gate"]
+  end
+  style wave_5_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_5["Wave 5 — export-handoff"]
+    wave_5_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_5_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_5 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_5_guardrails["Wave 5 Exit Gate"]
+  end
+  style wave_5_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -134,12 +222,37 @@ flowchart TD
   task_wave_03_annotation_feedback_04_implement_annotation_api --> task_wave_03_annotation_feedback_06_wire_sdk_into_server
   task_wave_03_annotation_feedback_05_build_annotation_sdk --> task_wave_03_annotation_feedback_06_wire_sdk_into_server
   task_wave_03_annotation_feedback_06_wire_sdk_into_server --> wave_3_guardrails
-  wave_4_preflights --> wave_4_stub
-  wave_4_stub --> wave_4_guardrails
+  wave_4_preflights --> task_wave_04_rich_blocks_01_add_block_kinds
+  wave_4_preflights --> task_wave_04_rich_blocks_02_vendor_mermaid_runtime
+  wave_4_preflights --> task_wave_04_rich_blocks_09_author_tests_question_schema
+  wave_4_preflights --> task_wave_04_rich_blocks_13_author_tests_answer_submission
+  wave_4_preflights --> task_wave_04_rich_blocks_15_extend_sdk_question_submit
+  task_wave_04_rich_blocks_01_add_block_kinds --> task_wave_04_rich_blocks_03_author_tests_diagram_block
+  task_wave_04_rich_blocks_01_add_block_kinds --> task_wave_04_rich_blocks_05_author_tests_comparison_block
+  task_wave_04_rich_blocks_01_add_block_kinds --> task_wave_04_rich_blocks_07_author_tests_diff_block
+  task_wave_04_rich_blocks_01_add_block_kinds --> task_wave_04_rich_blocks_11_author_tests_question_form
+  task_wave_04_rich_blocks_02_vendor_mermaid_runtime --> task_wave_04_rich_blocks_04_implement_diagram_block
+  task_wave_04_rich_blocks_03_author_tests_diagram_block --> task_wave_04_rich_blocks_04_implement_diagram_block
+  task_wave_04_rich_blocks_04_implement_diagram_block --> task_wave_04_rich_blocks_06_implement_comparison_block
+  task_wave_04_rich_blocks_05_author_tests_comparison_block --> task_wave_04_rich_blocks_06_implement_comparison_block
+  task_wave_04_rich_blocks_06_implement_comparison_block --> task_wave_04_rich_blocks_08_implement_diff_block
+  task_wave_04_rich_blocks_07_author_tests_diff_block --> task_wave_04_rich_blocks_08_implement_diff_block
+  task_wave_04_rich_blocks_08_implement_diff_block --> task_wave_04_rich_blocks_12_implement_question_form
+  task_wave_04_rich_blocks_09_author_tests_question_schema --> task_wave_04_rich_blocks_10_implement_question_schema
+  task_wave_04_rich_blocks_09_author_tests_question_schema --> task_wave_04_rich_blocks_11_author_tests_question_form
+  task_wave_04_rich_blocks_10_implement_question_schema --> task_wave_04_rich_blocks_12_implement_question_form
+  task_wave_04_rich_blocks_11_author_tests_question_form --> task_wave_04_rich_blocks_12_implement_question_form
+  task_wave_04_rich_blocks_13_author_tests_answer_submission --> task_wave_04_rich_blocks_14_implement_answer_submission
+  task_wave_04_rich_blocks_12_implement_question_form --> wave_4_guardrails
+  task_wave_04_rich_blocks_14_implement_answer_submission --> wave_4_guardrails
+  task_wave_04_rich_blocks_15_extend_sdk_question_submit --> wave_4_guardrails
+  wave_5_preflights --> wave_5_stub
+  wave_5_stub --> wave_5_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
   wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
-  wave_4_guardrails --> plan_guardrails
+  wave_4_guardrails -.->|"🔒 wave barrier"| wave_5_preflights
+  wave_5_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

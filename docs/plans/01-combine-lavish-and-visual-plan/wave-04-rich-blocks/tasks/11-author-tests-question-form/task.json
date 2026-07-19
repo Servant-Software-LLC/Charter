@@ -1,0 +1,6 @@
+{
+  "description": "Author failing golden-HTML xUnit tests (Category=QuestionForm) in tests/Charter.Core.Tests for the :::question block's rendering: BlockDocument.Parse classifies a :::question container to BlockKind.Question; CharterRenderer.Render parses the body via QuestionSpec and emits a native HTML <form> whose controls match the mode (radio inputs for single, checkboxes for multi, a text input/textarea for free-text, a checkbox/bool control for bool, a number input for number), carrying the block's content-derived stable id and the question id so a submitted answer can be correlated. Tests only, no stubs - they compile against the existing renderer surface + BlockKind.Question + the QuestionSpec type (task 09 stub) and FAIL at RUNTIME because :::question still classifies to Note.",
+  "stableId": "cr40qfts",
+  "dependsOn": ["01-add-block-kinds", "09-author-tests-question-schema"],
+  "writeScope": ["tests/Charter.Core.Tests/"]
+}

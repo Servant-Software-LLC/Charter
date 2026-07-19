@@ -1,0 +1,6 @@
+{
+  "description": "Add the four M4 block kinds to the Charter.Core BlockKind enum - Diagram, Comparison, Question, Diff - in src/Charter.Core/BlockModel.cs, WITHOUT touching CharterMarkdown.Describe or the renderer (the classifier + rendering land in the per-block implement tasks). Pure data-model addition (the enum declaration IS the implementation - no behavioral stub possible), so the block author-tests tasks that reference BlockKind.Diagram/Comparison/Question/Diff compile against it and fail at RUNTIME (each container still classifies to Note) rather than failing to compile (#155).",
+  "stableId": "cr40kinds",
+  "dependsOn": [],
+  "writeScope": ["src/Charter.Core/BlockModel.cs"]
+}

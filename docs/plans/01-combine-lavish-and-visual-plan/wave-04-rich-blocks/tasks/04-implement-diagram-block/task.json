@@ -1,0 +1,6 @@
+{
+  "description": "Implement the :::diagram block in Charter.Core so the Category=DiagramBlock tests pass: extend CharterMarkdown.Describe to classify a :::diagram container (Info==\"diagram\") to BlockKind.Diagram, and CharterRenderer.Render to emit its Mermaid body as <pre class=\"mermaid\" id=\"{stable-id}\"> carrying the content-derived stable id, INLINING the vendored MermaidResource library + a theme-aware mermaid.initialize/run bootstrap into the rendered document once when >=1 diagram is present (never a CDN link - invariant 1). Register the diagram block's stable id in SourceMap. Do NOT edit the tests.",
+  "stableId": "cr40dgimpl",
+  "dependsOn": ["03-author-tests-diagram-block", "02-vendor-mermaid-runtime"],
+  "writeScope": ["src/Charter.Core/BlockModel.cs", "src/Charter.Core/CharterRenderer.cs", "src/Charter.Core/SourceMap.cs"]
+}

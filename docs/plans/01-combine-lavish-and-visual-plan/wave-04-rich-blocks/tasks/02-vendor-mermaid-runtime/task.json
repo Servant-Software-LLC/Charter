@@ -1,0 +1,6 @@
+{
+  "description": "Vendor the Mermaid runtime OFFLINE into Charter.Core so a rendered :::diagram opens standalone (invariant 1 - portable artifact): drop a pinned mermaid minified build at src/Charter.Core/assets/mermaid.min.js (version-pinned + attributed), embed it in Charter.Core.csproj as an EmbeddedResource with LogicalName Charter.Core.mermaid.min.js, and add a MermaidResource loader (mirroring Charter.Server.SdkResource) that reads the embedded library back so CharterRenderer can INLINE it into the artifact - NOT a CDN <script src>. If the pinned library cannot be obtained, honest-halt via needsHuman rather than committing a truncated/placeholder file.",
+  "stableId": "cr40mermaid",
+  "dependsOn": [],
+  "writeScope": ["src/Charter.Core/assets/", "src/Charter.Core/MermaidResource.cs", "src/Charter.Core/Charter.Core.csproj"]
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests (Category=QuestionSchema) in tests/Charter.Core.Tests for the :::question schema, AND the minimal QuestionSpec stub they compile against (behavioral type -> stub-based TDD #155): a QuestionSpec C# record (id, title, mode in single/multi/free-text/bool/number, options, target in human/agent) plus a Parse/Validate entry point that throws NotImplementedException. Tests: a VALID JSON/YAML question body parses to a well-formed QuestionSpec; a KNOWN-BAD sample (e.g. missing id, an unknown mode, a single/multi question with no options) is REJECTED by validation. QuestionSpec is the single source of truth for the question schema (invariant: format single-sourced) - the renderer and any skill cite it, never fork it. Tests + stub compile (build passes); tests FAIL against the throwing stub.",
+  "stableId": "cr40qsts",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Core.Tests/", "src/Charter.Core/QuestionSpec.cs"]
+}

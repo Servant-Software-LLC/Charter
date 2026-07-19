@@ -1,0 +1,6 @@
+{
+  "description": "Implement the :::comparison block in Charter.Core so the Category=ComparisonBlock tests pass: classify a :::comparison container (Info==\"comparison\") to BlockKind.Comparison in CharterMarkdown.Describe, render a structured comparison whose block root carries the content-derived stable id and each row/option carries its OWN content-derived per-sub-element anchor, and extend SourceMap.Build to descend into the container and register each per-row sub-anchor -> its own 1-based source line (the sub-block anchor model comparison establishes and diff reuses). Serialized after 04-implement-diagram-block to avoid an overlapping-writeScope merge collision on the shared Describe/Render/SourceMap files. Do NOT edit the tests.",
+  "stableId": "cr40cmimpl",
+  "dependsOn": ["05-author-tests-comparison-block", "04-implement-diagram-block"],
+  "writeScope": ["src/Charter.Core/BlockModel.cs", "src/Charter.Core/CharterRenderer.cs", "src/Charter.Core/SourceMap.cs"]
+}

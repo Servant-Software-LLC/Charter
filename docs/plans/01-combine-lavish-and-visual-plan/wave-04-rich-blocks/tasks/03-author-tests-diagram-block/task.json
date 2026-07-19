@@ -1,0 +1,6 @@
+{
+  "description": "Author failing golden-HTML xUnit tests (Category=DiagramBlock) in tests/Charter.Core.Tests for the :::diagram block: BlockDocument.Parse classifies a :::diagram container to BlockKind.Diagram; CharterRenderer.Render emits the Mermaid body as <pre class=\"mermaid\" id=\"{stable-id}\"> carrying the block's content-derived stable id (the diagram-node annotation anchor); a rendered document containing a diagram inlines the VENDORED mermaid runtime + a theme-aware mermaid.initialize/run call (NOT a CDN link); and the diagram block's stable id round-trips via SourceMap.LineForAnchor. Tests only, no stubs - they compile against the existing renderer surface + the BlockKind.Diagram member and FAIL at RUNTIME because :::diagram still classifies to Note.",
+  "stableId": "cr40dgts",
+  "dependsOn": ["01-add-block-kinds"],
+  "writeScope": ["tests/Charter.Core.Tests/"]
+}
