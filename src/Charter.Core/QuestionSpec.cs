@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Charter.Core;
 
 /// <summary>
@@ -43,10 +45,7 @@ public enum QuestionTarget
 /// body is rejected.
 /// </summary>
 /// <remarks>
-/// STUB (TDD red). <see cref="QuestionSpec"/> is a <em>behavioral</em> type: it parses and validates. The
-/// two entry points below are the seams under test and throw <see cref="NotImplementedException"/> for now
-/// so the authored schema tests compile against this type and fail (red) until a later task fills them in.
-/// The schema the implementer must honor:
+/// <see cref="QuestionSpec"/> is a <em>behavioral</em> type: it parses and validates. The schema it honors:
 /// <list type="bullet">
 ///   <item><description><see cref="Id"/> — required, non-empty.</description></item>
 ///   <item><description><see cref="Title"/> — required, non-empty.</description></item>
@@ -75,12 +74,183 @@ public sealed record QuestionSpec(
     /// Throws <see cref="FormatException"/> if the body is malformed or violates the schema (missing id,
     /// unknown mode, a select mode with no options, and so on).
     /// </summary>
-    public static QuestionSpec Parse(string body) => throw new NotImplementedException();
+    public static QuestionSpec Parse(string body)
+    {
+        var (spec, error) = TryParse(body);
+        if (spec is null)
+        {
+            throw new FormatException(error ?? "The :::question body is not a valid question.");
+        }
+
+        return spec;
+    }
 
     /// <summary>
     /// Validate a question <paramref name="body"/> without throwing on a schema violation: returns
     /// <c>(true, null)</c> for a well-formed question and <c>(false, error)</c> when the body breaks the
     /// schema. The load-bearing negative surface the schema tests assert against.
     /// </summary>
-    public static (bool Ok, string? Error) Validate(string body) => throw new NotImplementedException();
+    public static (bool Ok, string? Error) Validate(string body)
+    {
+        var (spec, error) = TryParse(body);
+        return (spec is not null, error);
+    }
+
+    /// <summary>
+    /// The single validation kernel behind both entry points: parses the JSON body and checks every schema
+    /// rule, returning either the built spec (<c>error</c> null) or a null spec with a human-readable reason.
+    /// </summary>
+    private static (QuestionSpec? Spec, string? Error) TryParse(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return (null, "The :::question body is empty.");
+        }
+
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            return (null, $"The :::question body is not valid JSON: {ex.Message}");
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return (null, "The :::question body must be a JSON object.");
+            }
+
+            var id = ReadString(root, "id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return (null, "\"id\" is required and must be a non-empty string.");
+            }
+
+            var title = ReadString(root, "title");
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return (null, "\"title\" is required and must be a non-empty string.");
+            }
+
+            var modeToken = ReadString(root, "mode");
+            if (string.IsNullOrWhiteSpace(modeToken))
+            {
+                return (null, "\"mode\" is required and must be a non-empty string.");
+            }
+
+            if (!TryParseMode(modeToken, out var mode))
+            {
+                return (null, $"\"mode\" value \"{modeToken}\" is not one of single/multi/free-text/bool/number.");
+            }
+
+            var targetToken = ReadString(root, "target");
+            if (string.IsNullOrWhiteSpace(targetToken))
+            {
+                return (null, "\"target\" is required and must be a non-empty string.");
+            }
+
+            if (!TryParseTarget(targetToken, out var target))
+            {
+                return (null, $"\"target\" value \"{targetToken}\" is not one of human/agent.");
+            }
+
+            var (options, optionsError) = ReadOptions(root);
+            if (optionsError is not null)
+            {
+                return (null, optionsError);
+            }
+
+            var requiresOptions = mode is QuestionMode.SingleSelect or QuestionMode.MultiSelect;
+            if (requiresOptions && options.Count == 0)
+            {
+                return (null, $"\"options\" is required and must be non-empty for mode \"{modeToken}\".");
+            }
+
+            return (new QuestionSpec(id, title, mode, options, target), null);
+        }
+    }
+
+    /// <summary>Reads the string value of <paramref name="name"/>, or null when absent or not a string.</summary>
+    private static string? ReadString(JsonElement root, string name)
+        => root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+
+    /// <summary>
+    /// Reads the optional <c>options</c> array. Returns an empty list when the field is absent or JSON null;
+    /// returns an error when it is present but not an array of strings.
+    /// </summary>
+    private static (IReadOnlyList<string> Options, string? Error) ReadOptions(JsonElement root)
+    {
+        if (!root.TryGetProperty("options", out var element) || element.ValueKind == JsonValueKind.Null)
+        {
+            return (Array.Empty<string>(), null);
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return (Array.Empty<string>(), "\"options\" must be an array of strings.");
+        }
+
+        var options = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                return (Array.Empty<string>(), "\"options\" must contain only strings.");
+            }
+
+            options.Add(item.GetString()!);
+        }
+
+        return (options, null);
+    }
+
+    /// <summary>Maps a body <paramref name="token"/> to its <see cref="QuestionMode"/>; false when unknown.</summary>
+    private static bool TryParseMode(string token, out QuestionMode mode)
+    {
+        switch (token)
+        {
+            case "single":
+                mode = QuestionMode.SingleSelect;
+                return true;
+            case "multi":
+                mode = QuestionMode.MultiSelect;
+                return true;
+            case "free-text":
+                mode = QuestionMode.FreeText;
+                return true;
+            case "bool":
+                mode = QuestionMode.Bool;
+                return true;
+            case "number":
+                mode = QuestionMode.Number;
+                return true;
+            default:
+                mode = default;
+                return false;
+        }
+    }
+
+    /// <summary>Maps a body <paramref name="token"/> to its <see cref="QuestionTarget"/>; false when unknown.</summary>
+    private static bool TryParseTarget(string token, out QuestionTarget target)
+    {
+        switch (token)
+        {
+            case "human":
+                target = QuestionTarget.Human;
+                return true;
+            case "agent":
+                target = QuestionTarget.Agent;
+                return true;
+            default:
+                target = default;
+                return false;
+        }
+    }
 }
