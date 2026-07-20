@@ -40,15 +40,18 @@ public sealed class ReviewServer : IReviewServer
 
     private readonly ReviewSession _session;
     private readonly AnnotationStore _store;
+    private readonly AnswerStore _answers;
     private readonly HttpListener _listener;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _acceptLoop;
     private bool _disposed;
 
-    private ReviewServer(ReviewSession session, AnnotationStore store, HttpListener listener, Uri address)
+    private ReviewServer(
+        ReviewSession session, AnnotationStore store, AnswerStore answers, HttpListener listener, Uri address)
     {
         _session = session;
         _store = store;
+        _answers = answers;
         _listener = listener;
         Address = address;
         _acceptLoop = Task.Run(AcceptLoopAsync);
@@ -79,7 +82,12 @@ public sealed class ReviewServer : IReviewServer
         // One per-session annotation store, held for the server's lifetime: prompts enqueue into it and
         // long-polls drain from it.
         var store = new AnnotationStore();
-        return new ReviewServer(session, store, listener, address);
+
+        // One per-session answer store alongside it (same lifetime): POST /api/{key}/answers enqueues into
+        // it and GET /api/answers drains it. Kept separate from the annotation store so the wave-3 poll
+        // contract is untouched.
+        var answers = new AnswerStore();
+        return new ReviewServer(session, store, answers, listener, address);
     }
 
     /// <summary>Stop the server and release the bound port.</summary>
@@ -252,6 +260,17 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/answers — submit a :::question answer (state-changing: capability key + CSRF gated,
+        // mirroring /prompts). A dedicated route, not /prompts, because an answer's shape differs and reusing
+        // the poll stream would break the wave-3 annotation contract.
+        if (segments.Length == 3 &&
+            string.Equals(segments[2], "answers", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleAnswersPostAsync(context, segments[1]).ConfigureAwait(false);
+            return;
+        }
+
         // GET /api/sessions — the current session descriptor.
         if (segments.Length == 2 &&
             string.Equals(segments[1], "sessions", StringComparison.Ordinal) &&
@@ -267,6 +286,15 @@ public sealed class ReviewServer : IReviewServer
             string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
         {
             await HandlePollAsync(context).ConfigureAwait(false);
+            return;
+        }
+
+        // GET /api/answers — drain queued :::question answers (capability key on the query string, like /poll).
+        if (segments.Length == 2 &&
+            string.Equals(segments[1], "answers", StringComparison.Ordinal) &&
+            string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnswersDrain(context);
             return;
         }
 
@@ -363,6 +391,75 @@ public sealed class ReviewServer : IReviewServer
         }
 
         var drained = _store.Drain();
+        WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+    }
+
+    private async Task HandleAnswersPostAsync(HttpListenerContext context, string keyFromPath)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        // Gate — capability key. For this route the key travels in the path (/api/{key}/answers), like prompts.
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // Gate — CSRF / same-origin. A state-changing POST must not be forgeable from a foreign origin, even
+        // with a valid key (the loopback + capability invariant, extended to writes).
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+        {
+            body = await reader.ReadToEndAsync().ConfigureAwait(false);
+        }
+
+        Answer? submission;
+        try
+        {
+            submission = JsonSerializer.Deserialize<Answer>(body, AnnotationApi.JsonOptions);
+        }
+        catch (JsonException)
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        if (submission is null || string.IsNullOrEmpty(submission.QuestionId))
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        // Unlike an annotation there is no anchor to resolve: an answer's identity is its client-chosen
+        // questionId, so this is a pure echo. Preserve the target (human/agent) verbatim for the downstream
+        // handoff, and default the values to empty so the drain always serializes a values array.
+        var answer = submission with { Values = submission.Values ?? Array.Empty<string>() };
+
+        _answers.Enqueue(answer);
+
+        WriteJson(response, JsonSerializer.Serialize(answer, AnnotationApi.JsonOptions));
+    }
+
+    private void HandleAnswersDrain(HttpListenerContext context)
+    {
+        var response = context.Response;
+
+        // Gate — capability key on the query string, like /poll: the drain must not leak queued answers to an
+        // unauthorized reader (a guessed ephemeral port is not enough).
+        if (!_session.Key.Matches(context.Request.QueryString["key"]))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        var drained = _answers.Drain();
         WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
     }
 
