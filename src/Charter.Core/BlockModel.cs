@@ -159,9 +159,10 @@ internal static class CharterMarkdown
     /// Classify a <c>:::</c> custom container by its info string: <c>diagram</c> → a Mermaid
     /// <see cref="BlockKind.Diagram"/>, <c>comparison</c> → a per-row-annotatable
     /// <see cref="BlockKind.Comparison"/>, <c>diff</c> → a per-line-annotatable
-    /// <see cref="BlockKind.Diff"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything
-    /// else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram, comparison
-    /// and diff kinds while leaving the existing note/warn behavior untouched.
+    /// <see cref="BlockKind.Diff"/>, <c>question</c> → a native-form <see cref="BlockKind.Question"/>,
+    /// <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything else (including <c>note</c>) → a
+    /// <see cref="BlockKind.Note"/> callout. Adds the M4 diagram, comparison, diff and question kinds while
+    /// leaving the existing note/warn behavior untouched.
     /// </summary>
     private static BlockKind ClassifyContainer(CustomContainer container)
     {
@@ -180,6 +181,11 @@ internal static class CharterMarkdown
             return BlockKind.Diff;
         }
 
+        if (IsQuestion(container))
+        {
+            return BlockKind.Question;
+        }
+
         return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
     }
 
@@ -191,6 +197,9 @@ internal static class CharterMarkdown
 
     private static bool IsDiff(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "diff", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsQuestion(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "question", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);

@@ -116,11 +116,15 @@ public static class CharterRenderer
 /// Renders the Charter custom containers whose markup diverges from the default callout <c>&lt;div&gt;</c>:
 /// a <c>:::diagram</c> as <c>&lt;pre class="mermaid" id="..."&gt;…mermaid source…&lt;/pre&gt;</c> (the block's
 /// stable id on the <c>&lt;pre&gt;</c> root where the diagram-node annotation binds, with the raw Mermaid
-/// source preserved as element text for the client library), and a <c>:::diff</c> as a
+/// source preserved as element text for the client library), a <c>:::diff</c> as a
 /// <c>&lt;div class="diff" id="..."&gt;</c> whose every diff LINE is its own
-/// <c>&lt;div class="diff-line diff-add|diff-del|diff-context" data-anchor="..." id="..."&gt;</c> — the
-/// per-line sub-anchor a reviewer's note binds to. Every other container (<c>:::note</c>, <c>:::warn</c>,
-/// <c>:::comparison</c>) falls through to the default <see cref="HtmlCustomContainerRenderer"/>.
+/// <c>&lt;div class="diff-line diff-add|diff-del|diff-context" data-anchor="..." id="..."&gt;</c> (the
+/// per-line sub-anchor a reviewer's note binds to), and a <c>:::question</c> as a native HTML
+/// <c>&lt;form id="..." data-question-id="..."&gt;</c> whose controls match the parsed
+/// <see cref="QuestionSpec"/>'s mode (radios for single, checkboxes for multi, a textarea for free-text, a
+/// number input for number, a checkbox for bool) — plain native HTML that needs no Charter JS to display.
+/// Every other container (<c>:::note</c>, <c>:::warn</c>, <c>:::comparison</c>) falls through to the default
+/// <see cref="HtmlCustomContainerRenderer"/>.
 /// </summary>
 internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 {
@@ -138,6 +142,10 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         else if (string.Equals(info, "diff", StringComparison.OrdinalIgnoreCase))
         {
             WriteDiff(renderer, obj);
+        }
+        else if (string.Equals(info, "question", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteQuestion(renderer, obj);
         }
         else
         {
@@ -159,7 +167,7 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         // Preserve the Mermaid source EXACTLY as authored rather than markdown-rendering it: the client library
         // reads the element's textContent, so any inline formatting would corrupt the graph. Slice the raw
         // source the inner blocks span straight from the markdown, HTML-escaped so it survives into the element.
-        renderer.WriteEscape(DiagramSource(obj));
+        renderer.WriteEscape(ContainerBody(obj));
 
         if (renderer.EnableHtmlForBlock)
         {
@@ -210,6 +218,94 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         }
     }
 
+    /// <summary>
+    /// Render a <c>:::question</c> as a native HTML <c>&lt;form&gt;</c>. The body is parsed via
+    /// <see cref="QuestionSpec.Parse(string)"/> (the single source of truth for the question schema — the
+    /// renderer never re-declares it), and the form root carries the block's stable id (the annotation
+    /// anchor) plus the question id (<c>data-question-id</c> AND a hidden field) so a submitted answer
+    /// correlates back to its question. Each answer mode maps to its native control; the markup is plain HTML
+    /// that displays with NO Charter JS — the serve-time submit wiring is added later by the SDK (task 15),
+    /// never embedded here.
+    /// </summary>
+    private void WriteQuestion(HtmlRenderer renderer, CustomContainer obj)
+    {
+        var spec = QuestionSpec.Parse(ContainerBody(obj));
+
+        renderer.EnsureLine();
+        if (!renderer.EnableHtmlForBlock)
+        {
+            return;
+        }
+
+        renderer.Write("<form class=\"question\"");
+        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        renderer.Write(" data-question-id=\"");
+        renderer.WriteEscape(spec.Id);
+        renderer.WriteLine("\">");
+
+        // The question id also rides a hidden field, so a native (JS-free) submit still posts which question
+        // the answer belongs to — data attributes alone are not submitted with a plain <form>.
+        renderer.Write("<input type=\"hidden\" name=\"question-id\" value=\"");
+        renderer.WriteEscape(spec.Id);
+        renderer.WriteLine("\" />");
+
+        renderer.Write("<fieldset><legend>");
+        renderer.WriteEscape(spec.Title);
+        renderer.WriteLine("</legend>");
+
+        WriteQuestionControls(renderer, spec);
+
+        renderer.WriteLine("</fieldset>");
+        renderer.WriteLine("</form>");
+    }
+
+    /// <summary>
+    /// Emit the native control(s) for the question's <see cref="QuestionSpec.Mode"/>: <c>single</c> → one
+    /// radio per option, <c>multi</c> → one checkbox per option, <c>free-text</c> → a <c>&lt;textarea&gt;</c>,
+    /// <c>number</c> → a number input, <c>bool</c> → a single checkbox. Every option label appears alongside
+    /// its control.
+    /// </summary>
+    private static void WriteQuestionControls(HtmlRenderer renderer, QuestionSpec spec)
+    {
+        switch (spec.Mode)
+        {
+            case QuestionMode.SingleSelect:
+                WriteOptionControls(renderer, spec.Options, "radio");
+                break;
+            case QuestionMode.MultiSelect:
+                WriteOptionControls(renderer, spec.Options, "checkbox");
+                break;
+            case QuestionMode.FreeText:
+                renderer.WriteLine("<textarea name=\"answer\"></textarea>");
+                break;
+            case QuestionMode.Number:
+                renderer.WriteLine("<input type=\"number\" name=\"answer\" />");
+                break;
+            case QuestionMode.Bool:
+                renderer.WriteLine("<label><input type=\"checkbox\" name=\"answer\" value=\"true\" /> Yes</label>");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Write one <c>&lt;label&gt;&lt;input type="{inputType}" …/&gt; {option}&lt;/label&gt;</c> per option —
+    /// a radio (single-select) or checkbox (multi-select) carrying the option as both its submitted value and
+    /// its visible label.
+    /// </summary>
+    private static void WriteOptionControls(HtmlRenderer renderer, IReadOnlyList<string> options, string inputType)
+    {
+        foreach (var option in options)
+        {
+            renderer.Write("<label><input type=\"");
+            renderer.Write(inputType);
+            renderer.Write("\" name=\"answer\" value=\"");
+            renderer.WriteEscape(option);
+            renderer.Write("\" /> ");
+            renderer.WriteEscape(option);
+            renderer.WriteLine("</label>");
+        }
+    }
+
     /// <summary>Write an <c>id="…"</c> attribute when the block carries a stable id.</summary>
     private static void WriteId(HtmlRenderer renderer, string? id)
     {
@@ -221,7 +317,12 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         }
     }
 
-    private string DiagramSource(CustomContainer obj)
+    /// <summary>
+    /// The exact raw source text a container's inner blocks span — the Mermaid source for a
+    /// <c>:::diagram</c>, the JSON body for a <c>:::question</c>. Sliced straight from the markdown so it is
+    /// preserved verbatim (never markdown-rendered).
+    /// </summary>
+    private string ContainerBody(CustomContainer obj)
     {
         if (obj.Count == 0 || _markdown.Length == 0)
         {
