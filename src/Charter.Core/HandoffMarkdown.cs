@@ -249,7 +249,14 @@ public static class HandoffMarkdown
     private static string EmitQuestion(string rawContent, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
     {
         var body = string.Join("\n", InnerLines(rawContent));
-        var spec = QuestionSpec.Parse(body);
+
+        // Degrade a malformed/empty :::question to a clearly-flagged line rather than throwing (which would
+        // abort the whole handoff). The flag is a single blockquote line, so it never starts a line with :::
+        // (invariant 5), and every other block still emits.
+        if (!QuestionSpec.TryParse(body, out var spec, out var error) || spec is null)
+        {
+            return $"> **Malformed question (could not parse): {error}**";
+        }
 
         if (answers is not null && answers.TryGetValue(spec.Id, out var values))
         {

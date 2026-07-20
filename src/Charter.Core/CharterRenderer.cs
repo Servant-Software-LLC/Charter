@@ -22,7 +22,25 @@ public static class CharterRenderer
     public static string Render(string markdown)
     {
         markdown ??= string.Empty;
-        var document = CharterMarkdown.ParseDocument(markdown);
+
+        MarkdownDocument document;
+        try
+        {
+            document = CharterMarkdown.ParseDocument(markdown);
+        }
+        catch (ArgumentException)
+        {
+            // Markdig aborts pathologically deep nesting (e.g. hundreds of nested blockquotes) with an
+            // ArgumentException from ParseDocument. Degrade to a visible, escaped placeholder rather than
+            // letting the whole render — and thus the served review page, export, and handoff — throw.
+            using var errorWriter = new StringWriter();
+            var errorRenderer = new HtmlRenderer(errorWriter);
+            errorRenderer.Write("<div class=\"charter-parse-error\">");
+            errorRenderer.WriteEscape("The plan could not be parsed (input too deeply nested).");
+            errorRenderer.Write("</div>");
+            errorWriter.Flush();
+            return errorWriter.ToString();
+        }
 
         var hasDiagram = false;
         foreach (var node in document)
@@ -229,16 +247,29 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// </summary>
     private void WriteQuestion(HtmlRenderer renderer, CustomContainer obj)
     {
-        var spec = QuestionSpec.Parse(ContainerBody(obj));
-
         renderer.EnsureLine();
         if (!renderer.EnableHtmlForBlock)
         {
             return;
         }
 
+        var id = obj.TryGetAttributes()?.Id;
+
+        // Degrade a malformed/empty :::question to a visible placeholder rather than throwing (which would
+        // abort the whole render — and thus the served page / export). The placeholder KEEPS the block's
+        // stable id so a reviewer can still annotate it, and every other block still renders.
+        if (!QuestionSpec.TryParse(ContainerBody(obj), out var spec, out var error) || spec is null)
+        {
+            renderer.Write("<div class=\"question-error\"");
+            WriteId(renderer, id);
+            renderer.Write('>');
+            renderer.WriteEscape(error ?? "The :::question block could not be parsed.");
+            renderer.WriteLine("</div>");
+            return;
+        }
+
         renderer.Write("<form class=\"question\"");
-        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        WriteId(renderer, id);
         renderer.Write(" data-question-id=\"");
         renderer.WriteEscape(spec.Id);
         renderer.WriteLine("\">");
