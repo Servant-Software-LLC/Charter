@@ -8,4 +8,16 @@
     <PackageReference Include="Markdig" Version="0.37.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Vendor the pinned Mermaid runtime (assets/mermaid.min.js, v11.16.0, MIT) into the assembly so a
+         rendered :::diagram ships the library INSIDE the saved HTML and opens standalone with no network
+         (load-bearing invariant 1 — portable artifact). NEVER a CDN <script src>: that breaks offline use
+         and is a supply-chain/egress surface Charter's zero-telemetry posture forbids. Mirrors how
+         Charter.Server embeds sdk/charter-annotate.js. The LogicalName is the stable manifest key
+         MermaidResource reads it back by. -->
+    <EmbeddedResource Include="assets\mermaid.min.js">
+      <LogicalName>Charter.Core.mermaid.min.js</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>
