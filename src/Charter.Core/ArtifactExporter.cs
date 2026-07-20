@@ -110,8 +110,33 @@ public static partial class ArtifactExporter
         }
 
         builder.Append(TransformNonScript(html[cursor..]));
-        return builder.ToString();
+
+        // Wrap the self-contained body in a minimal document carrying a restrictive CSP in the head. The
+        // policy allows ONLY the inlined offline runtime (inline script/style, data: images and fonts) and
+        // forbids every remote/off-machine connection (default-src 'none' + connect-src 'none') — so the
+        // shipped artifact can never fetch or phone home, while a saved :::diagram still renders from its
+        // inlined Mermaid bytes. The serve-time SDK is never present here (it needs connect-src and is added
+        // by the server, not export), so no CSP is emitted by the renderer's serve path.
+        return WrapWithCspDocument(builder.ToString());
     }
+
+    /// <summary>The restrictive Content-Security-Policy stamped into every exported artifact.</summary>
+    private const string ContentSecurityPolicy =
+        "default-src 'none'; img-src data:; style-src 'unsafe-inline'; " +
+        "script-src 'unsafe-inline'; font-src data:; connect-src 'none'";
+
+    /// <summary>
+    /// Wrap the transformed body in a minimal HTML document whose head carries the export CSP (and a UTF-8
+    /// charset). The body is emitted verbatim between <c>&lt;body&gt;</c> tags, so the exact rendered content
+    /// is preserved as a contiguous run.
+    /// </summary>
+    private static string WrapWithCspDocument(string body)
+        => "<!doctype html>\n<html>\n<head>\n" +
+           "<meta charset=\"utf-8\" />\n" +
+           $"<meta http-equiv=\"Content-Security-Policy\" content=\"{ContentSecurityPolicy}\" />\n" +
+           "</head>\n<body>\n" +
+           body +
+           "\n</body>\n</html>\n";
 
     /// <summary>
     /// Resolve, confine, size-check and read one local asset. Returns its bytes on success, otherwise the

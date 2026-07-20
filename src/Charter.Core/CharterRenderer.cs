@@ -165,10 +165,36 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         {
             WriteQuestion(renderer, obj);
         }
+        else if (string.Equals(info, "custom-html", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteCustomHtml(renderer, obj);
+        }
         else
         {
             base.Write(renderer, obj);
         }
+    }
+
+    /// <summary>
+    /// Render a <c>:::custom-html</c> container as the sanctioned raw-HTML escape hatch: emit its inner source
+    /// VERBATIM (unescaped) so the author's explicitly opted-in HTML stays live. This is the ONE block where
+    /// raw HTML is intentional — every other surface escapes it (the pipeline's <c>DisableHtml</c>), so bare
+    /// prose HTML can never phone home or run, but a deliberate <c>:::custom-html</c> block still can. The
+    /// block's stable id rides the wrapping <c>&lt;div&gt;</c> so the escape-hatch content stays annotatable.
+    /// </summary>
+    private void WriteCustomHtml(HtmlRenderer renderer, CustomContainer obj)
+    {
+        renderer.EnsureLine();
+        if (!renderer.EnableHtmlForBlock)
+        {
+            return;
+        }
+
+        renderer.Write("<div class=\"custom-html\"");
+        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        renderer.Write('>');
+        renderer.Write(ContainerBody(obj)); // RAW, not escaped — the escape hatch
+        renderer.WriteLine("</div>");
     }
 
     private void WriteDiagram(HtmlRenderer renderer, CustomContainer obj)
