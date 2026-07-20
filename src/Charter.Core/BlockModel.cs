@@ -144,7 +144,7 @@ internal static class CharterMarkdown
             HeadingBlock => BlockKind.Heading,
             ListBlock => BlockKind.List,
             Table => BlockKind.Table,
-            CustomContainer container => IsWarn(container) ? BlockKind.Warn : BlockKind.Note,
+            CustomContainer container => ClassifyContainer(container),
             CodeBlock => BlockKind.Code,
             _ => BlockKind.Prose,
         };
@@ -154,6 +154,25 @@ internal static class CharterMarkdown
 
     /// <summary>The 1-based markdown line where <paramref name="node"/> starts.</summary>
     internal static int StartLine(MarkdigBlock node) => node.Line + 1;
+
+    /// <summary>
+    /// Classify a <c>:::</c> custom container by its info string: <c>diagram</c> → a Mermaid
+    /// <see cref="BlockKind.Diagram"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything
+    /// else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram kind while
+    /// leaving the existing note/warn behavior untouched.
+    /// </summary>
+    private static BlockKind ClassifyContainer(CustomContainer container)
+    {
+        if (IsDiagram(container))
+        {
+            return BlockKind.Diagram;
+        }
+
+        return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
+    }
+
+    private static bool IsDiagram(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "diagram", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);
