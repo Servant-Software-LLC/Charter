@@ -259,6 +259,50 @@ public class HandoffMarkdownTests
     }
 
     [Fact]
+    public void Emit_DiffBodyContainingBacktickFences_StaysOneCodeBlock()
+    {
+        // A :::diff of a markdown file whose body itself contains ``` fence lines. Diff context lines carry a
+        // leading space, so " ``` " is a 3-backtick line indented one space — a VALID CommonMark closing
+        // fence for a hard-coded 3-backtick opener. Emitting the body inside a 3-backtick fence would let the
+        // inner ``` close the block early and split it into misattributed blocks; the emitted fence must be
+        // longer than any inner backtick run so the whole body stays ONE code block (no breakout).
+        const string diffDoc =
+            ":::diff\n" +
+            " ```\n" +
+            " unchanged code line\n" +
+            " ```\n" +
+            ":::";
+
+        var blocks = BlockDocument.Parse(HandoffMarkdown.Emit(diffDoc)).Blocks;
+
+        var code = Assert.Single(blocks);
+        Assert.Equal(BlockKind.Code, code.Kind);
+        Assert.Contains("unchanged code line", code.RawContent);
+        Assert.Contains("```", code.RawContent);
+    }
+
+    [Fact]
+    public void Emit_DiagramBodyContainingBacktickFences_StaysOneCodeBlock()
+    {
+        // The same breakout risk for a :::diagram whose body carries bare ``` lines: a hard-coded 3-backtick
+        // ```mermaid wrapper would be closed early by the inner ```; the fence must exceed the inner run so the
+        // whole Mermaid source survives as ONE code block.
+        const string diagramDoc =
+            ":::diagram\n" +
+            "```\n" +
+            "graph TD; A-->B;\n" +
+            "```\n" +
+            ":::";
+
+        var blocks = BlockDocument.Parse(HandoffMarkdown.Emit(diagramDoc)).Blocks;
+
+        var code = Assert.Single(blocks);
+        Assert.Equal(BlockKind.Code, code.Kind);
+        Assert.Contains("graph TD; A-->B;", code.RawContent);
+        Assert.Contains("```", code.RawContent);
+    }
+
+    [Fact]
     public void Emit_MixedDocument_PreservesCrossBlockSourceOrder()
     {
         // Heading, then :::note, then :::diagram, then a trailing paragraph.
