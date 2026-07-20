@@ -8,9 +8,9 @@ browser and **comment right on the deliverable**, so every note carries the cont
 it points at. The approved plan is then handed to **[Guardrails]** to be broken down into an
 executable, verified task DAG.
 
-> **Status: early scaffold.** The solution builds, packs as a `dotnet` tool, and ships as a native
-> binary through the release pipeline. The MDX renderer, local review server, and annotation loop
-> are the next milestones.
+> **Status:** the MDX renderer, loopback review server, in-place annotation loop, offline export, and
+> Guardrails handoff are all implemented and shipping in the binary. Charter builds, its tests are
+> green, and it packs as a `dotnet` tool / native binary.
 
 ## Why
 
@@ -30,20 +30,54 @@ Charter  →  Guardrails  →  firstmate / gnhf
   deterministic acceptance checks ("guardrails"), then runs the DAG to green.
 - **[firstmate]** / **[gnhf]** — agent orchestrators that do the actual work under those guardrails.
 
-## How it will work (roadmap)
+## Usage
 
-- Author the plan as **MDX blocks** — markdown plus a small, fixed block catalog (diagram, table,
-  comparison, code/diff, question) — rendered to a portable HTML deliverable.
-- `charter <plan.mdx>` opens a **local review server** in the browser; you annotate elements, text
-  ranges, and diagram nodes; feedback returns to the agent through a `poll` loop.
-- Distributed like Guardrails: a self-contained **native binary** via a Homebrew tap and SDK-free
-  installers, plus a `dotnet tool` on NuGet — **no .NET runtime required** for consumers.
+Charter is a CLI over a single plan file. An AI authors the plan as block-structured markdown — a
+small, fixed block catalog (diagram, table, comparison, code/diff, question) — and you drive it
+through four verbs:
+
+- `charter render <plan.mdx> -o <out.html>` — renders a plan to one portable HTML artifact.
+- `charter review <plan.mdx> [--no-open]` — serves the plan over the loopback review server
+  (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you can
+  annotate elements, text ranges, and diagram nodes **in place**. `--no-open` serves without
+  launching a browser.
+- `charter export <plan.mdx> -o <out.html>` — writes a self-contained, **offline** artifact with
+  every local asset inlined as a `data:` URI — no server, no runtime, portable anywhere.
+- `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]` — emits plain CommonMark for
+  Guardrails, resolving each `:::question` against the optional `--answers` JSON file (open
+  questions that have no answer are handed off flagged).
+- `charter --version` — prints the version.
+
+A typical author → review → handoff pass:
+
+```bash
+# 1. Review the plan: serves it locally and opens the browser to annotate in place
+charter review plan.mdx
+
+# 2. Export a portable, offline copy of the reviewed deliverable
+charter export plan.mdx -o plan.html
+
+# 3. Hand the approved plan off to Guardrails as plain CommonMark
+charter handoff plan.mdx -o plan.md --answers answers.json
+```
+
+If you're driving Charter from an agent, a bundled usage skill lives at `skills/charter/`.
+
+## Still ahead
+
+A few capabilities are deliberately **out of v1**, each tracked as its own issue so it outlives the
+plan:
+
+- **Recap mode** — building a plan from a diff (`charter recap`), a v2 addition.
+- **Hosted share / publish** — v1 produces local artifacts only; nothing is hosted or published for
+  you.
+- **Telemetry** — v1 ships **none**: zero analytics dependency, zero data egress. Any future
+  telemetry would be strictly opt-in and vendor-neutral, never Lavish's default-on model.
 
 ## Install
 
-_Coming with the first release._ It will mirror Guardrails:
-`brew install servant-software-llc/tap/charter`, a `curl … | bash` installer, or
-`dotnet tool install --global ServantSoftware.Charter`.
+There's no published release, Homebrew tap, or NuGet package yet — those are gated on the first
+real release. Build from source today.
 
 ## Build from source
 
