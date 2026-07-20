@@ -170,9 +170,11 @@ public static partial class ArtifactExporter
     /// Resolve <paramref name="reference"/> to an absolute path CONFINED to <paramref name="normalizedRoot"/>,
     /// returning <c>null</c> when it escapes. Strips a <c>file://</c> scheme first (via <see cref="Uri"/>, so a
     /// Windows <c>file:///C:/…</c> URI maps to a real OS path), then canonicalizes with
-    /// <see cref="Path.GetFullPath(string)"/> relative to the root. The containment test mirrors
-    /// <c>Charter.Server.PathConfinement.Resolve</c>: accept only when the resolved path EQUALS the root or
-    /// starts with the root plus a directory separator — never a bare string-prefix match.
+    /// <see cref="Path.GetFullPath(string)"/> relative to the root. Containment is tested twice: first
+    /// LEXICALLY (mirroring <c>Charter.Server.PathConfinement.Resolve</c> — accept only when the resolved path
+    /// EQUALS the root or starts with the root plus a directory separator, never a bare string-prefix match),
+    /// then PHYSICALLY (<see cref="EscapesViaReparsePoint"/>) so a symlink/junction textually inside the root
+    /// but resolving OUTSIDE it is refused rather than having its out-of-root bytes inlined.
     /// </summary>
     private static string? ResolveConfined(string reference, string normalizedRoot)
     {
@@ -184,23 +186,129 @@ public static partial class ArtifactExporter
 
             var full = Path.GetFullPath(Path.Combine(normalizedRoot, candidate));
 
-            var comparison = OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
-
-            if (full.Equals(normalizedRoot, comparison))
+            if (!IsContained(full, normalizedRoot))
             {
-                return full;
+                return null;
             }
 
-            var rootPrefix = normalizedRoot + Path.DirectorySeparatorChar;
-            return full.StartsWith(rootPrefix, comparison) ? full : null;
+            return EscapesViaReparsePoint(full, normalizedRoot) ? null : full;
         }
         catch (UriFormatException)
         {
             return null;
         }
         catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is the root itself or lies beneath it — separator-safe, so a sibling
+    /// that merely shares the root as a raw string prefix (<c>plan-evil</c> vs <c>plan</c>) is NOT contained.
+    /// </summary>
+    private static bool IsContained(string path, string normalizedRoot)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        return path.Equals(normalizedRoot, comparison)
+            || path.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    /// <summary>
+    /// Walk every path component strictly BELOW <paramref name="normalizedRoot"/> and return true when one is a
+    /// reparse point (symlink or junction) whose resolved final target ESCAPES the root — <c>Path.GetFullPath</c>
+    /// is lexical and never follows reparse points, so a link textually inside the root can smuggle out-of-root
+    /// bytes into the shipped artifact. Only components inside the root are examined: the root and its ancestors
+    /// are trusted and never resolved (on macOS the temp root's ancestors — e.g. <c>/tmp</c> — are themselves
+    /// symlinks, and the root was canonicalized lexically to match). A missing or inaccessible component is not
+    /// an escape here; the caller's <see cref="File.Exists(string)"/> / read guards handle absence.
+    /// </summary>
+    private static bool EscapesViaReparsePoint(string full, string normalizedRoot)
+    {
+        var relative = Path.GetRelativePath(normalizedRoot, full);
+        if (relative.Length == 0 || relative == "." || Path.IsPathRooted(relative)
+            || relative.StartsWith("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var current = normalizedRoot;
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            current = Path.Combine(current, segment);
+
+            var attributes = SafeGetAttributes(current);
+            if (attributes is not { } attrs || (attrs & FileAttributes.ReparsePoint) == 0)
+            {
+                continue;
+            }
+
+            var target = ResolveFinalTarget(current, (attrs & FileAttributes.Directory) != 0);
+            if (target is null || !IsContained(target, normalizedRoot))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The attributes of the entry AT <paramref name="path"/> (a symlink's OWN attributes, reparse flag
+    /// included — <see cref="File.GetAttributes(string)"/> does not follow the link), or <c>null</c> when the
+    /// path is missing or inaccessible.
+    /// </summary>
+    private static FileAttributes? SafeGetAttributes(string path)
+    {
+        try
+        {
+            return File.GetAttributes(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The canonical final target of a reparse-point <paramref name="path"/> (following the whole link chain),
+    /// as an absolute path, or <c>null</c> when it cannot be resolved.
+    /// </summary>
+    private static string? ResolveFinalTarget(string path, bool isDirectory)
+    {
+        try
+        {
+            var target = isDirectory
+                ? Directory.ResolveLinkTarget(path, returnFinalTarget: true)
+                : File.ResolveLinkTarget(path, returnFinalTarget: true);
+
+            return target is null ? null : Path.GetFullPath(target.FullName);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
         {
             return null;
         }

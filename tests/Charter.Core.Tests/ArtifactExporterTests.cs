@@ -380,6 +380,45 @@ public class ArtifactExporterTests
             Assert.Contains("/docs/local-guide", html);
         });
 
+    /// <summary>
+    /// 17. A directory symlink created INSIDE the confinement root but pointing OUTSIDE it does not smuggle
+    /// out-of-root bytes into the artifact: <c>Path.GetFullPath</c> is lexical and would leave the link
+    /// textually contained, so the exporter must resolve the reparse point, see its target escapes the root,
+    /// and omit the asset exactly like a missing/traversal reference. Guarded to platforms that permit link
+    /// creation — skipped cleanly where creating a symlink is not allowed (no privilege / not supported).
+    /// </summary>
+    [Fact]
+    public void Export_SymlinkEscapingRoot_DoesNotInlineOutOfRootFile()
+        => WithScratch((root, planDirectory) =>
+        {
+            var outsideDir = Path.Combine(root, "outside");
+            Directory.CreateDirectory(outsideDir);
+            var secretBytes = Filled(0x5A, 40);
+            File.WriteAllBytes(Path.Combine(outsideDir, "secret.png"), secretBytes);
+
+            var linkPath = Path.Combine(planDirectory, "escape");
+            try
+            {
+                Directory.CreateSymbolicLink(linkPath, outsideDir);
+            }
+            catch (System.Exception ex)
+                when (ex is IOException or System.UnauthorizedAccessException or System.PlatformNotSupportedException)
+            {
+                return; // link creation not permitted on this platform/run — skip cleanly
+            }
+
+            // The link is textually inside planDirectory; a lexical-only confinement check would accept
+            // ./escape/secret.png and base64-inline the out-of-root secret. The reparse-point resolution must
+            // refuse it.
+            const string markdown = "![Smuggled](./escape/secret.png)";
+            var html = ArtifactExporter.Export(markdown, planDirectory);
+
+            Assert.DoesNotContain(System.Convert.ToBase64String(secretBytes), html);
+            Assert.DoesNotContain("data:image/png;base64,", html);
+            Assert.Contains("data-charter-export-omitted=\"not-found\"", html);
+            Assert.DoesNotContain(outsideDir, html);
+        });
+
     // --- helpers ---------------------------------------------------------------------------------------
 
     /// <summary>
