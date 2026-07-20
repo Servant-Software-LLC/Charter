@@ -36,6 +36,15 @@ if (args.Length >= 1 && args[0] == "review")
     return BuildReviewRoot().Parse(args).Invoke();
 }
 
+// `charter export <plan.mdx> -o <out.html>`: render the plan and, via Charter.Core.ArtifactExporter,
+// inline every local asset as a data: URI and scrub any remaining local path into one TRULY offline,
+// SDK-free HTML artifact, then write it. Parsed with System.CommandLine, parallel to `render`; only
+// entered for the `export` verb so the banner / --version behavior above stays exactly as-is.
+if (args.Length >= 1 && args[0] == "export")
+{
+    return BuildExportRoot().Parse(args).Invoke();
+}
+
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
@@ -90,6 +99,60 @@ static RootCommand BuildRenderRoot()
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
         render,
+    };
+}
+
+// Builds the root command hosting the `export` subcommand wired to Charter.Core.ArtifactExporter.
+static RootCommand BuildExportRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the Charter plan (.mdx) to export.",
+    };
+    var outOption = new Option<string>("--out", "-o")
+    {
+        Description = "Path to write the self-contained, offline HTML artifact.",
+        Required = true,
+    };
+
+    var export = new Command("export", "Export a Charter plan (.mdx) to one self-contained, offline HTML file.")
+    {
+        inputArgument,
+        outOption,
+    };
+
+    export.SetAction(parseResult =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+        string outputPath = parseResult.GetValue(outOption)!;
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"charter export: input plan not found: {inputPath}");
+            return 1;
+        }
+
+        string markdown = File.ReadAllText(inputPath);
+
+        // The plan's own directory is the confinement root ArtifactExporter uses to resolve and inline the
+        // plan's local asset references; reads never escape it.
+        string planDirectory = Path.GetDirectoryName(Path.GetFullPath(inputPath))!;
+        string html = ArtifactExporter.Export(markdown, planDirectory);
+
+        string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+
+        File.WriteAllText(outputPath, html);
+        Console.WriteLine($"Exported {inputPath} -> {outputPath}");
+        return 0;
+    });
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        export,
     };
 }
 
