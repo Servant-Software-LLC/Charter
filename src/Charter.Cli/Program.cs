@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Charter.Core;
 using Charter.Server;
 using Spectre.Console;
@@ -43,6 +44,16 @@ if (args.Length >= 1 && args[0] == "review")
 if (args.Length >= 1 && args[0] == "export")
 {
     return BuildExportRoot().Parse(args).Invoke();
+}
+
+// `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]`: read the markdown and, via
+// Charter.Core.HandoffMarkdown, convert every ::: directive block into plain CommonMark Guardrails can
+// consume — resolving each :::question against the optional --answers file (or flagging it open when no
+// answer is supplied) — then write the handoff markdown. Parsed with System.CommandLine, parallel to
+// `render`; only entered for the `handoff` verb so the banner / --version behavior above stays as-is.
+if (args.Length >= 1 && args[0] == "handoff")
+{
+    return BuildHandoffRoot().Parse(args).Invoke();
 }
 
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
@@ -154,6 +165,105 @@ static RootCommand BuildExportRoot()
     {
         export,
     };
+}
+
+// Builds the root command hosting the `handoff` subcommand wired to Charter.Core.HandoffMarkdown.
+static RootCommand BuildHandoffRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the Charter plan (.mdx) to hand off.",
+    };
+    var outOption = new Option<string>("--out", "-o")
+    {
+        Description = "Path to write the plain-CommonMark handoff markdown.",
+        Required = true,
+    };
+    var answersOption = new Option<string?>("--answers")
+    {
+        Description = "Optional path to a JSON file mapping question id -> answer value(s), resolving open questions.",
+    };
+
+    var handoff = new Command("handoff", "Convert a reviewed Charter plan (.mdx) to plain-CommonMark handoff markdown for Guardrails.")
+    {
+        inputArgument,
+        outOption,
+        answersOption,
+    };
+
+    handoff.SetAction(parseResult =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+        string outputPath = parseResult.GetValue(outOption)!;
+        string? answersPath = parseResult.GetValue(answersOption);
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"charter handoff: input plan not found: {inputPath}");
+            return 1;
+        }
+
+        // --answers is OPTIONAL: when omitted, answers stays null and every :::question is handed off as an
+        // open/unresolved question (a legitimate, common case). When supplied, the file is parsed into the
+        // flat id -> value(s) shape HandoffMarkdown.Emit resolves against.
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers = null;
+        if (!string.IsNullOrEmpty(answersPath))
+        {
+            if (!File.Exists(answersPath))
+            {
+                Console.Error.WriteLine($"charter handoff: answers file not found: {answersPath}");
+                return 1;
+            }
+
+            try
+            {
+                answers = ReadAnswers(answersPath);
+            }
+            catch (JsonException ex)
+            {
+                Console.Error.WriteLine($"charter handoff: could not parse answers JSON: {ex.Message}");
+                return 1;
+            }
+        }
+
+        string markdown = File.ReadAllText(inputPath);
+        string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
+
+        string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+
+        File.WriteAllText(outputPath, handoffMarkdown);
+        Console.WriteLine($"Handed off {inputPath} -> {outputPath}");
+        return 0;
+    });
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        handoff,
+    };
+}
+
+// Parses a --answers JSON file — a flat object mapping question id -> an array of answer value strings, e.g.
+// {"q1": ["A"], "q2": ["some free-text answer"]} — into the IReadOnlyDictionary shape HandoffMarkdown.Emit
+// resolves each :::question against. This shape is DELIBERATELY minimal and distinct from
+// Charter.Server.Answer: `charter handoff` is an offline, file-in/file-out command with no dependency on a
+// running review server or a live session, so the file is hand-authored rather than drained from the API.
+static IReadOnlyDictionary<string, IReadOnlyList<string>> ReadAnswers(string answersPath)
+{
+    string json = File.ReadAllText(answersPath);
+    var raw = JsonSerializer.Deserialize<Dictionary<string, string[]>>(json)
+        ?? new Dictionary<string, string[]>();
+
+    var answers = new Dictionary<string, IReadOnlyList<string>>(raw.Count);
+    foreach (var pair in raw)
+    {
+        answers[pair.Key] = pair.Value ?? Array.Empty<string>();
+    }
+
+    return answers;
 }
 
 // Builds the root command hosting the `review` subcommand wired to Charter.Server.ReviewServer.
