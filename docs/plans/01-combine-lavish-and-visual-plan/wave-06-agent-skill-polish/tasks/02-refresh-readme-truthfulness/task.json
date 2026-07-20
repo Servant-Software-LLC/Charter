@@ -1,0 +1,6 @@
+{
+  "description": "Update README.md so its status, roadmap, install, and usage sections match reality: the renderer, loopback review server, annotation loop, export, and handoff are all IMPLEMENTED. Drop the stale 'early scaffold' status and the 'Coming with the first release' / render-review-are-future framing; document the real verbs charter render/review/export/handoff (verified against src/Charter.Cli/Program.cs) while staying honest about what is genuinely still future (v2 recap, hosted publish, telemetry - all out of v1 per the plan).",
+  "stableId": "cr6readme",
+  "dependsOn": [],
+  "writeScope": ["README.md"]
+}

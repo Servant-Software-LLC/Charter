@@ -1,0 +1,6 @@
+{
+  "description": "Update the CLI status banner in src/Charter.Cli/Program.cs (the FigletText + status MarkupLines shown on a bare `charter` invocation) so it no longer calls the tool a 'scaffold' or says the review server 'lands next' - both false now - and instead surfaces the real verb list (render/review/export/handoff). ONLY the banner text changes; the verb dispatch, --version, and all other behavior stay intact and the build stays clean under TreatWarningsAsErrors.",
+  "stableId": "cr6banner",
+  "dependsOn": [],
+  "writeScope": ["src/Charter.Cli/"]
+}

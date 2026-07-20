@@ -1,0 +1,4 @@
+{
+  "description": "Union soundness (GR2028): no git conflict markers on the wave-6 touched surface (README.md, skills/charter/, src/Charter.Cli/) after the three parallel leaf tasks fan in",
+  "scope": "integration"
+}

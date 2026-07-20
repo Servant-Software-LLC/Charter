@@ -1,0 +1,6 @@
+{
+  "description": "Author the bundled `charter` usage SKILL that ships WITH Charter and teaches a downstream agent the author -> review -> handoff workflow: write skills/charter/SKILL.md (lean, with frontmatter + when-to-use + the workflow naming the REAL verbs charter render/review/export/handoff + the block catalog incl. :::question) plus skills/charter/references/ playbooks for depth. A NORMAL repo path (NOT under .claude/), grounded in the real CLI (src/Charter.Cli/Program.cs) and the SSOT plan - it CITES the block catalog, never forks it.",
+  "stableId": "cr6skill",
+  "dependsOn": [],
+  "writeScope": ["skills/charter/"]
+}
