@@ -59,8 +59,8 @@ if (args.Length >= 1 && args[0] == "handoff")
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: [yellow]scaffold[/]. The local review server lands next; try [green]charter render[/].");
-AnsiConsole.MarkupLine("Try:    [green]charter --version[/]");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/].");
+AnsiConsole.MarkupLine("Try:    [green]charter review <plan.mdx>[/]  or  [green]charter --version[/]");
 return 0;
 
 // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
