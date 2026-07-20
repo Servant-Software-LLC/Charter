@@ -16,10 +16,10 @@ public sealed class SourceMap
     /// <summary>
     /// Build the anchor map for the given <paramref name="markdown"/>: every block's stable
     /// <see cref="Block.Id"/> maps to its 1-based markdown start line, and — the sub-block anchor model —
-    /// each per-row sub-anchor of a <c>:::comparison</c> (and, via task 08, a <c>:::diff</c>) additionally
-    /// maps to THAT row's own line. Because each anchor is derived from its own content, re-building the map
-    /// after an unrelated edit re-resolves the same anchor to its new line, and one row's anchor is
-    /// unaffected by edits to sibling rows.
+    /// each per-sub-element anchor of a <c>:::comparison</c> (per option row) or a <c>:::diff</c> (per diff
+    /// line) additionally maps to THAT sub-element's own line. Because each anchor is derived from its own
+    /// content, re-building the map after an unrelated edit re-resolves the same anchor to its new line, and
+    /// one sub-element's anchor is unaffected by edits to its siblings.
     /// </summary>
     public static SourceMap Build(string markdown)
     {
@@ -43,8 +43,9 @@ public sealed class SourceMap
             var (_, rawContent) = CharterMarkdown.Describe(node, markdown);
             Register(Block.StableId(rawContent), CharterMarkdown.StartLine(node));
 
-            // Descend into per-row-annotatable containers and register each row's sub-anchor at its own
-            // line, so LineForAnchor(rowSubId) resolves to that row — not merely the block's start line.
+            // Descend into per-sub-element containers (:::comparison rows, :::diff lines) and register each
+            // sub-anchor at its own line, so LineForAnchor(subId) resolves to that sub-element — not merely
+            // the block's start line.
             foreach (var (_, subAnchor, line) in CharterMarkdown.SubAnchors(node, markdown))
             {
                 Register(subAnchor, line);

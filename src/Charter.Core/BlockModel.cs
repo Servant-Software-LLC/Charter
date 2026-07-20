@@ -158,9 +158,10 @@ internal static class CharterMarkdown
     /// <summary>
     /// Classify a <c>:::</c> custom container by its info string: <c>diagram</c> → a Mermaid
     /// <see cref="BlockKind.Diagram"/>, <c>comparison</c> → a per-row-annotatable
-    /// <see cref="BlockKind.Comparison"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and
-    /// everything else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram
-    /// and comparison kinds while leaving the existing note/warn behavior untouched.
+    /// <see cref="BlockKind.Comparison"/>, <c>diff</c> → a per-line-annotatable
+    /// <see cref="BlockKind.Diff"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything
+    /// else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram, comparison
+    /// and diff kinds while leaving the existing note/warn behavior untouched.
     /// </summary>
     private static BlockKind ClassifyContainer(CustomContainer container)
     {
@@ -174,6 +175,11 @@ internal static class CharterMarkdown
             return BlockKind.Comparison;
         }
 
+        if (IsDiff(container))
+        {
+            return BlockKind.Diff;
+        }
+
         return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
     }
 
@@ -183,41 +189,60 @@ internal static class CharterMarkdown
     private static bool IsComparison(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "comparison", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsDiff(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "diff", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The reusable sub-anchor descent — the foundation of the sub-block anchor model. For a container that
-    /// is annotatable per-row (<c>:::comparison</c> today; <c>:::diff</c> once task 08 extends
-    /// <see cref="SubAnchorRows"/>), yield each row paired with its content-derived sub-anchor and its
-    /// 1-based markdown line. A row's sub-anchor is <see cref="Block.StableId(string)"/> of that row's OWN
-    /// raw source line, so an annotation on one row survives edits to sibling rows (content-derived, never
-    /// positional — invariant 2). Any other node yields nothing, so both the renderer (which stamps each
-    /// row's <c>data-anchor</c>) and the <see cref="SourceMap"/> (which registers sub-anchor → row line) can
+    /// is annotatable per sub-element — a <c>:::comparison</c> (per option row) or a <c>:::diff</c> (per diff
+    /// line) — yield each sub-element paired with its content-derived sub-anchor and its 1-based markdown
+    /// line. A sub-anchor is <see cref="Block.StableId(string)"/> of that sub-element's OWN raw source text,
+    /// so an annotation on one survives edits to its siblings (content-derived, never positional —
+    /// invariant 2). Any other node yields nothing, so both the renderer (which stamps each comparison row's
+    /// <c>data-anchor</c>) and the <see cref="SourceMap"/> (which registers every sub-anchor → its line) can
     /// call this uniformly over every top-level node.
     /// </summary>
     internal static IEnumerable<(MarkdigBlock Row, string SubAnchor, int Line)> SubAnchors(MarkdigBlock node, string markdown)
     {
-        if (node is not CustomContainer container || ClassifyContainer(container) != BlockKind.Comparison)
+        if (node is not CustomContainer container)
         {
             yield break;
         }
 
-        foreach (var row in SubAnchorRows(container))
+        var kind = ClassifyContainer(container);
+        if (kind == BlockKind.Comparison)
         {
-            var rawLine = SourceLine(markdown, row.Line);
-            if (rawLine.Length == 0)
+            foreach (var row in SubAnchorRows(container))
             {
-                continue;
-            }
+                var rawLine = SourceLine(markdown, row.Line);
+                if (rawLine.Length == 0)
+                {
+                    continue;
+                }
 
-            yield return (row, Block.StableId(rawLine), StartLine(row));
+                yield return (row, Block.StableId(rawLine), StartLine(row));
+            }
+        }
+        else if (kind == BlockKind.Diff)
+        {
+            // A :::diff's annotatable sub-elements are its individual diff LINES, which parse as one
+            // paragraph of soft-broken lines rather than child blocks — so the sub-element is a source LINE,
+            // handled by DiffLines. It still feeds the SAME (sub-anchor, line) contract: each line's
+            // sub-anchor is Block.StableId of that line's OWN trimmed text (marker included).
+            foreach (var line in DiffLines(container, markdown))
+            {
+                yield return (container, Block.StableId(line.Trimmed), line.Line);
+            }
         }
     }
 
     /// <summary>
-    /// The annotatable rows of a sub-anchored container. A <c>:::comparison</c>'s rows are its option list
-    /// items; task 08 extends this same descent with a <c>:::diff</c>'s per-line rows.
+    /// The annotatable rows of a <c>:::comparison</c> — its option list items. (A <c>:::diff</c>'s
+    /// sub-elements are per-line source lines, not child blocks, so they are handled by
+    /// <see cref="DiffLines"/> rather than this block-level descent.)
     /// </summary>
     private static IEnumerable<MarkdigBlock> SubAnchorRows(CustomContainer container)
     {
@@ -232,6 +257,63 @@ internal static class CharterMarkdown
             }
         }
     }
+
+    /// <summary>
+    /// The per-line descent for a <c>:::diff</c> container: yield each diff LINE with its raw source text,
+    /// its trimmed text (the input to the line's content-derived sub-anchor), its 1-based markdown line, and
+    /// the add/del/context CSS class implied by its leading marker. The diff body parses as a single
+    /// paragraph of soft-broken lines, so the sub-element is a source LINE — not a child block like a
+    /// comparison row — but it feeds the SAME <see cref="SubAnchors"/> contract and the renderer's per-line
+    /// markup, so both agree on exactly one anchor per line.
+    /// </summary>
+    internal static IEnumerable<(string Raw, string Trimmed, int Line, string CssClass)> DiffLines(CustomContainer container, string markdown)
+    {
+        if (markdown.Length == 0)
+        {
+            yield break;
+        }
+
+        foreach (var child in container)
+        {
+            var span = child.Span;
+            if (span.IsEmpty)
+            {
+                continue;
+            }
+
+            var start = Math.Clamp(span.Start, 0, markdown.Length - 1);
+            var end = Math.Clamp(span.End, start, markdown.Length - 1);
+            var text = markdown.Substring(start, end - start + 1)
+                               .Replace("\r\n", "\n", StringComparison.Ordinal)
+                               .Replace('\r', '\n');
+
+            var rawLines = text.Split('\n');
+            for (var i = 0; i < rawLines.Length; i++)
+            {
+                var raw = rawLines[i];
+                var trimmed = raw.Trim();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                // child.Line is the 0-based source line of this child's first line; each '\n' in the
+                // contiguous slice advances exactly one source line, so line i sits at child.Line + i
+                // (rendered 1-based as child.Line + 1 + i).
+                yield return (raw, trimmed, child.Line + 1 + i, DiffLineClass(raw));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The add/del/context class of a diff line, from its leading unified-diff marker: <c>+</c> → added,
+    /// <c>-</c> → removed, anything else (a leading space or bare text) → unchanged context. The marker is
+    /// part of the line's content, so an added and a removed line hash to distinct sub-anchors.
+    /// </summary>
+    private static string DiffLineClass(string raw)
+        => raw.Length > 0 && raw[0] == '+' ? "diff-add"
+         : raw.Length > 0 && raw[0] == '-' ? "diff-del"
+         : "diff-context";
 
     /// <summary>
     /// The trimmed source text of the given 0-based markdown line, or empty when out of range. A row's

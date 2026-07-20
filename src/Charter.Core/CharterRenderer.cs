@@ -46,16 +46,17 @@ public static class CharterRenderer
             else if (kind == BlockKind.Comparison)
             {
                 attributes.AddClass("comparison");
-            }
 
-            // Sub-block anchor model: a :::comparison (and, via task 08, :::diff) additionally stamps each
-            // row with its OWN content-derived sub-anchor, so the default list renderer emits
-            // <li data-anchor="{Block.StableId(row source line)}">. Distinct rows get distinct sub-anchors,
-            // and each is derived from that row's own content — so one row's annotation survives edits to
-            // the others (invariant 2). Non-sub-annotatable nodes yield nothing here.
-            foreach (var (row, subAnchor, _) in CharterMarkdown.SubAnchors(node, markdown))
-            {
-                row.GetAttributes().AddProperty("data-anchor", subAnchor);
+                // Sub-block anchor model: a :::comparison stamps each row with its OWN content-derived
+                // sub-anchor, so the default list renderer emits
+                // <li data-anchor="{Block.StableId(row source line)}">. Distinct rows get distinct
+                // sub-anchors, each derived from that row's own content — so one row's annotation survives
+                // edits to the others (invariant 2). A :::diff carries its per-line sub-anchors through its
+                // own custom renderer (CharterContainerRenderer) rather than this list-item stamping.
+                foreach (var (row, subAnchor, _) in CharterMarkdown.SubAnchors(node, markdown))
+                {
+                    row.GetAttributes().AddProperty("data-anchor", subAnchor);
+                }
             }
         }
 
@@ -67,10 +68,12 @@ public static class CharterRenderer
         // the stable id must land on the <pre> root while the language class stays on <code>.
         renderer.ObjectRenderers.Replace<DefaultCodeBlockRenderer>(new CharterCodeBlockRenderer());
 
-        // A :::diagram container renders as <pre class="mermaid" id="..."> carrying the Mermaid source (the
-        // diagram-node annotation anchor), not a callout <div>. Every other container (:::note, :::warn)
-        // falls through to the default rendering this subclass delegates to.
-        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterDiagramContainerRenderer(markdown));
+        // The containers whose markup diverges from the default callout <div> get a custom renderer: a
+        // :::diagram renders as <pre class="mermaid" id="..."> (the Mermaid source / diagram-node anchor),
+        // and a :::diff as a <div class="diff"> of per-line <div>s each carrying its own sub-anchor and
+        // add/del class. Every other container (:::note, :::warn, :::comparison) falls through to the
+        // default rendering this subclass delegates to.
+        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterContainerRenderer(markdown));
 
         renderer.Render(document);
         writer.Flush();
@@ -110,40 +113,46 @@ public static class CharterRenderer
 }
 
 /// <summary>
-/// Renders a <c>:::diagram</c> container as
-/// <c>&lt;pre class="mermaid" id="..."&gt;…mermaid source…&lt;/pre&gt;</c> — the block's stable id on the
-/// <c>&lt;pre&gt;</c> root (where every other block carries its anchor, and the diagram-node annotation binds),
-/// with the raw Mermaid source preserved as element text for the client library to render. Every other custom
-/// container (<c>:::note</c>, <c>:::warn</c>) falls through to the default
-/// <see cref="HtmlCustomContainerRenderer"/>.
+/// Renders the Charter custom containers whose markup diverges from the default callout <c>&lt;div&gt;</c>:
+/// a <c>:::diagram</c> as <c>&lt;pre class="mermaid" id="..."&gt;…mermaid source…&lt;/pre&gt;</c> (the block's
+/// stable id on the <c>&lt;pre&gt;</c> root where the diagram-node annotation binds, with the raw Mermaid
+/// source preserved as element text for the client library), and a <c>:::diff</c> as a
+/// <c>&lt;div class="diff" id="..."&gt;</c> whose every diff LINE is its own
+/// <c>&lt;div class="diff-line diff-add|diff-del|diff-context" data-anchor="..." id="..."&gt;</c> — the
+/// per-line sub-anchor a reviewer's note binds to. Every other container (<c>:::note</c>, <c>:::warn</c>,
+/// <c>:::comparison</c>) falls through to the default <see cref="HtmlCustomContainerRenderer"/>.
 /// </summary>
-internal sealed class CharterDiagramContainerRenderer : HtmlCustomContainerRenderer
+internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 {
     private readonly string _markdown;
 
-    public CharterDiagramContainerRenderer(string markdown) => _markdown = markdown ?? string.Empty;
+    public CharterContainerRenderer(string markdown) => _markdown = markdown ?? string.Empty;
 
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
     {
-        if (!string.Equals(obj.Info?.Trim(), "diagram", StringComparison.OrdinalIgnoreCase))
+        var info = obj.Info?.Trim();
+        if (string.Equals(info, "diagram", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteDiagram(renderer, obj);
+        }
+        else if (string.Equals(info, "diff", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteDiff(renderer, obj);
+        }
+        else
         {
             base.Write(renderer, obj);
-            return;
         }
+    }
 
+    private void WriteDiagram(HtmlRenderer renderer, CustomContainer obj)
+    {
         renderer.EnsureLine();
 
         if (renderer.EnableHtmlForBlock)
         {
             renderer.Write("<pre class=\"mermaid\"");
-            var id = obj.TryGetAttributes()?.Id;
-            if (!string.IsNullOrEmpty(id))
-            {
-                renderer.Write(" id=\"");
-                renderer.WriteEscape(id);
-                renderer.Write('"');
-            }
-
+            WriteId(renderer, obj.TryGetAttributes()?.Id);
             renderer.Write('>');
         }
 
@@ -155,6 +164,60 @@ internal sealed class CharterDiagramContainerRenderer : HtmlCustomContainerRende
         if (renderer.EnableHtmlForBlock)
         {
             renderer.WriteLine("</pre>");
+        }
+    }
+
+    private void WriteDiff(HtmlRenderer renderer, CustomContainer obj)
+    {
+        renderer.EnsureLine();
+
+        if (renderer.EnableHtmlForBlock)
+        {
+            renderer.Write("<div class=\"diff\"");
+            WriteId(renderer, obj.TryGetAttributes()?.Id);
+            renderer.WriteLine(">");
+        }
+
+        // Each diff LINE carries its OWN content-derived sub-anchor (Block.StableId of the line's trimmed
+        // text, marker included) — the same anchor SourceMap.Build registers via CharterMarkdown.DiffLines,
+        // so a note on one line round-trips to that line and survives edits to the others (invariant 2). The
+        // add/del/context class makes added vs. removed lines distinguishable in the markup.
+        foreach (var (raw, trimmed, _, cssClass) in CharterMarkdown.DiffLines(obj, _markdown))
+        {
+            var anchor = Block.StableId(trimmed);
+            if (renderer.EnableHtmlForBlock)
+            {
+                renderer.Write("<div class=\"diff-line ");
+                renderer.Write(cssClass);
+                renderer.Write("\" data-anchor=\"");
+                renderer.WriteEscape(anchor);
+                renderer.Write("\" id=\"");
+                renderer.WriteEscape(anchor);
+                renderer.Write("\">");
+            }
+
+            renderer.WriteEscape(raw);
+
+            if (renderer.EnableHtmlForBlock)
+            {
+                renderer.WriteLine("</div>");
+            }
+        }
+
+        if (renderer.EnableHtmlForBlock)
+        {
+            renderer.WriteLine("</div>");
+        }
+    }
+
+    /// <summary>Write an <c>id="…"</c> attribute when the block carries a stable id.</summary>
+    private static void WriteId(HtmlRenderer renderer, string? id)
+    {
+        if (!string.IsNullOrEmpty(id))
+        {
+            renderer.Write(" id=\"");
+            renderer.WriteEscape(id);
+            renderer.Write('"');
         }
     }
 
