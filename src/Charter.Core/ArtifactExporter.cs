@@ -86,7 +86,14 @@ public static partial class ArtifactExporter
         string TransformNonScript(string segment)
         {
             var inlined = SrcAttributeRegex().Replace(segment, InlineOrOmit);
-            return FileUriRegex().Replace(inlined, "file:///[redacted]");
+            var fileScrubbed = FileUriRegex().Replace(inlined, "file:///[redacted]");
+
+            // Final pass: redact any UNAMBIGUOUS local filesystem path still riding a NON-src carrier — an
+            // href, a CSS url(...), an srcset, an xlink:href — that the src-inlining and file:// passes above
+            // never touch. Only drive-letter and UNC paths are redacted; bare POSIX /… paths (legit
+            // root-relative URLs) are deliberately left alone. Script regions were already set aside by the
+            // caller, so the vendored Mermaid runtime is untouched.
+            return LocalPathRegex().Replace(fileScrubbed, "file:///[redacted]");
         }
 
         // Step 2: split SCRIPT and non-SCRIPT regions BEFORE scanning. The vendored Mermaid runtime rides
@@ -279,4 +286,18 @@ public static partial class ArtifactExporter
     /// </summary>
     [GeneratedRegex(@"file://[^""'\s<>]*", RegexOptions.IgnoreCase)]
     private static partial Regex FileUriRegex();
+
+    /// <summary>
+    /// Matches an UNAMBIGUOUS local filesystem path — a Windows drive-letter path (a lone drive letter,
+    /// colon, then a separator: <c>C:/Users/…</c> or <c>C:\Users\…</c>) or a UNC path
+    /// (<c>\\server\share\…</c>) — wherever it survives on a non-<c>src</c> carrier (an <c>href</c>,
+    /// <c>srcset</c>, CSS <c>url(...)</c>, or <c>xlink:href</c>). The negative lookbehind on the drive letter
+    /// keeps a URL scheme like <c>http://</c> (whose <c>p:/</c> would otherwise read as a drive) from
+    /// matching, and a bare POSIX <c>/…</c> path is deliberately NOT matched — a root-relative URL is
+    /// legitimate and must survive. The path body stops at the first quote, whitespace, angle bracket, or
+    /// closing parenthesis, so an <c>srcset</c> descriptor (<c>… 2x</c>) or a CSS <c>url(…)</c> terminator is
+    /// preserved after the redacted path.
+    /// </summary>
+    [GeneratedRegex(@"(?<![A-Za-z])[A-Za-z]:[\\/][^""'\s<>)]*|\\\\[^""'\s<>)]+")]
+    private static partial Regex LocalPathRegex();
 }
