@@ -157,9 +157,10 @@ internal static class CharterMarkdown
 
     /// <summary>
     /// Classify a <c>:::</c> custom container by its info string: <c>diagram</c> → a Mermaid
-    /// <see cref="BlockKind.Diagram"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything
-    /// else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram kind while
-    /// leaving the existing note/warn behavior untouched.
+    /// <see cref="BlockKind.Diagram"/>, <c>comparison</c> → a per-row-annotatable
+    /// <see cref="BlockKind.Comparison"/>, <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and
+    /// everything else (including <c>note</c>) → a <see cref="BlockKind.Note"/> callout. Adds the M4 diagram
+    /// and comparison kinds while leaving the existing note/warn behavior untouched.
     /// </summary>
     private static BlockKind ClassifyContainer(CustomContainer container)
     {
@@ -168,14 +169,87 @@ internal static class CharterMarkdown
             return BlockKind.Diagram;
         }
 
+        if (IsComparison(container))
+        {
+            return BlockKind.Comparison;
+        }
+
         return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
     }
 
     private static bool IsDiagram(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "diagram", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsComparison(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "comparison", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The reusable sub-anchor descent — the foundation of the sub-block anchor model. For a container that
+    /// is annotatable per-row (<c>:::comparison</c> today; <c>:::diff</c> once task 08 extends
+    /// <see cref="SubAnchorRows"/>), yield each row paired with its content-derived sub-anchor and its
+    /// 1-based markdown line. A row's sub-anchor is <see cref="Block.StableId(string)"/> of that row's OWN
+    /// raw source line, so an annotation on one row survives edits to sibling rows (content-derived, never
+    /// positional — invariant 2). Any other node yields nothing, so both the renderer (which stamps each
+    /// row's <c>data-anchor</c>) and the <see cref="SourceMap"/> (which registers sub-anchor → row line) can
+    /// call this uniformly over every top-level node.
+    /// </summary>
+    internal static IEnumerable<(MarkdigBlock Row, string SubAnchor, int Line)> SubAnchors(MarkdigBlock node, string markdown)
+    {
+        if (node is not CustomContainer container || ClassifyContainer(container) != BlockKind.Comparison)
+        {
+            yield break;
+        }
+
+        foreach (var row in SubAnchorRows(container))
+        {
+            var rawLine = SourceLine(markdown, row.Line);
+            if (rawLine.Length == 0)
+            {
+                continue;
+            }
+
+            yield return (row, Block.StableId(rawLine), StartLine(row));
+        }
+    }
+
+    /// <summary>
+    /// The annotatable rows of a sub-anchored container. A <c>:::comparison</c>'s rows are its option list
+    /// items; task 08 extends this same descent with a <c>:::diff</c>'s per-line rows.
+    /// </summary>
+    private static IEnumerable<MarkdigBlock> SubAnchorRows(CustomContainer container)
+    {
+        foreach (var child in container)
+        {
+            if (child is ListBlock list)
+            {
+                foreach (var item in list)
+                {
+                    yield return item;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The trimmed source text of the given 0-based markdown line, or empty when out of range. A row's
+    /// sub-anchor and the line the source map hands back both derive from THIS line, so the anchor and the
+    /// resolved line always describe the same text.
+    /// </summary>
+    private static string SourceLine(string markdown, int zeroBasedLine)
+    {
+        if (zeroBasedLine < 0 || markdown.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = markdown.Replace("\r\n", "\n", StringComparison.Ordinal)
+                            .Replace('\r', '\n')
+                            .Split('\n');
+        return zeroBasedLine < lines.Length ? lines[zeroBasedLine].Trim() : string.Empty;
+    }
 
     /// <summary>
     /// The exact source text a block spans. Content-derived ids need only that this is deterministic for

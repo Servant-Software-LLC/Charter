@@ -43,6 +43,20 @@ public static class CharterRenderer
             {
                 hasDiagram = true;
             }
+            else if (kind == BlockKind.Comparison)
+            {
+                attributes.AddClass("comparison");
+            }
+
+            // Sub-block anchor model: a :::comparison (and, via task 08, :::diff) additionally stamps each
+            // row with its OWN content-derived sub-anchor, so the default list renderer emits
+            // <li data-anchor="{Block.StableId(row source line)}">. Distinct rows get distinct sub-anchors,
+            // and each is derived from that row's own content — so one row's annotation survives edits to
+            // the others (invariant 2). Non-sub-annotatable nodes yield nothing here.
+            foreach (var (row, subAnchor, _) in CharterMarkdown.SubAnchors(node, markdown))
+            {
+                row.GetAttributes().AddProperty("data-anchor", subAnchor);
+            }
         }
 
         using var writer = new StringWriter();
