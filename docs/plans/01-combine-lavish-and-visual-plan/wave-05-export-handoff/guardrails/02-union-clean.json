@@ -1,0 +1,4 @@
+{
+  "description": "Union soundness (GR2028): no git conflict markers on the wave-5 Core/Cli/test surface after the export-chain (03) and handoff-chain (05) fan-in merges into 06",
+  "scope": "integration"
+}

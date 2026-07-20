@@ -1,0 +1,6 @@
+{
+  "description": "Add the `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]` command to Charter.Cli, wired to Charter.Core.HandoffMarkdown (optionally reading a {questionId: [values]} JSON file to resolve :::question answers), and prove it emits directive-free canonical markdown end to end (no ':::' present; a diagram becomes a ```mermaid fence; an unanswered question is flagged open; a supplied --answers resolves it instead). Depends on 05 for the HandoffMarkdown symbol (an artifact dependency), and on 03-wire-export-cli separately because 03 and 06 are the two tasks that edit the same src/Charter.Cli/Program.cs file - sequencing (rather than a parallel fan-in) avoids an AI-merge collision on that shared file (#132 - disjoint/serialized scope preferred here).",
+  "stableId": "cr5handoff",
+  "dependsOn": ["05-implement-handoff-markdown", "03-wire-export-cli"],
+  "writeScope": ["src/Charter.Cli/"]
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests (Category=ArtifactExporter) in tests/Charter.Core.Tests for a NEW ArtifactExporter component + its minimal throwing stub: a local relative or file:// <img src> asset inlines as a data: URI (correct MIME by extension) up to a size cap; an oversized, missing, or path-traversal asset is OMITTED (src rewritten to about:blank with a data-charter-export-omitted reason + a data-charter-export-filename basename, never the local path); any other local/file:// reference (e.g. an <a href>) is REDACTED to file:///[redacted]/<basename>, never leaking the author's directory structure; the exported HTML never carries the SDK marker data-charter-sdk. Tests + a minimal NotImplementedException stub only - they compile against the stub and FAIL AT RUNTIME.",
+  "stableId": "cr5aetst",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Core.Tests/ArtifactExporterTests.cs", "src/Charter.Core/ArtifactExporter.cs"]
+}

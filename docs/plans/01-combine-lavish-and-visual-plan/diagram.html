@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=68dc09b0f379b2172c366e702141c79005dc769986dd91a4b7156246cb1ad631 -->
+<!-- guardrails:graph v1 source-sha256=8b42e53b50c2e7259672434e4e9fe0de566600c5e706b7e3dd2957f7ed99b63e -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -280,16 +280,60 @@
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5_preflights["Wave 5 Entry Gate"]
+    wave_5_preflights_0["01-wave4-materialized"]:::preflight
   end
   style wave_5_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5["Wave 5 — export-handoff"]
-    wave_5_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_5_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_05_export_handoff_01_author_tests_artifact_exporter["01-author-tests-artifact-exporter"]
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_05_export_handoff_01_author_tests_artifact_exporter fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_02_implement_artifact_exporter["02-implement-artifact-exporter"]
+      task_wave_05_export_handoff_02_implement_artifact_exporter_gr_0["01-exporter-tests-pass"]:::guardrail
+      task_wave_05_export_handoff_02_implement_artifact_exporter_gr_1["02-core-has-no-server-dependency"]:::guardrail
+    end
+    style task_wave_05_export_handoff_02_implement_artifact_exporter fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_03_wire_export_cli["03-wire-export-cli"]
+      task_wave_05_export_handoff_03_wire_export_cli_gr_0["01-export-command-wired"]:::guardrail
+      task_wave_05_export_handoff_03_wire_export_cli_gr_1["02-export-smoke"]:::guardrail
+    end
+    style task_wave_05_export_handoff_03_wire_export_cli fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_04_author_tests_handoff_markdown["04-author-tests-handoff-markdown"]
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_05_export_handoff_04_author_tests_handoff_markdown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_05_implement_handoff_markdown["05-implement-handoff-markdown"]
+      task_wave_05_export_handoff_05_implement_handoff_markdown_gr_0["01-handoff-tests-pass"]:::guardrail
+      task_wave_05_export_handoff_05_implement_handoff_markdown_gr_1["02-real-dispatch-not-hardcoded"]:::guardrail
+    end
+    style task_wave_05_export_handoff_05_implement_handoff_markdown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_06_wire_handoff_cli["06-wire-handoff-cli"]
+      task_wave_05_export_handoff_06_wire_handoff_cli_gr_0["01-handoff-command-wired"]:::guardrail
+      task_wave_05_export_handoff_06_wire_handoff_cli_gr_1["02-handoff-smoke"]:::guardrail
+    end
+    style task_wave_05_export_handoff_06_wire_handoff_cli fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_5 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_5_guardrails["Wave 5 Exit Gate"]
+    wave_5_guardrails_0["01-wave5-solution-builds-and-tests"]:::guardrail
+    wave_5_guardrails_1["02-union-clean"]:::guardrail
   end
   style wave_5_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_6_preflights["Wave 6 Entry Gate"]
+  end
+  style wave_6_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_6["Wave 6 — agent-skill-polish"]
+    wave_6_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_6_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_6 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_6_guardrails["Wave 6 Exit Gate"]
+  end
+  style wave_6_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -335,13 +379,22 @@
   task_wave_04_rich_blocks_12_implement_question_form --> wave_4_guardrails
   task_wave_04_rich_blocks_14_implement_answer_submission --> wave_4_guardrails
   task_wave_04_rich_blocks_15_extend_sdk_question_submit --> wave_4_guardrails
-  wave_5_preflights --> wave_5_stub
-  wave_5_stub --> wave_5_guardrails
+  wave_5_preflights --> task_wave_05_export_handoff_01_author_tests_artifact_exporter
+  wave_5_preflights --> task_wave_05_export_handoff_04_author_tests_handoff_markdown
+  task_wave_05_export_handoff_01_author_tests_artifact_exporter --> task_wave_05_export_handoff_02_implement_artifact_exporter
+  task_wave_05_export_handoff_02_implement_artifact_exporter --> task_wave_05_export_handoff_03_wire_export_cli
+  task_wave_05_export_handoff_03_wire_export_cli --> task_wave_05_export_handoff_06_wire_handoff_cli
+  task_wave_05_export_handoff_04_author_tests_handoff_markdown --> task_wave_05_export_handoff_05_implement_handoff_markdown
+  task_wave_05_export_handoff_05_implement_handoff_markdown --> task_wave_05_export_handoff_06_wire_handoff_cli
+  task_wave_05_export_handoff_06_wire_handoff_cli --> wave_5_guardrails
+  wave_6_preflights --> wave_6_stub
+  wave_6_stub --> wave_6_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
   wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
   wave_4_guardrails -.->|"🔒 wave barrier"| wave_5_preflights
-  wave_5_guardrails --> plan_guardrails
+  wave_5_guardrails -.->|"🔒 wave barrier"| wave_6_preflights
+  wave_6_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click task_wave_01_renderer_core_01_author_tests_core_renderer_gr_0 href "wave-01-renderer-core/tasks/01-author-tests-core-renderer/guardrails/01-tests-build.ps1" "01-tests-build" _blank
@@ -399,8 +452,22 @@
   click task_wave_04_rich_blocks_13_author_tests_answer_submission_gr_2 href "wave-04-rich-blocks/tasks/13-author-tests-answer-submission/guardrails/03-covers-answer-round-trip.ps1" "03-covers-answer-round-trip" _blank
   click task_wave_04_rich_blocks_14_implement_answer_submission_gr_0 href "wave-04-rich-blocks/tasks/14-implement-answer-submission/guardrails/01-answer-tests-pass.ps1" "01-answer-tests-pass" _blank
   click task_wave_04_rich_blocks_14_implement_answer_submission_gr_1 href "wave-04-rich-blocks/tasks/14-implement-answer-submission/guardrails/02-annotation-contract-preserved.ps1" "02-annotation-contract-preserved" _blank
-  click task_wave_04_rich_blocks_15_extend_sdk_question_submit_gr_0 href "wave-04-rich-blocks/tasks/15-extend-sdk-question-submit/guardrails/01-sdk-answer-submit-surface.ps1" "01-sdk-answer-submit-surface" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_wave_01_renderer_core_01_author_tests_core_renderer":"wave-01-renderer-core/tasks/01-author-tests-core-renderer/","task_wave_01_renderer_core_02_implement_core_renderer":"wave-01-renderer-core/tasks/02-implement-core-renderer/","task_wave_01_renderer_core_03_wire_charter_render_cli":"wave-01-renderer-core/tasks/03-wire-charter-render-cli/","task_wave_02_review_server_01_scaffold_server_projects":"wave-02-review-server/tasks/01-scaffold-server-projects/","task_wave_02_review_server_02_author_tests_review_server":"wave-02-review-server/tasks/02-author-tests-review-server/","task_wave_02_review_server_03_implement_review_server":"wave-02-review-server/tasks/03-implement-review-server/","task_wave_02_review_server_04_wire_review_cli":"wave-02-review-server/tasks/04-wire-review-cli/","task_wave_03_annotation_feedback_01_author_tests_session_store":"wave-03-annotation-feedback/tasks/01-author-tests-session-store/","task_wave_03_annotation_feedback_02_implement_session_store":"wave-03-annotation-feedback/tasks/02-implement-session-store/","task_wave_03_annotation_feedback_03_author_tests_annotation_api":"wave-03-annotation-feedback/tasks/03-author-tests-annotation-api/","task_wave_03_annotation_feedback_04_implement_annotation_api":"wave-03-annotation-feedback/tasks/04-implement-annotation-api/","task_wave_03_annotation_feedback_05_build_annotation_sdk":"wave-03-annotation-feedback/tasks/05-build-annotation-sdk/","task_wave_03_annotation_feedback_06_wire_sdk_into_server":"wave-03-annotation-feedback/tasks/06-wire-sdk-into-server/","task_wave_04_rich_blocks_01_add_block_kinds":"wave-04-rich-blocks/tasks/01-add-block-kinds/","task_wave_04_rich_blocks_02_vendor_mermaid_runtime":"wave-04-rich-blocks/tasks/02-vendor-mermaid-runtime/","task_wave_04_rich_blocks_03_author_tests_diagram_block":"wave-04-rich-blocks/tasks/03-author-tests-diagram-block/","task_wave_04_rich_blocks_04_implement_diagram_block":"wave-04-rich-blocks/tasks/04-implement-diagram-block/","task_wave_04_rich_blocks_05_author_tests_comparison_block":"wave-04-rich-blocks/tasks/05-author-tests-comparison-block/","task_wave_04_rich_blocks_06_implement_comparison_block":"wave-04-rich-blocks/tasks/06-implement-comparison-block/","task_wave_04_rich_blocks_07_author_tests_diff_block":"wave-04-rich-blocks/tasks/07-author-tests-diff-block/","task_wave_04_rich_blocks_08_implement_diff_block":"wave-04-rich-blocks/tasks/08-implement-diff-block/","task_wave_04_rich_blocks_09_author_tests_question_schema":"wave-04-rich-blocks/tasks/09-author-tests-question-schema/","task_wave_04_rich_blocks_10_implement_question_schema":"wave-04-rich-blocks/tasks/10-implement-question-schema/","task_wave_04_rich_blocks_11_author_tests_question_form":"wave-04-rich-blocks/tasks/11-author-tests-question-form/","task_wave_04_rich_blocks_12_implement_question_form":"wave-04-rich-blocks/tasks/12-implement-question-form/","task_wave_04_rich_blocks_13_author_tests_answer_submission":"wave-04-rich-blocks/tasks/13-author-tests-answer-submission/","task_wave_04_rich_blocks_14_implement_answer_submission":"wave-04-rich-blocks/tasks/14-implement-answer-submission/","task_wave_04_rich_blocks_15_extend_sdk_question_submit":"wave-04-rich-blocks/tasks/15-extend-sdk-question-submit/"}</script>
+  click task_wave_04_rich_blocks_15_extend_sdk_question_submit_gr_0 href "wave-04-rich-blocks/tasks/15-extend-sdk-question-submit/guardrails/01-sdk-answer-submit-surface.ps1" "01-sdk-answer-submit-surface" _blank
+  click task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_0 href "wave-05-export-handoff/tasks/01-author-tests-artifact-exporter/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_1 href "wave-05-export-handoff/tasks/01-author-tests-artifact-exporter/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_2 href "wave-05-export-handoff/tasks/01-author-tests-artifact-exporter/guardrails/03-covers-key-behaviors.ps1" "03-covers-key-behaviors" _blank
+  click task_wave_05_export_handoff_02_implement_artifact_exporter_gr_0 href "wave-05-export-handoff/tasks/02-implement-artifact-exporter/guardrails/01-exporter-tests-pass.ps1" "01-exporter-tests-pass" _blank
+  click task_wave_05_export_handoff_02_implement_artifact_exporter_gr_1 href "wave-05-export-handoff/tasks/02-implement-artifact-exporter/guardrails/02-core-has-no-server-dependency.ps1" "02-core-has-no-server-dependency" _blank
+  click task_wave_05_export_handoff_03_wire_export_cli_gr_0 href "wave-05-export-handoff/tasks/03-wire-export-cli/guardrails/01-export-command-wired.ps1" "01-export-command-wired" _blank
+  click task_wave_05_export_handoff_03_wire_export_cli_gr_1 href "wave-05-export-handoff/tasks/03-wire-export-cli/guardrails/02-export-smoke.ps1" "02-export-smoke" _blank
+  click task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_0 href "wave-05-export-handoff/tasks/04-author-tests-handoff-markdown/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_1 href "wave-05-export-handoff/tasks/04-author-tests-handoff-markdown/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_2 href "wave-05-export-handoff/tasks/04-author-tests-handoff-markdown/guardrails/03-covers-key-behaviors.ps1" "03-covers-key-behaviors" _blank
+  click task_wave_05_export_handoff_05_implement_handoff_markdown_gr_0 href "wave-05-export-handoff/tasks/05-implement-handoff-markdown/guardrails/01-handoff-tests-pass.ps1" "01-handoff-tests-pass" _blank
+  click task_wave_05_export_handoff_05_implement_handoff_markdown_gr_1 href "wave-05-export-handoff/tasks/05-implement-handoff-markdown/guardrails/02-real-dispatch-not-hardcoded.ps1" "02-real-dispatch-not-hardcoded" _blank
+  click task_wave_05_export_handoff_06_wire_handoff_cli_gr_0 href "wave-05-export-handoff/tasks/06-wire-handoff-cli/guardrails/01-handoff-command-wired.ps1" "01-handoff-command-wired" _blank
+  click task_wave_05_export_handoff_06_wire_handoff_cli_gr_1 href "wave-05-export-handoff/tasks/06-wire-handoff-cli/guardrails/02-handoff-smoke.ps1" "02-handoff-smoke" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_01_renderer_core_01_author_tests_core_renderer":"wave-01-renderer-core/tasks/01-author-tests-core-renderer/","task_wave_01_renderer_core_02_implement_core_renderer":"wave-01-renderer-core/tasks/02-implement-core-renderer/","task_wave_01_renderer_core_03_wire_charter_render_cli":"wave-01-renderer-core/tasks/03-wire-charter-render-cli/","task_wave_02_review_server_01_scaffold_server_projects":"wave-02-review-server/tasks/01-scaffold-server-projects/","task_wave_02_review_server_02_author_tests_review_server":"wave-02-review-server/tasks/02-author-tests-review-server/","task_wave_02_review_server_03_implement_review_server":"wave-02-review-server/tasks/03-implement-review-server/","task_wave_02_review_server_04_wire_review_cli":"wave-02-review-server/tasks/04-wire-review-cli/","task_wave_03_annotation_feedback_01_author_tests_session_store":"wave-03-annotation-feedback/tasks/01-author-tests-session-store/","task_wave_03_annotation_feedback_02_implement_session_store":"wave-03-annotation-feedback/tasks/02-implement-session-store/","task_wave_03_annotation_feedback_03_author_tests_annotation_api":"wave-03-annotation-feedback/tasks/03-author-tests-annotation-api/","task_wave_03_annotation_feedback_04_implement_annotation_api":"wave-03-annotation-feedback/tasks/04-implement-annotation-api/","task_wave_03_annotation_feedback_05_build_annotation_sdk":"wave-03-annotation-feedback/tasks/05-build-annotation-sdk/","task_wave_03_annotation_feedback_06_wire_sdk_into_server":"wave-03-annotation-feedback/tasks/06-wire-sdk-into-server/","task_wave_04_rich_blocks_01_add_block_kinds":"wave-04-rich-blocks/tasks/01-add-block-kinds/","task_wave_04_rich_blocks_02_vendor_mermaid_runtime":"wave-04-rich-blocks/tasks/02-vendor-mermaid-runtime/","task_wave_04_rich_blocks_03_author_tests_diagram_block":"wave-04-rich-blocks/tasks/03-author-tests-diagram-block/","task_wave_04_rich_blocks_04_implement_diagram_block":"wave-04-rich-blocks/tasks/04-implement-diagram-block/","task_wave_04_rich_blocks_05_author_tests_comparison_block":"wave-04-rich-blocks/tasks/05-author-tests-comparison-block/","task_wave_04_rich_blocks_06_implement_comparison_block":"wave-04-rich-blocks/tasks/06-implement-comparison-block/","task_wave_04_rich_blocks_07_author_tests_diff_block":"wave-04-rich-blocks/tasks/07-author-tests-diff-block/","task_wave_04_rich_blocks_08_implement_diff_block":"wave-04-rich-blocks/tasks/08-implement-diff-block/","task_wave_04_rich_blocks_09_author_tests_question_schema":"wave-04-rich-blocks/tasks/09-author-tests-question-schema/","task_wave_04_rich_blocks_10_implement_question_schema":"wave-04-rich-blocks/tasks/10-implement-question-schema/","task_wave_04_rich_blocks_11_author_tests_question_form":"wave-04-rich-blocks/tasks/11-author-tests-question-form/","task_wave_04_rich_blocks_12_implement_question_form":"wave-04-rich-blocks/tasks/12-implement-question-form/","task_wave_04_rich_blocks_13_author_tests_answer_submission":"wave-04-rich-blocks/tasks/13-author-tests-answer-submission/","task_wave_04_rich_blocks_14_implement_answer_submission":"wave-04-rich-blocks/tasks/14-implement-answer-submission/","task_wave_04_rich_blocks_15_extend_sdk_question_submit":"wave-04-rich-blocks/tasks/15-extend-sdk-question-submit/","task_wave_05_export_handoff_01_author_tests_artifact_exporter":"wave-05-export-handoff/tasks/01-author-tests-artifact-exporter/","task_wave_05_export_handoff_02_implement_artifact_exporter":"wave-05-export-handoff/tasks/02-implement-artifact-exporter/","task_wave_05_export_handoff_03_wire_export_cli":"wave-05-export-handoff/tasks/03-wire-export-cli/","task_wave_05_export_handoff_04_author_tests_handoff_markdown":"wave-05-export-handoff/tasks/04-author-tests-handoff-markdown/","task_wave_05_export_handoff_05_implement_handoff_markdown":"wave-05-export-handoff/tasks/05-implement-handoff-markdown/","task_wave_05_export_handoff_06_wire_handoff_cli":"wave-05-export-handoff/tasks/06-wire-handoff-cli/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

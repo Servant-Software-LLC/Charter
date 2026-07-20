@@ -1,0 +1,6 @@
+{
+  "description": "Add the `charter export <plan.mdx> -o <out.html>` command to Charter.Cli, wired to Charter.Core.ArtifactExporter (called with the plan's own directory as planDirectory), and prove it exports a sample .mdx with a local image to a self-contained HTML file end to end (data: URI present, no leaked local path, no SDK marker)",
+  "stableId": "cr5export",
+  "dependsOn": ["02-implement-artifact-exporter"],
+  "writeScope": ["src/Charter.Cli/"]
+}

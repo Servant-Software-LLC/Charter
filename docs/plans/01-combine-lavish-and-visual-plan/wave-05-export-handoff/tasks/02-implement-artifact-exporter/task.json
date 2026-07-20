@@ -1,0 +1,6 @@
+{
+  "description": "Implement ArtifactExporter in Charter.Core so the Category=ArtifactExporter tests pass: inline a local relative/file:// <img src> asset as a data: URI (MIME by extension) up to maxAssetBytes, confining reads to planDirectory (refuse path traversal); omit (about:blank + data-charter-export-omitted reason + data-charter-export-filename basename) an oversized/missing/traversal asset without ever leaking its local path; redact any other local/file:// reference (e.g. an <a href>) to file:///[redacted]/<basename>; never emit the data-charter-sdk marker. Do NOT edit the tests.",
+  "stableId": "cr5aeimpl",
+  "dependsOn": ["01-author-tests-artifact-exporter"],
+  "writeScope": ["src/Charter.Core/ArtifactExporter.cs"]
+}

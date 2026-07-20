@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=68dc09b0f379b2172c366e702141c79005dc769986dd91a4b7156246cb1ad631 -->
+<!-- guardrails:graph v1 source-sha256=8b42e53b50c2e7259672434e4e9fe0de566600c5e706b7e3dd2957f7ed99b63e -->
 
 ```mermaid
 flowchart TD
@@ -191,16 +191,60 @@ flowchart TD
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5_preflights["Wave 5 Entry Gate"]
+    wave_5_preflights_0["01-wave4-materialized"]:::preflight
   end
   style wave_5_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_5["Wave 5 — export-handoff"]
-    wave_5_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_5_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_05_export_handoff_01_author_tests_artifact_exporter["01-author-tests-artifact-exporter"]
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_05_export_handoff_01_author_tests_artifact_exporter_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_05_export_handoff_01_author_tests_artifact_exporter fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_02_implement_artifact_exporter["02-implement-artifact-exporter"]
+      task_wave_05_export_handoff_02_implement_artifact_exporter_gr_0["01-exporter-tests-pass"]:::guardrail
+      task_wave_05_export_handoff_02_implement_artifact_exporter_gr_1["02-core-has-no-server-dependency"]:::guardrail
+    end
+    style task_wave_05_export_handoff_02_implement_artifact_exporter fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_03_wire_export_cli["03-wire-export-cli"]
+      task_wave_05_export_handoff_03_wire_export_cli_gr_0["01-export-command-wired"]:::guardrail
+      task_wave_05_export_handoff_03_wire_export_cli_gr_1["02-export-smoke"]:::guardrail
+    end
+    style task_wave_05_export_handoff_03_wire_export_cli fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_04_author_tests_handoff_markdown["04-author-tests-handoff-markdown"]
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_0["01-tests-build"]:::guardrail
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_05_export_handoff_04_author_tests_handoff_markdown_gr_2["03-covers-key-behaviors"]:::guardrail
+    end
+    style task_wave_05_export_handoff_04_author_tests_handoff_markdown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_05_implement_handoff_markdown["05-implement-handoff-markdown"]
+      task_wave_05_export_handoff_05_implement_handoff_markdown_gr_0["01-handoff-tests-pass"]:::guardrail
+      task_wave_05_export_handoff_05_implement_handoff_markdown_gr_1["02-real-dispatch-not-hardcoded"]:::guardrail
+    end
+    style task_wave_05_export_handoff_05_implement_handoff_markdown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_05_export_handoff_06_wire_handoff_cli["06-wire-handoff-cli"]
+      task_wave_05_export_handoff_06_wire_handoff_cli_gr_0["01-handoff-command-wired"]:::guardrail
+      task_wave_05_export_handoff_06_wire_handoff_cli_gr_1["02-handoff-smoke"]:::guardrail
+    end
+    style task_wave_05_export_handoff_06_wire_handoff_cli fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_5 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_5_guardrails["Wave 5 Exit Gate"]
+    wave_5_guardrails_0["01-wave5-solution-builds-and-tests"]:::guardrail
+    wave_5_guardrails_1["02-union-clean"]:::guardrail
   end
   style wave_5_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_6_preflights["Wave 6 Entry Gate"]
+  end
+  style wave_6_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_6["Wave 6 — agent-skill-polish"]
+    wave_6_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_6_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_6 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_6_guardrails["Wave 6 Exit Gate"]
+  end
+  style wave_6_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -246,13 +290,22 @@ flowchart TD
   task_wave_04_rich_blocks_12_implement_question_form --> wave_4_guardrails
   task_wave_04_rich_blocks_14_implement_answer_submission --> wave_4_guardrails
   task_wave_04_rich_blocks_15_extend_sdk_question_submit --> wave_4_guardrails
-  wave_5_preflights --> wave_5_stub
-  wave_5_stub --> wave_5_guardrails
+  wave_5_preflights --> task_wave_05_export_handoff_01_author_tests_artifact_exporter
+  wave_5_preflights --> task_wave_05_export_handoff_04_author_tests_handoff_markdown
+  task_wave_05_export_handoff_01_author_tests_artifact_exporter --> task_wave_05_export_handoff_02_implement_artifact_exporter
+  task_wave_05_export_handoff_02_implement_artifact_exporter --> task_wave_05_export_handoff_03_wire_export_cli
+  task_wave_05_export_handoff_03_wire_export_cli --> task_wave_05_export_handoff_06_wire_handoff_cli
+  task_wave_05_export_handoff_04_author_tests_handoff_markdown --> task_wave_05_export_handoff_05_implement_handoff_markdown
+  task_wave_05_export_handoff_05_implement_handoff_markdown --> task_wave_05_export_handoff_06_wire_handoff_cli
+  task_wave_05_export_handoff_06_wire_handoff_cli --> wave_5_guardrails
+  wave_6_preflights --> wave_6_stub
+  wave_6_stub --> wave_6_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
   wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
   wave_4_guardrails -.->|"🔒 wave barrier"| wave_5_preflights
-  wave_5_guardrails --> plan_guardrails
+  wave_5_guardrails -.->|"🔒 wave barrier"| wave_6_preflights
+  wave_6_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

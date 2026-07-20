@@ -1,0 +1,6 @@
+{
+  "description": "Author failing xUnit tests (Category=HandoffMarkdown) in tests/Charter.Core.Tests for a NEW HandoffMarkdown component + its minimal throwing stub: converts every materialized directive block (:::note/:::warn to a blockquote, :::diagram to a ```mermaid fence, :::diff to a ```diff fence, :::comparison to its already-plain inner list, :::question to resolved prose when an answer is supplied or a flagged open-question line when not) to plain CommonMark with NO ':::' surviving anywhere in the output, and proves the emitted markdown is itself valid input back through Charter's own parser. Tests + a minimal NotImplementedException stub only - they compile and FAIL AT RUNTIME.",
+  "stableId": "cr5hmtst",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Core.Tests/HandoffMarkdownTests.cs", "src/Charter.Core/HandoffMarkdown.cs"]
+}

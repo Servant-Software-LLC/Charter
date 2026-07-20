@@ -1,0 +1,6 @@
+{
+  "description": "Implement HandoffMarkdown in Charter.Core so the Category=HandoffMarkdown tests pass: walk BlockDocument.Parse's ordered blocks and re-emit each by Kind - Prose/Heading/List/Table/Code pass through verbatim; Note/Warn strip their ':::' fence and become a labeled blockquote; Comparison strips its fence and keeps its already-plain inner list; Diagram/Diff strip their fence and become a ```mermaid/```diff fenced code block; Question resolves via the answers lookup to prose (or a flagged open-question line when unanswered), NEVER the raw JSON body. Do NOT edit the tests.",
+  "stableId": "cr5hmimpl",
+  "dependsOn": ["04-author-tests-handoff-markdown"],
+  "writeScope": ["src/Charter.Core/HandoffMarkdown.cs"]
+}
