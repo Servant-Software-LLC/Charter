@@ -11,7 +11,17 @@ public sealed class SourceMap
     private readonly IReadOnlyDictionary<string, int> _startLineByAnchor;
 
     private SourceMap(IReadOnlyDictionary<string, int> startLineByAnchor)
-        => _startLineByAnchor = startLineByAnchor;
+    {
+        _startLineByAnchor = startLineByAnchor;
+        Anchors = new HashSet<string>(startLineByAnchor.Keys, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Every anchor this map resolves. For the same markdown, this set must equal the set of id/data-anchor
+    /// values the <see cref="CharterRenderer"/> emits — both are read from the one shared
+    /// <see cref="AnchorAssignment"/> — so a test can assert the two paths never silently diverge.
+    /// </summary>
+    public IReadOnlySet<string> Anchors { get; }
 
     /// <summary>
     /// Build the anchor map for the given <paramref name="markdown"/>: every block's stable
@@ -26,10 +36,16 @@ public sealed class SourceMap
         markdown ??= string.Empty;
         var document = CharterMarkdown.ParseDocument(markdown);
 
+        // The one shared id-assignment pass the renderer also consumes, so every anchor registered here is
+        // byte-identical to the id/data-anchor the rendered HTML carries — including the -2/-3 discriminators
+        // that split otherwise-aliasing duplicate content, so an annotation on the 2nd occurrence resolves to
+        // the 2nd occurrence's line rather than the 1st's.
+        var assignment = AnchorAssignment.Build(document, markdown);
+
         var startLineByAnchor = new Dictionary<string, int>(StringComparer.Ordinal);
 
-        // "First occurrence wins" for every anchor — block-level and sub-anchor alike — so a duplicated
-        // block or row resolves to where it first appears.
+        // The shared pass makes every assigned id unique, so each Register adds a fresh key; the guard is a
+        // harmless belt-and-braces (block-level ids register before sub-anchors within a node).
         void Register(string anchor, int line)
         {
             if (!startLineByAnchor.ContainsKey(anchor))
@@ -40,15 +56,15 @@ public sealed class SourceMap
 
         foreach (var node in document)
         {
-            var (_, rawContent) = CharterMarkdown.Describe(node, markdown);
-            Register(Block.StableId(rawContent), CharterMarkdown.StartLine(node));
+            var startLine = CharterMarkdown.StartLine(node);
+            Register(assignment.IdForLine(startLine), startLine);
 
             // Descend into per-sub-element containers (:::comparison rows, :::diff lines) and register each
             // sub-anchor at its own line, so LineForAnchor(subId) resolves to that sub-element — not merely
             // the block's start line.
-            foreach (var (_, subAnchor, line) in CharterMarkdown.SubAnchors(node, markdown))
+            foreach (var (_, _, line) in CharterMarkdown.SubAnchors(node, markdown))
             {
-                Register(subAnchor, line);
+                Register(assignment.IdForLine(line), line);
             }
         }
 

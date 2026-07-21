@@ -406,7 +406,211 @@ public class AnnotationApiTests
         }
     }
 
+    // ---- 6. Sub-part fidelity: text-range + diagram-node survive submit -> store -> drain ----------------
+
+    [Fact]
+    public async Task RoundTrip_TextRangeSubmission_PreservesQuoteStartEnd_ThroughDrain()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // A text-range annotation on a real block anchor, carrying the sub-part fidelity payload the SDK
+            // sends for a selection: the quoted text plus its start/end offsets within the block. start = 0 is
+            // deliberate — a valid offset that a `|| null` guard would wrongly clobber, so the round-trip proves
+            // 0 survives as 0, not null.
+            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+            const string quote = "distinctive target paragraph";
+            const int start = 0;
+            const int end = 31;
+
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind = "text-range",
+                anchorId,
+                note = "Tighten the wording of this exact sentence.",
+                quote,
+                start,
+                end,
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
+
+            // The drained annotation preserves the text-range fidelity payload verbatim.
+            Assert.Equal(quote, GetString(drained, "quote"));
+            Assert.Equal(start, GetInt(drained, "start"));
+            Assert.Equal(end, GetInt(drained, "end"));
+            // A text-range note carries no diagram node.
+            AssertNull(drained, "nodeId");
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task RoundTrip_DiagramNodeSubmission_PreservesNodeId_ThroughDrain()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // A diagram-node annotation: the block anchor plus the flagged node's own identity. (The tiny plan
+            // has no :::diagram block, so the anchor is a stand-in real block id — the point under test is that
+            // nodeId, the field distinguishing WHICH of N nodes was flagged, survives the drain.)
+            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+            const string nodeId = "flowchart-decision-3";
+
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind = "diagram-node",
+                anchorId,
+                note = "This decision node should branch on the cache miss too.",
+                nodeId,
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
+
+            // The drained annotation preserves the diagram-node identity, and carries no text-range fields.
+            Assert.Equal(nodeId, GetString(drained, "nodeId"));
+            AssertNull(drained, "quote");
+            AssertNull(drained, "start");
+            AssertNull(drained, "end");
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task RoundTrip_BlockLevelSubmission_LeavesFidelityFieldsNull_NoRegression()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // A whole-block (element) annotation with NO quote/start/end/nodeId — the shape reviewers have always
+            // sent. It must still drain exactly as before, with every new fidelity field null, and still resolve
+            // the anchor to its source line (the round-trip is unregressed).
+            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+            var expectedSourceLine = SourceMap.Build(PlanMarkdown).LineForAnchor(anchorId);
+            Assert.NotNull(expectedSourceLine);
+
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind = "element",
+                anchorId,
+                note = "Please clarify this whole block.",
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
+
+            // Unregressed: the anchor still resolves to its 1-based source line.
+            Assert.True(TryGetProperty(drained, "sourceLine", out var sourceLine));
+            Assert.Equal(JsonValueKind.Number, sourceLine.ValueKind);
+            Assert.Equal(expectedSourceLine, sourceLine.GetInt32());
+
+            // Every sub-part fidelity field is present-and-null for a block-level note.
+            AssertNull(drained, "quote");
+            AssertNull(drained, "start");
+            AssertNull(drained, "end");
+            AssertNull(drained, "nodeId");
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Long-poll <c>GET /api/poll</c> once and return the single drained annotation object whose
+    /// <c>anchorId</c> matches <paramref name="anchorId"/>. Bounded deadline (no fixed sleep) — the store
+    /// fast-paths because the annotation is already queued.
+    /// </summary>
+    private static async Task<JsonElement> DrainOne(HttpClient client, Uri address, string key, string anchorId)
+    {
+        var pollUri = new Uri(address, "api/poll?key=" + Uri.EscapeDataString(key));
+        using var pollCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var pollResponse = await client.GetAsync(pollUri, pollCts.Token);
+        Assert.True(
+            pollResponse.IsSuccessStatusCode,
+            $"GET /api/poll should return the queued annotation, got {(int)pollResponse.StatusCode}.");
+
+        var pollBody = await pollResponse.Content.ReadAsStringAsync(pollCts.Token);
+        using var polled = JsonDocument.Parse(pollBody);
+        var found = FindAnnotation(polled.RootElement, anchorId);
+        Assert.True(found.HasValue, "The submitted annotation should be present in the drained batch.");
+        return found.Value.Clone();
+    }
+
+    /// <summary>Assert <paramref name="element"/> carries <paramref name="name"/> present and JSON null.</summary>
+    private static void AssertNull(JsonElement element, string name)
+    {
+        Assert.True(TryGetProperty(element, name, out var value), $"The annotation should carry a {name} field.");
+        Assert.Equal(JsonValueKind.Null, value.ValueKind);
+    }
+
+    /// <summary>Read the string value of <paramref name="name"/>, asserting it is present and a JSON string.</summary>
+    private static string? GetString(JsonElement element, string name)
+    {
+        Assert.True(TryGetProperty(element, name, out var value), $"The annotation should carry a {name} field.");
+        Assert.Equal(JsonValueKind.String, value.ValueKind);
+        return value.GetString();
+    }
+
+    /// <summary>Read the int value of <paramref name="name"/>, asserting it is present and a JSON number.</summary>
+    private static int GetInt(JsonElement element, string name)
+    {
+        Assert.True(TryGetProperty(element, name, out var value), $"The annotation should carry a {name} field.");
+        Assert.Equal(JsonValueKind.Number, value.ValueKind);
+        return value.GetInt32();
+    }
 
     /// <summary>The scheme+host+port of <paramref name="address"/> — a same-origin value for the Origin header.</summary>
     private static string SameOrigin(Uri address) => address.GetLeftPart(UriPartial.Authority);
