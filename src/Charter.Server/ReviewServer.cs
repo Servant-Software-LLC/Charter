@@ -70,14 +70,20 @@ public sealed class ReviewServer : IReviewServer
         ArgumentNullException.ThrowIfNull(session);
         options ??= new ReviewServerOptions();
 
+        // Production path: the ephemeral port comes from ReserveEphemeralPort. Routed through the internal
+        // StartCore seam so a test can inject a supplier that forces a first-attempt port conflict and prove
+        // the bounded retry lands the server on a fresh port. Public behaviour is unchanged.
+        return StartCore(session, options, () => ReserveEphemeralPort(options.BindAddress));
+    }
+
+    // Same as Start, but with the ephemeral-port supplier injected — the internal seam that makes the
+    // self-healing retry path deterministically testable. The public Start() always passes the real
+    // ReserveEphemeralPort supplier, so this adds no public surface and no behavioural change.
+    internal static ReviewServer StartCore(
+        ReviewSession session, ReviewServerOptions options, Func<int> ephemeralPortSupplier)
+    {
         var host = options.BindAddress.ToString();
-        var port = options.Port > 0 ? options.Port : ReserveEphemeralPort(options.BindAddress);
-
-        var listener = new HttpListener();
-        listener.Prefixes.Add($"http://{host}:{port}/");
-        listener.Start();
-
-        var address = new Uri($"http://{host}:{port}/");
+        var (listener, address) = BindListener(host, options, ephemeralPortSupplier);
 
         // One per-session annotation store, held for the server's lifetime: prompts enqueue into it and
         // long-polls drain from it.
@@ -122,6 +128,71 @@ public sealed class ReviewServer : IReviewServer
 
         _shutdown.Dispose();
     }
+
+    // How many times to re-bind an ephemeral port that loses the reserve->bind race. ReserveEphemeralPort
+    // frees the probed port before HttpListener re-registers it, so another process can grab it in that gap
+    // and Start() throws a port conflict. A fresh probe on the next attempt sidesteps the collision; the bound
+    // is small so a genuine, persistent bind failure still surfaces instead of looping forever.
+    internal const int EphemeralBindAttempts = 5;
+
+    // Bind the HttpListener, self-healing the ephemeral-port TOCTOU. An explicitly requested port is bound
+    // once and any conflict surfaces (silently moving off the caller's chosen port would violate their
+    // intent). An ephemeral port (Port = 0) is probed, bound, and — ONLY on a port-conflict exception —
+    // re-probed and re-bound up to EphemeralBindAttempts times; a non-conflict failure, or a conflict that
+    // persists past the bound, propagates.
+    private static (HttpListener Listener, Uri Address) BindListener(
+        string host, ReviewServerOptions options, Func<int> ephemeralPortSupplier)
+    {
+        if (options.Port > 0)
+        {
+            return StartOn(host, options.Port);
+        }
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var port = ephemeralPortSupplier();
+            try
+            {
+                return StartOn(host, port);
+            }
+            catch (Exception ex) when (attempt < EphemeralBindAttempts && IsPortConflict(ex))
+            {
+                // Lost the reserve->bind race for this ephemeral port; a fresh probe next iteration avoids it.
+            }
+        }
+    }
+
+    // Build and start an HttpListener on a single host:port. On a failed Start() the half-built listener is
+    // closed so a retry (or the rethrow) leaves no half-open registration behind.
+    private static (HttpListener Listener, Uri Address) StartOn(string host, int port)
+    {
+        var listener = new HttpListener();
+        listener.Prefixes.Add($"http://{host}:{port}/");
+        try
+        {
+            listener.Start();
+        }
+        catch
+        {
+            listener.Close();
+            throw;
+        }
+
+        return (listener, new Uri($"http://{host}:{port}/"));
+    }
+
+    // Whether an exception from HttpListener.Start means "that port/prefix is already taken" — the only case
+    // the ephemeral-port retry self-heals. Everything else (e.g. ERROR_ACCESS_DENIED, which needs admin) is a
+    // genuine failure and must surface immediately rather than be retried away.
+    internal static bool IsPortConflict(Exception ex) => ex switch
+    {
+        // ERROR_SHARING_VIOLATION (32) and ERROR_ALREADY_EXISTS (183 — the "conflicts with an existing
+        // registration" text) are the HTTP.sys registration collisions; WSAEADDRINUSE (10048) is the socket
+        // collision, which is also how the managed (non-Windows) HttpListener surfaces an in-use port.
+        HttpListenerException hle => hle.ErrorCode is 32 or 183 or 10048,
+        SocketException se => se.SocketErrorCode == SocketError.AddressAlreadyInUse,
+        _ => false,
+    };
 
     private static int ReserveEphemeralPort(IPAddress address)
     {
@@ -240,6 +311,14 @@ public sealed class ReviewServer : IReviewServer
         var served = SdkInjector.Inject(CharterRenderer.Render(markdown), SdkScript);
         var payload = Encoding.UTF8.GetBytes(served);
 
+        // Security headers on the served page. This is the SERVED-PAGE CSP — deliberately looser than the
+        // stricter export CSP (Charter.Core.ArtifactExporter): it keeps script-src 'unsafe-inline' so the
+        // injected Mermaid runtime + annotation SDK run, and connect-src 'self' so the SDK can POST/poll the
+        // same-origin /api/* routes. img-src is confined to 'self' + data:, and every other fetch class is
+        // shut off. Referrer-Policy: no-referrer is load-bearing — the capability key rides the ?key= URL, so
+        // this stops it leaking via the Referer header to any remote the plan references.
+        WriteSecurityHeaders(response);
+
         response.StatusCode = (int)HttpStatusCode.OK;
         response.ContentType = "text/html; charset=utf-8";
         response.ContentLength64 = payload.Length;
@@ -347,7 +426,19 @@ public sealed class ReviewServer : IReviewServer
             body = await reader.ReadToEndAsync().ConfigureAwait(false);
         }
 
-        var submission = JsonSerializer.Deserialize<AnnotationApi.PromptSubmission>(body, AnnotationApi.JsonOptions);
+        AnnotationApi.PromptSubmission? submission;
+        try
+        {
+            submission = JsonSerializer.Deserialize<AnnotationApi.PromptSubmission>(body, AnnotationApi.JsonOptions);
+        }
+        catch (JsonException)
+        {
+            // Malformed JSON is a client error (400), not a server fault (500) — the same guard the answers
+            // route already applies, so both state-changing POST routes reject bad input consistently.
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
         if (submission is null || string.IsNullOrEmpty(submission.AnchorId))
         {
             response.StatusCode = (int)HttpStatusCode.BadRequest;
@@ -390,8 +481,10 @@ public sealed class ReviewServer : IReviewServer
             // The server is shutting down; return whatever is currently drained (typically empty).
         }
 
+        // Drain, then write with requeue-on-failure: if the client disconnected mid-write the drained batch is
+        // re-enqueued (at the front) so a subsequent poll re-fetches it rather than losing it (at-least-once).
         var drained = _store.Drain();
-        WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        WriteDrainedJson(response, drained, _store.Requeue);
     }
 
     private async Task HandleAnswersPostAsync(HttpListenerContext context, string keyFromPath)
@@ -459,8 +552,11 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // Drain, then write with requeue-on-failure: a client that disconnects mid-write does not lose the
+        // drained answers — they are re-enqueued (at the front) so a subsequent GET /api/answers re-fetches
+        // them (at-least-once), mirroring the /api/poll drain.
         var drained = _answers.Drain();
-        WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        WriteDrainedJson(response, drained, _answers.Requeue);
     }
 
     private async Task HandleEventsAsync(HttpListenerContext context)
@@ -547,6 +643,20 @@ public sealed class ReviewServer : IReviewServer
         }
     }
 
+    // The served-page Content-Security-Policy. Distinct from the export CSP: it keeps script-src
+    // 'unsafe-inline' (injected Mermaid runtime + annotation SDK) and connect-src 'self' (same-origin /api/*
+    // POST + poll), while confining images to self + data: and denying every other remote fetch class.
+    private const string ServedPageCsp =
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+        "connect-src 'self'; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+    private static void WriteSecurityHeaders(HttpListenerResponse response)
+    {
+        response.Headers["Content-Security-Policy"] = ServedPageCsp;
+        response.Headers["Referrer-Policy"] = "no-referrer";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+    }
+
     private static void WriteJson(HttpListenerResponse response, string json)
     {
         var payload = Encoding.UTF8.GetBytes(json);
@@ -554,6 +664,43 @@ public sealed class ReviewServer : IReviewServer
         response.ContentType = "application/json; charset=utf-8";
         response.ContentLength64 = payload.Length;
         response.OutputStream.Write(payload, 0, payload.Length);
+    }
+
+    /// <summary>
+    /// Serialize a DRAINED batch as the JSON body and write it, re-enqueuing the batch via
+    /// <paramref name="requeue"/> if the write fails (a disconnected client) — the at-least-once guarantee for
+    /// the poll/answers drains, which clear the buffer under lock BEFORE this write. Without the requeue a
+    /// mid-write disconnect would lose the exact review artifact the drain exists to carry. Callers set the
+    /// response headers; only the body write can fail here, and the exception is rethrown so the shared
+    /// handler closes the broken response as before.
+    /// </summary>
+    private static void WriteDrainedJson<T>(
+        HttpListenerResponse response, IReadOnlyList<T> drained, Action<IReadOnlyList<T>> requeue)
+    {
+        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        response.StatusCode = (int)HttpStatusCode.OK;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = payload.Length;
+        WriteBodyOrRequeue(response.OutputStream, payload, () => requeue(drained));
+    }
+
+    /// <summary>
+    /// Write <paramref name="payload"/> to <paramref name="output"/>; on ANY write failure invoke
+    /// <paramref name="onWriteFailure"/> (the drain re-enqueue) and rethrow. The transport-independent core of
+    /// the drain write path, so the requeue-on-write-failure is unit-testable against a throwing stream rather
+    /// than a flaky client abort.
+    /// </summary>
+    internal static void WriteBodyOrRequeue(Stream output, byte[] payload, Action onWriteFailure)
+    {
+        try
+        {
+            output.Write(payload, 0, payload.Length);
+        }
+        catch (Exception)
+        {
+            onWriteFailure();
+            throw;
+        }
     }
 
     private static void TrySetInternalError(HttpListenerResponse response)

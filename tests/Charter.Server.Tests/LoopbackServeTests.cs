@@ -65,6 +65,102 @@ public class LoopbackServeTests
         }
     }
 
+    [Fact]
+    public async Task Server_ReReadsSourceEachRequest_ServesEditedContent()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+            var keyedUri = new UriBuilder(server.Address) { Query = "key=" + session.Key.Value }.Uri;
+
+            // First GET serves the ORIGINAL heading (rendered from the source on disk).
+            using (var first = await client.GetAsync(keyedUri))
+            {
+                Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+                Assert.Contains(PlanHeadingText, await first.Content.ReadAsStringAsync());
+            }
+
+            // Edit the source file on disk — the live-reload contract is that ServeStatic re-reads + re-renders
+            // from source on EVERY request, so no server restart is needed to see the change.
+            const string editedHeading = "Charter Live Reload Edited Heading";
+            File.WriteAllText(planPath, "# " + editedHeading + "\n\nAn edited paragraph inside the plan.\n");
+
+            // A second GET serves the NEW content, and the original heading is gone.
+            using (var second = await client.GetAsync(keyedUri))
+            {
+                Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+                var body = await second.Content.ReadAsStringAsync();
+                Assert.Contains(editedHeading, body);
+                Assert.DoesNotContain(PlanHeadingText, body);
+            }
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Server_ServedPage_CarriesSecurityHeaders()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var keyedUri = new UriBuilder(server.Address) { Query = "key=" + session.Key.Value }.Uri;
+            using var response = await client.GetAsync(keyedUri);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            // Content-Security-Policy: same-origin XHR still allowed (connect-src 'self'), but images are
+            // confined to 'self' + data: — no arbitrary remote host — and there is no wildcard anywhere.
+            var csp = HeaderValue(response, "Content-Security-Policy");
+            Assert.NotNull(csp);
+            Assert.Contains("connect-src 'self'", csp);
+            Assert.Contains("img-src 'self' data:", csp);
+            Assert.DoesNotContain("*", csp);              // no wildcard source permitting an arbitrary host
+            Assert.DoesNotContain("http", csp);           // and no explicit remote scheme
+
+            // Referrer-Policy: no-referrer — critical, since the capability key rides the ?key= URL and must
+            // never leak to a remote via the Referer header. X-Content-Type-Options: nosniff pins the MIME.
+            Assert.Equal("no-referrer", HeaderValue(response, "Referrer-Policy"));
+            Assert.Equal("nosniff", HeaderValue(response, "X-Content-Type-Options"));
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The first value of response header <paramref name="name"/> — checking both the response and content
+    /// header collections, since <see cref="HttpClient"/> partitions headers between them — or null if absent.
+    /// </summary>
+    private static string? HeaderValue(HttpResponseMessage response, string name)
+    {
+        if (response.Headers.TryGetValues(name, out var fromResponse))
+        {
+            return System.Linq.Enumerable.FirstOrDefault(fromResponse);
+        }
+
+        return response.Content.Headers.TryGetValues(name, out var fromContent)
+            ? System.Linq.Enumerable.FirstOrDefault(fromContent)
+            : null;
+    }
+
     private static string WriteTempPlan()
     {
         var path = Path.Combine(Path.GetTempPath(), "charter-plan-" + Guid.NewGuid().ToString("N") + ".mdx");

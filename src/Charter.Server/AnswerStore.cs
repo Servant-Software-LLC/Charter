@@ -32,6 +32,27 @@ public sealed class AnswerStore
     }
 
     /// <summary>
+    /// Re-add <paramref name="answers"/> that were drained but never delivered — the drain write failed
+    /// (client disconnected) — to the FRONT of the pending buffer under the same lock, so a subsequent
+    /// <see cref="Drain"/> re-fetches them. This is the at-least-once guarantee: a drained batch that could
+    /// not be written is not lost. Front insertion keeps the un-delivered answers ahead of any that arrived
+    /// after the failed drain, preserving submit order.
+    /// </summary>
+    public void Requeue(IReadOnlyList<Answer> answers)
+    {
+        ArgumentNullException.ThrowIfNull(answers);
+        if (answers.Count == 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _pending.InsertRange(0, answers);
+        }
+    }
+
+    /// <summary>
     /// Atomically return the currently-pending answers and clear the buffer, so a subsequent
     /// <see cref="Drain"/> that observes no further <see cref="Enqueue(Answer)"/> returns empty. Safe to call
     /// concurrently with <see cref="Enqueue(Answer)"/> and other <see cref="Drain"/> calls.

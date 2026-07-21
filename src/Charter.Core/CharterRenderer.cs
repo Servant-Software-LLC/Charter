@@ -22,7 +22,25 @@ public static class CharterRenderer
     public static string Render(string markdown)
     {
         markdown ??= string.Empty;
-        var document = CharterMarkdown.ParseDocument(markdown);
+
+        MarkdownDocument document;
+        try
+        {
+            document = CharterMarkdown.ParseDocument(markdown);
+        }
+        catch (ArgumentException)
+        {
+            // Markdig aborts pathologically deep nesting (e.g. hundreds of nested blockquotes) with an
+            // ArgumentException from ParseDocument. Degrade to a visible, escaped placeholder rather than
+            // letting the whole render — and thus the served review page, export, and handoff — throw.
+            using var errorWriter = new StringWriter();
+            var errorRenderer = new HtmlRenderer(errorWriter);
+            errorRenderer.Write("<div class=\"charter-parse-error\">");
+            errorRenderer.WriteEscape("The plan could not be parsed (input too deeply nested).");
+            errorRenderer.Write("</div>");
+            errorWriter.Flush();
+            return errorWriter.ToString();
+        }
 
         var hasDiagram = false;
         foreach (var node in document)
@@ -147,10 +165,36 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         {
             WriteQuestion(renderer, obj);
         }
+        else if (string.Equals(info, "custom-html", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteCustomHtml(renderer, obj);
+        }
         else
         {
             base.Write(renderer, obj);
         }
+    }
+
+    /// <summary>
+    /// Render a <c>:::custom-html</c> container as the sanctioned raw-HTML escape hatch: emit its inner source
+    /// VERBATIM (unescaped) so the author's explicitly opted-in HTML stays live. This is the ONE block where
+    /// raw HTML is intentional — every other surface escapes it (the pipeline's <c>DisableHtml</c>), so bare
+    /// prose HTML can never phone home or run, but a deliberate <c>:::custom-html</c> block still can. The
+    /// block's stable id rides the wrapping <c>&lt;div&gt;</c> so the escape-hatch content stays annotatable.
+    /// </summary>
+    private void WriteCustomHtml(HtmlRenderer renderer, CustomContainer obj)
+    {
+        renderer.EnsureLine();
+        if (!renderer.EnableHtmlForBlock)
+        {
+            return;
+        }
+
+        renderer.Write("<div class=\"custom-html\"");
+        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        renderer.Write('>');
+        renderer.Write(ContainerBody(obj)); // RAW, not escaped — the escape hatch
+        renderer.WriteLine("</div>");
     }
 
     private void WriteDiagram(HtmlRenderer renderer, CustomContainer obj)
@@ -229,16 +273,29 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// </summary>
     private void WriteQuestion(HtmlRenderer renderer, CustomContainer obj)
     {
-        var spec = QuestionSpec.Parse(ContainerBody(obj));
-
         renderer.EnsureLine();
         if (!renderer.EnableHtmlForBlock)
         {
             return;
         }
 
+        var id = obj.TryGetAttributes()?.Id;
+
+        // Degrade a malformed/empty :::question to a visible placeholder rather than throwing (which would
+        // abort the whole render — and thus the served page / export). The placeholder KEEPS the block's
+        // stable id so a reviewer can still annotate it, and every other block still renders.
+        if (!QuestionSpec.TryParse(ContainerBody(obj), out var spec, out var error) || spec is null)
+        {
+            renderer.Write("<div class=\"question-error\"");
+            WriteId(renderer, id);
+            renderer.Write('>');
+            renderer.WriteEscape(error ?? "The :::question block could not be parsed.");
+            renderer.WriteLine("</div>");
+            return;
+        }
+
         renderer.Write("<form class=\"question\"");
-        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        WriteId(renderer, id);
         renderer.Write(" data-question-id=\"");
         renderer.WriteEscape(spec.Id);
         renderer.WriteLine("\">");

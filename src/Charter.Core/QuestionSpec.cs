@@ -97,6 +97,18 @@ public sealed record QuestionSpec(
     }
 
     /// <summary>
+    /// The non-throwing parse the renderer and handoff use to DEGRADE a malformed <c>:::question</c> to a
+    /// visible placeholder instead of aborting the whole render/emit: returns <c>true</c> with the parsed
+    /// <paramref name="spec"/> for a well-formed question, or <c>false</c> with <paramref name="spec"/> null
+    /// and a human-readable <paramref name="error"/> reason for a malformed or schema-invalid body.
+    /// </summary>
+    public static bool TryParse(string body, out QuestionSpec? spec, out string? error)
+    {
+        (spec, error) = TryParse(body);
+        return spec is not null;
+    }
+
+    /// <summary>
     /// The single validation kernel behind both entry points: parses the JSON body and checks every schema
     /// rule, returning either the built spec (<c>error</c> null) or a null spec with a human-readable reason.
     /// </summary>

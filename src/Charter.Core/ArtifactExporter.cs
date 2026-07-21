@@ -86,7 +86,14 @@ public static partial class ArtifactExporter
         string TransformNonScript(string segment)
         {
             var inlined = SrcAttributeRegex().Replace(segment, InlineOrOmit);
-            return FileUriRegex().Replace(inlined, "file:///[redacted]");
+            var fileScrubbed = FileUriRegex().Replace(inlined, "file:///[redacted]");
+
+            // Final pass: redact any UNAMBIGUOUS local filesystem path still riding a NON-src carrier — an
+            // href, a CSS url(...), an srcset, an xlink:href — that the src-inlining and file:// passes above
+            // never touch. Only drive-letter and UNC paths are redacted; bare POSIX /… paths (legit
+            // root-relative URLs) are deliberately left alone. Script regions were already set aside by the
+            // caller, so the vendored Mermaid runtime is untouched.
+            return LocalPathRegex().Replace(fileScrubbed, "file:///[redacted]");
         }
 
         // Step 2: split SCRIPT and non-SCRIPT regions BEFORE scanning. The vendored Mermaid runtime rides
@@ -103,8 +110,33 @@ public static partial class ArtifactExporter
         }
 
         builder.Append(TransformNonScript(html[cursor..]));
-        return builder.ToString();
+
+        // Wrap the self-contained body in a minimal document carrying a restrictive CSP in the head. The
+        // policy allows ONLY the inlined offline runtime (inline script/style, data: images and fonts) and
+        // forbids every remote/off-machine connection (default-src 'none' + connect-src 'none') — so the
+        // shipped artifact can never fetch or phone home, while a saved :::diagram still renders from its
+        // inlined Mermaid bytes. The serve-time SDK is never present here (it needs connect-src and is added
+        // by the server, not export), so no CSP is emitted by the renderer's serve path.
+        return WrapWithCspDocument(builder.ToString());
     }
+
+    /// <summary>The restrictive Content-Security-Policy stamped into every exported artifact.</summary>
+    private const string ContentSecurityPolicy =
+        "default-src 'none'; img-src data:; style-src 'unsafe-inline'; " +
+        "script-src 'unsafe-inline'; font-src data:; connect-src 'none'";
+
+    /// <summary>
+    /// Wrap the transformed body in a minimal HTML document whose head carries the export CSP (and a UTF-8
+    /// charset). The body is emitted verbatim between <c>&lt;body&gt;</c> tags, so the exact rendered content
+    /// is preserved as a contiguous run.
+    /// </summary>
+    private static string WrapWithCspDocument(string body)
+        => "<!doctype html>\n<html>\n<head>\n" +
+           "<meta charset=\"utf-8\" />\n" +
+           $"<meta http-equiv=\"Content-Security-Policy\" content=\"{ContentSecurityPolicy}\" />\n" +
+           "</head>\n<body>\n" +
+           body +
+           "\n</body>\n</html>\n";
 
     /// <summary>
     /// Resolve, confine, size-check and read one local asset. Returns its bytes on success, otherwise the
@@ -163,9 +195,11 @@ public static partial class ArtifactExporter
     /// Resolve <paramref name="reference"/> to an absolute path CONFINED to <paramref name="normalizedRoot"/>,
     /// returning <c>null</c> when it escapes. Strips a <c>file://</c> scheme first (via <see cref="Uri"/>, so a
     /// Windows <c>file:///C:/…</c> URI maps to a real OS path), then canonicalizes with
-    /// <see cref="Path.GetFullPath(string)"/> relative to the root. The containment test mirrors
-    /// <c>Charter.Server.PathConfinement.Resolve</c>: accept only when the resolved path EQUALS the root or
-    /// starts with the root plus a directory separator — never a bare string-prefix match.
+    /// <see cref="Path.GetFullPath(string)"/> relative to the root. Containment is tested twice: first
+    /// LEXICALLY (mirroring <c>Charter.Server.PathConfinement.Resolve</c> — accept only when the resolved path
+    /// EQUALS the root or starts with the root plus a directory separator, never a bare string-prefix match),
+    /// then PHYSICALLY (<see cref="EscapesViaReparsePoint"/>) so a symlink/junction textually inside the root
+    /// but resolving OUTSIDE it is refused rather than having its out-of-root bytes inlined.
     /// </summary>
     private static string? ResolveConfined(string reference, string normalizedRoot)
     {
@@ -177,23 +211,129 @@ public static partial class ArtifactExporter
 
             var full = Path.GetFullPath(Path.Combine(normalizedRoot, candidate));
 
-            var comparison = OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
-
-            if (full.Equals(normalizedRoot, comparison))
+            if (!IsContained(full, normalizedRoot))
             {
-                return full;
+                return null;
             }
 
-            var rootPrefix = normalizedRoot + Path.DirectorySeparatorChar;
-            return full.StartsWith(rootPrefix, comparison) ? full : null;
+            return EscapesViaReparsePoint(full, normalizedRoot) ? null : full;
         }
         catch (UriFormatException)
         {
             return null;
         }
         catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is the root itself or lies beneath it — separator-safe, so a sibling
+    /// that merely shares the root as a raw string prefix (<c>plan-evil</c> vs <c>plan</c>) is NOT contained.
+    /// </summary>
+    private static bool IsContained(string path, string normalizedRoot)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        return path.Equals(normalizedRoot, comparison)
+            || path.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
+    }
+
+    /// <summary>
+    /// Walk every path component strictly BELOW <paramref name="normalizedRoot"/> and return true when one is a
+    /// reparse point (symlink or junction) whose resolved final target ESCAPES the root — <c>Path.GetFullPath</c>
+    /// is lexical and never follows reparse points, so a link textually inside the root can smuggle out-of-root
+    /// bytes into the shipped artifact. Only components inside the root are examined: the root and its ancestors
+    /// are trusted and never resolved (on macOS the temp root's ancestors — e.g. <c>/tmp</c> — are themselves
+    /// symlinks, and the root was canonicalized lexically to match). A missing or inaccessible component is not
+    /// an escape here; the caller's <see cref="File.Exists(string)"/> / read guards handle absence.
+    /// </summary>
+    private static bool EscapesViaReparsePoint(string full, string normalizedRoot)
+    {
+        var relative = Path.GetRelativePath(normalizedRoot, full);
+        if (relative.Length == 0 || relative == "." || Path.IsPathRooted(relative)
+            || relative.StartsWith("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var current = normalizedRoot;
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            current = Path.Combine(current, segment);
+
+            var attributes = SafeGetAttributes(current);
+            if (attributes is not { } attrs || (attrs & FileAttributes.ReparsePoint) == 0)
+            {
+                continue;
+            }
+
+            var target = ResolveFinalTarget(current, (attrs & FileAttributes.Directory) != 0);
+            if (target is null || !IsContained(target, normalizedRoot))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The attributes of the entry AT <paramref name="path"/> (a symlink's OWN attributes, reparse flag
+    /// included — <see cref="File.GetAttributes(string)"/> does not follow the link), or <c>null</c> when the
+    /// path is missing or inaccessible.
+    /// </summary>
+    private static FileAttributes? SafeGetAttributes(string path)
+    {
+        try
+        {
+            return File.GetAttributes(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The canonical final target of a reparse-point <paramref name="path"/> (following the whole link chain),
+    /// as an absolute path, or <c>null</c> when it cannot be resolved.
+    /// </summary>
+    private static string? ResolveFinalTarget(string path, bool isDirectory)
+    {
+        try
+        {
+            var target = isDirectory
+                ? Directory.ResolveLinkTarget(path, returnFinalTarget: true)
+                : File.ResolveLinkTarget(path, returnFinalTarget: true);
+
+            return target is null ? null : Path.GetFullPath(target.FullName);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
         {
             return null;
         }
@@ -279,4 +419,18 @@ public static partial class ArtifactExporter
     /// </summary>
     [GeneratedRegex(@"file://[^""'\s<>]*", RegexOptions.IgnoreCase)]
     private static partial Regex FileUriRegex();
+
+    /// <summary>
+    /// Matches an UNAMBIGUOUS local filesystem path — a Windows drive-letter path (a lone drive letter,
+    /// colon, then a separator: <c>C:/Users/…</c> or <c>C:\Users\…</c>) or a UNC path
+    /// (<c>\\server\share\…</c>) — wherever it survives on a non-<c>src</c> carrier (an <c>href</c>,
+    /// <c>srcset</c>, CSS <c>url(...)</c>, or <c>xlink:href</c>). The negative lookbehind on the drive letter
+    /// keeps a URL scheme like <c>http://</c> (whose <c>p:/</c> would otherwise read as a drive) from
+    /// matching, and a bare POSIX <c>/…</c> path is deliberately NOT matched — a root-relative URL is
+    /// legitimate and must survive. The path body stops at the first quote, whitespace, angle bracket, or
+    /// closing parenthesis, so an <c>srcset</c> descriptor (<c>… 2x</c>) or a CSS <c>url(…)</c> terminator is
+    /// preserved after the redacted path.
+    /// </summary>
+    [GeneratedRegex(@"(?<![A-Za-z])[A-Za-z]:[\\/][^""'\s<>)]*|\\\\[^""'\s<>)]+")]
+    private static partial Regex LocalPathRegex();
 }

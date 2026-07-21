@@ -335,6 +335,90 @@ public class ArtifactExporterTests
             Assert.Contains("data-charter-export-omitted=\"total-cap-exceeded\"", html);
         });
 
+    /// <summary>
+    /// 15. Absolute local paths that ride NON-<c>src</c> carriers — an <c>&lt;a href&gt;</c>, a CSS
+    /// <c>url(...)</c> inside a <c>style</c>, and an <c>&lt;img srcset&gt;</c> — are redacted to the bare
+    /// <c>file:///[redacted]</c> sentinel. The asset-inlining pass only handles <c>src=</c>, so an unambiguous
+    /// drive-letter path anywhere else would otherwise ship in the artifact and leak the author's username and
+    /// directory layout. Neither the username (<c>Alice</c>) nor any absolute path may survive.
+    /// </summary>
+    [Fact]
+    public void Export_LocalPathsInNonSrcCarriers_AreRedacted()
+        => WithScratch((_, planDirectory) =>
+        {
+            const string markdown =
+                "See [notes](C:/Users/Alice/secret/notes.md).\n\n" +
+                ":::custom-html\n" +
+                "<div style=\"background:url('C:/Users/Alice/private/bg.png')\"></div>\n" +
+                "<img srcset=\"C:/Users/Alice/pics/hi-2x.png 2x\">\n" +
+                ":::";
+
+            var html = ArtifactExporter.Export(markdown, planDirectory);
+
+            Assert.DoesNotContain("Alice", html);
+            Assert.DoesNotContain("C:/Users/Alice/secret/notes.md", html);
+            Assert.DoesNotContain("C:/Users/Alice/private/bg.png", html);
+            Assert.DoesNotContain("C:/Users/Alice/pics/hi-2x.png", html);
+            Assert.Contains("file:///[redacted]", html);
+        });
+
+    /// <summary>
+    /// 16. The redaction is targeted, not a blanket path scrub: a legitimate remote URL (whose scheme
+    /// <c>http://</c> superficially contains a <c>p:/</c> that looks like a drive letter) and a root-relative
+    /// URL both survive untouched. Only UNAMBIGUOUS local paths are redacted.
+    /// </summary>
+    [Fact]
+    public void Export_RemoteAndRootRelativeUrls_AreNotRedacted()
+        => WithScratch((_, planDirectory) =>
+        {
+            const string markdown =
+                "A [remote](https://example.com/docs/page) link and a [root](/docs/local-guide) link.";
+
+            var html = ArtifactExporter.Export(markdown, planDirectory);
+
+            Assert.Contains("https://example.com/docs/page", html);
+            Assert.Contains("/docs/local-guide", html);
+        });
+
+    /// <summary>
+    /// 17. A directory symlink created INSIDE the confinement root but pointing OUTSIDE it does not smuggle
+    /// out-of-root bytes into the artifact: <c>Path.GetFullPath</c> is lexical and would leave the link
+    /// textually contained, so the exporter must resolve the reparse point, see its target escapes the root,
+    /// and omit the asset exactly like a missing/traversal reference. Guarded to platforms that permit link
+    /// creation — skipped cleanly where creating a symlink is not allowed (no privilege / not supported).
+    /// </summary>
+    [Fact]
+    public void Export_SymlinkEscapingRoot_DoesNotInlineOutOfRootFile()
+        => WithScratch((root, planDirectory) =>
+        {
+            var outsideDir = Path.Combine(root, "outside");
+            Directory.CreateDirectory(outsideDir);
+            var secretBytes = Filled(0x5A, 40);
+            File.WriteAllBytes(Path.Combine(outsideDir, "secret.png"), secretBytes);
+
+            var linkPath = Path.Combine(planDirectory, "escape");
+            try
+            {
+                Directory.CreateSymbolicLink(linkPath, outsideDir);
+            }
+            catch (System.Exception ex)
+                when (ex is IOException or System.UnauthorizedAccessException or System.PlatformNotSupportedException)
+            {
+                return; // link creation not permitted on this platform/run — skip cleanly
+            }
+
+            // The link is textually inside planDirectory; a lexical-only confinement check would accept
+            // ./escape/secret.png and base64-inline the out-of-root secret. The reparse-point resolution must
+            // refuse it.
+            const string markdown = "![Smuggled](./escape/secret.png)";
+            var html = ArtifactExporter.Export(markdown, planDirectory);
+
+            Assert.DoesNotContain(System.Convert.ToBase64String(secretBytes), html);
+            Assert.DoesNotContain("data:image/png;base64,", html);
+            Assert.Contains("data-charter-export-omitted=\"not-found\"", html);
+            Assert.DoesNotContain(outsideDir, html);
+        });
+
     // --- helpers ---------------------------------------------------------------------------------------
 
     /// <summary>

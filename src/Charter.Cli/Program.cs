@@ -56,12 +56,43 @@ if (args.Length >= 1 && args[0] == "handoff")
     return BuildHandoffRoot().Parse(args).Invoke();
 }
 
+// Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
+// returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
+// list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
+// fall-through was a footgun: `charter renderr plan.mdx -o out.html && guardrails …` would exit 0 and hand
+// Guardrails a stale/missing artifact while every step reported success.
+if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
+{
+    Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
+    Console.Error.WriteLine("Commands: render, review, export, handoff. Flags: --version, --help.");
+    return 1;
+}
+
+// Genuine no-argument (or explicit --help) help path — the ONLY route to `return 0` from here.
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
 AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.mdx>[/]  or  [green]charter --version[/]");
 return 0;
+
+// Wraps a verb's action body so an expected I/O / listener failure — IOException, UnauthorizedAccessException,
+// NotSupportedException, PathTooLongException, System.Net.HttpListenerException — or any other unexpected error
+// becomes ONE clean `charter <verb>: <message>` line on stderr + exit 1 (matching the "input plan not found"
+// one-liner style) rather than a raw unhandled stack trace. Example: `render -o <an existing directory>` now
+// prints `charter render: <message>` instead of dumping `Unhandled exception: System.UnauthorizedAccessException …`.
+static int RunVerb(string verb, Func<int> body)
+{
+    try
+    {
+        return body();
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"charter {verb}: {ex.Message}");
+        return 1;
+    }
+}
 
 // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
 static RootCommand BuildRenderRoot()
@@ -82,7 +113,7 @@ static RootCommand BuildRenderRoot()
         outOption,
     };
 
-    render.SetAction(parseResult =>
+    render.SetAction(parseResult => RunVerb("render", () =>
     {
         string inputPath = parseResult.GetValue(inputArgument)!;
         string outputPath = parseResult.GetValue(outOption)!;
@@ -105,7 +136,7 @@ static RootCommand BuildRenderRoot()
         File.WriteAllText(outputPath, html);
         Console.WriteLine($"Rendered {inputPath} -> {outputPath}");
         return 0;
-    });
+    }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
@@ -132,7 +163,7 @@ static RootCommand BuildExportRoot()
         outOption,
     };
 
-    export.SetAction(parseResult =>
+    export.SetAction(parseResult => RunVerb("export", () =>
     {
         string inputPath = parseResult.GetValue(inputArgument)!;
         string outputPath = parseResult.GetValue(outOption)!;
@@ -159,7 +190,7 @@ static RootCommand BuildExportRoot()
         File.WriteAllText(outputPath, html);
         Console.WriteLine($"Exported {inputPath} -> {outputPath}");
         return 0;
-    });
+    }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
@@ -191,7 +222,7 @@ static RootCommand BuildHandoffRoot()
         answersOption,
     };
 
-    handoff.SetAction(parseResult =>
+    handoff.SetAction(parseResult => RunVerb("handoff", () =>
     {
         string inputPath = parseResult.GetValue(inputArgument)!;
         string outputPath = parseResult.GetValue(outOption)!;
@@ -238,7 +269,7 @@ static RootCommand BuildHandoffRoot()
         File.WriteAllText(outputPath, handoffMarkdown);
         Console.WriteLine($"Handed off {inputPath} -> {outputPath}");
         return 0;
-    });
+    }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
@@ -284,7 +315,7 @@ static RootCommand BuildReviewRoot()
         noOpenOption,
     };
 
-    review.SetAction(parseResult =>
+    review.SetAction(parseResult => RunVerb("review", () =>
     {
         string inputPath = parseResult.GetValue(inputArgument)!;
         bool noOpen = parseResult.GetValue(noOpenOption);
@@ -323,7 +354,7 @@ static RootCommand BuildReviewRoot()
         };
         stop.Wait();
         return 0;
-    });
+    }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {

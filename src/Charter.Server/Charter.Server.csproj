@@ -9,6 +9,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The test project drives the internal drain write-path seam (WriteBodyOrRequeue) directly against a
+         throwing stream to prove the at-least-once requeue-on-write-failure without a flaky HTTP abort. -->
+    <InternalsVisibleTo Include="Charter.Server.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Embed the real serve-time annotation SDK (repo-root sdk/charter-annotate.js) into the assembly so it
          ships inside the single-file binary and the served copy has it at runtime. The on-disk artifact stays
          SDK-free (invariant 1): this embedded copy exists only to be injected serve-time. The LogicalName is

@@ -248,6 +248,37 @@ public class AnswerApiTests
         }
     }
 
+    // ---- 5. Malformed body on the state-changing POST ---------------------------------------------------
+
+    [Fact]
+    public async Task PostAnswer_MalformedJsonBody_ReturnsBadRequest()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // A valid key + same-origin request whose body is malformed JSON is a client error (400), NOT a
+            // server fault (500) — pins the 400 guard the answers and prompts routes now share.
+            var answersUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/answers");
+            using var request = new HttpRequestMessage(HttpMethod.Post, answersUri)
+            {
+                Content = new StringContent("{", Encoding.UTF8, "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------------------------------------
 
     /// <summary>

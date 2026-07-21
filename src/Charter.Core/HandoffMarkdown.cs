@@ -194,13 +194,51 @@ public static class HandoffMarkdown
         return builder.ToString();
     }
 
-    /// <summary>Wrap the inner source verbatim in a fenced code block tagged with <paramref name="language"/>.</summary>
+    /// <summary>
+    /// Wrap the inner source verbatim in a fenced code block tagged with <paramref name="language"/>. The
+    /// fence is made STRICTLY longer than the longest run of consecutive backticks the body contains (and
+    /// never fewer than three), so a body that itself carries <c>```</c> lines — a <c>:::diff</c> or
+    /// <c>:::diagram</c> of a markdown file, Charter's own domain — cannot close the fence early and break out
+    /// into misattributed blocks. CommonMark closes a fence with a run at least as long as the opener, so an
+    /// opener longer than every inner run is un-closable by the body and the whole block stays intact.
+    /// </summary>
     private static string EmitFence(IReadOnlyList<string> innerLines, string language)
-        => new StringBuilder()
-            .Append("```").Append(language).Append('\n')
-            .Append(string.Join("\n", innerLines))
-            .Append("\n```")
+    {
+        var body = string.Join("\n", innerLines);
+        var fence = new string('`', FenceLength(body));
+        return new StringBuilder()
+            .Append(fence).Append(language).Append('\n')
+            .Append(body)
+            .Append('\n').Append(fence)
             .ToString();
+    }
+
+    /// <summary>
+    /// The opening/closing fence length for <paramref name="body"/>: one more than the longest run of
+    /// consecutive backticks anywhere in the body, and never fewer than three.
+    /// </summary>
+    private static int FenceLength(string body)
+    {
+        var longest = 0;
+        var current = 0;
+        foreach (var ch in body)
+        {
+            if (ch == '`')
+            {
+                current++;
+                if (current > longest)
+                {
+                    longest = current;
+                }
+            }
+            else
+            {
+                current = 0;
+            }
+        }
+
+        return Math.Max(3, longest + 1);
+    }
 
     /// <summary>
     /// Resolve a <c>:::question</c> against <paramref name="answers"/>. When the question's id is present,
@@ -211,7 +249,14 @@ public static class HandoffMarkdown
     private static string EmitQuestion(string rawContent, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
     {
         var body = string.Join("\n", InnerLines(rawContent));
-        var spec = QuestionSpec.Parse(body);
+
+        // Degrade a malformed/empty :::question to a clearly-flagged line rather than throwing (which would
+        // abort the whole handoff). The flag is a single blockquote line, so it never starts a line with :::
+        // (invariant 5), and every other block still emits.
+        if (!QuestionSpec.TryParse(body, out var spec, out var error) || spec is null)
+        {
+            return $"> **Malformed question (could not parse): {error}**";
+        }
 
         if (answers is not null && answers.TryGetValue(spec.Id, out var values))
         {

@@ -187,6 +187,104 @@ public class AnnotationApiTests
         }
     }
 
+    [Fact]
+    public async Task Events_EmitsReloadFrame_WhenSourceFileChanges()
+    {
+        var planPath = WriteTempPlan();
+        using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var stopWriter = new CancellationTokenSource();
+        Task? nudger = null;
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var eventsUri = new Uri(server.Address, "events?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var response =
+                await client.GetAsync(eventsUri, HttpCompletionOption.ResponseHeadersRead, overall.Token);
+            Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+            // A background nudger re-touches the watched source file on a small poll cadence until the reload is
+            // seen. Repeated writes are harmless and defeat the tiny window between the server's initial ping
+            // and its FileSystemWatcher being enabled — so the test never depends on a single write landing
+            // after the watcher is armed (flake-free; the assertion is gated by the reload frame + the bounded
+            // 20s deadline, not by a fixed sleep).
+            nudger = Task.Run(async () =>
+            {
+                var edit = 0;
+                while (!stopWriter.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        File.WriteAllText(planPath, "# Reload Iteration " + (++edit) + "\n\nchanged body\n");
+                    }
+                    catch (IOException)
+                    {
+                        // A transient sharing conflict with the server's per-request read is harmless — retry.
+                    }
+
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(150), stopWriter.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            });
+
+            // Read the SSE stream (initial ping, then keep-alives and reloads) until a reload frame arrives or
+            // the bounded deadline elapses. Reads are cancelled only by the overall deadline — never per-read —
+            // so the HTTP response stream is not left in an undefined state by an interrupted read.
+            await using var stream = await response.Content.ReadAsStreamAsync(overall.Token);
+            var buffer = new byte[2048];
+            var received = new StringBuilder();
+            var reloadSeen = false;
+            try
+            {
+                while (!reloadSeen)
+                {
+                    var n = await stream.ReadAsync(buffer, overall.Token);
+                    if (n == 0)
+                    {
+                        break; // stream closed
+                    }
+
+                    received.Append(Encoding.UTF8.GetString(buffer, 0, n));
+                    reloadSeen = received.ToString().Contains("event: reload", StringComparison.Ordinal);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The bounded deadline elapsed; reloadSeen stays false and the assertion reports it clearly.
+            }
+
+            Assert.True(
+                reloadSeen,
+                "GET /events should emit an `event: reload` frame after the source file changed on disk.");
+        }
+        finally
+        {
+            stopWriter.Cancel();
+            if (nudger is not null)
+            {
+                try
+                {
+                    await nudger;
+                }
+                catch (Exception)
+                {
+                    // The nudger only ever writes the temp file / awaits a cancellable delay; nothing to surface.
+                }
+            }
+
+            TryDelete(planPath);
+        }
+    }
+
     // ---- 4. CSRF / same-origin on the state-changing POST ------------------------------------------------
 
     [Fact]
@@ -225,10 +323,137 @@ public class AnnotationApiTests
         }
     }
 
+    // ---- 5. Malformed body + unknown anchor on the state-changing POST ------------------------------------
+
+    [Fact]
+    public async Task Prompts_MalformedJsonBody_ReturnsBadRequest()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // A valid key + same-origin request whose body is malformed JSON is a client error (400), NOT a
+            // server fault (500) — the deserialize is guarded exactly like the answers route.
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            using var request = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent("{", Encoding.UTF8, "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Prompts_UnknownAnchor_IsAcceptedWithNullSourceLine()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // An anchorId that resolves to no block in the plan (the live-reload edit race: the reviewer
+            // annotated a block that a concurrent edit removed). It must still be ACCEPTED (200) and enqueued,
+            // with SourceLine null rather than rejected — the note is not silently dropped.
+            const string unknownAnchor = "b0000000000000000000000000000000";
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind = "element",
+                anchorId = unknownAnchor,
+                note = "note on a block a concurrent edit removed",
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            // Poll and confirm it was enqueued with a NULL source line (not resolved, not dropped).
+            var pollUri = new Uri(server.Address, "api/poll?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var pollCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using var pollResponse = await client.GetAsync(pollUri, pollCts.Token);
+            Assert.True(pollResponse.IsSuccessStatusCode);
+
+            var pollBody = await pollResponse.Content.ReadAsStringAsync(pollCts.Token);
+            using var polled = JsonDocument.Parse(pollBody);
+            var annotation = FindAnnotation(polled.RootElement, unknownAnchor);
+            Assert.True(annotation.HasValue, "The unknown-anchor annotation should be enqueued, not dropped.");
+            Assert.True(
+                TryGetProperty(annotation.Value, "sourceLine", out var sourceLine),
+                "The annotation should carry a sourceLine field.");
+            Assert.Equal(JsonValueKind.Null, sourceLine.ValueKind);
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------------------------------------
 
     /// <summary>The scheme+host+port of <paramref name="address"/> — a same-origin value for the Origin header.</summary>
     private static string SameOrigin(Uri address) => address.GetLeftPart(UriPartial.Authority);
+
+    /// <summary>
+    /// Recursively locate the annotation object whose (case-insensitive) <c>anchorId</c> equals
+    /// <paramref name="anchorId"/>, tolerating a bare array or a wrapper object. Returns the object element so
+    /// the caller can inspect fields (e.g. a null <c>sourceLine</c>) that <see cref="FindSourceLineForAnchor"/>
+    /// — which only returns numeric source lines — cannot distinguish from absence.
+    /// </summary>
+    private static JsonElement? FindAnnotation(JsonElement element, string anchorId)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (FindAnnotation(item, anchorId) is { } fromArray)
+                    {
+                        return fromArray;
+                    }
+                }
+
+                return null;
+
+            case JsonValueKind.Object:
+                if (TryGetProperty(element, "anchorId", out var anchor) &&
+                    anchor.ValueKind == JsonValueKind.String &&
+                    string.Equals(anchor.GetString(), anchorId, StringComparison.Ordinal))
+                {
+                    return element;
+                }
+
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (FindAnnotation(property.Value, anchorId) is { } fromObject)
+                    {
+                        return fromObject;
+                    }
+                }
+
+                return null;
+
+            default:
+                return null;
+        }
+    }
 
     private static string WriteTempPlan()
     {

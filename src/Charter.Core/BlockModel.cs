@@ -125,11 +125,17 @@ internal static class CharterMarkdown
     /// <summary>
     /// The one pipeline every seam parses with. Pipe tables and <c>:::</c> custom containers are enabled;
     /// auto-identifiers are deliberately NOT — heading ids are the stable, content-derived anchors, and
-    /// Markdig's slug-based ids would overwrite them.
+    /// Markdig's slug-based ids would overwrite them. Raw HTML is DISABLED (<see cref="MarkdownPipelineBuilderExtensions.DisableHtml"/>):
+    /// raw HTML blocks/inline in plan markdown are ESCAPED to visible text rather than passed through live,
+    /// closing the stored-XSS / phone-home surface. The block catalog is the only sanctioned rich surface;
+    /// the one deliberate raw-HTML escape hatch is <c>:::custom-html</c>, which <see cref="CharterContainerRenderer"/>
+    /// renders verbatim. The vendored Mermaid runtime and the serve-time SDK are injected AFTER render (not via
+    /// markdown HTML), so escaping raw markdown HTML never touches them.
     /// </summary>
     internal static MarkdownPipeline Pipeline { get; } = new MarkdownPipelineBuilder()
         .UsePipeTables()
         .UseCustomContainers()
+        .DisableHtml()
         .Build();
 
     /// <summary>Parse <paramref name="markdown"/> into a Markdig document using the shared pipeline.</summary>
