@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!-- ProjectReference so the CLI is built before these tests run; the tests then invoke the REAL built
+       binary as a process and assert on its exit code + stderr. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Charter.Cli\Charter.Cli.csproj" />
+  </ItemGroup>
+
+  <!-- Capture the resolved path of the Charter.Cli build output (its own bin, next to its
+       Charter.Cli.runtimeconfig.json, and config-matched to this test run) into an assembly-metadata
+       attribute the tests read at runtime. This is how the process tests locate the CLI robustly and
+       cross-platform — no hard-coded OS path — and it points at a directory `dotnet exec` can run. -->
+  <Target Name="CaptureCharterCliPath" AfterTargets="ResolveReferences" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute"
+                         Condition="'%(ReferencePath.Filename)' == 'Charter.Cli'">
+        <_Parameter1>CharterCliPath</_Parameter1>
+        <_Parameter2>%(ReferencePath.FullPath)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
+
+</Project>
