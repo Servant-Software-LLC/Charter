@@ -240,6 +240,14 @@ public sealed class ReviewServer : IReviewServer
         var served = SdkInjector.Inject(CharterRenderer.Render(markdown), SdkScript);
         var payload = Encoding.UTF8.GetBytes(served);
 
+        // Security headers on the served page. This is the SERVED-PAGE CSP — deliberately looser than the
+        // stricter export CSP (Charter.Core.ArtifactExporter): it keeps script-src 'unsafe-inline' so the
+        // injected Mermaid runtime + annotation SDK run, and connect-src 'self' so the SDK can POST/poll the
+        // same-origin /api/* routes. img-src is confined to 'self' + data:, and every other fetch class is
+        // shut off. Referrer-Policy: no-referrer is load-bearing — the capability key rides the ?key= URL, so
+        // this stops it leaking via the Referer header to any remote the plan references.
+        WriteSecurityHeaders(response);
+
         response.StatusCode = (int)HttpStatusCode.OK;
         response.ContentType = "text/html; charset=utf-8";
         response.ContentLength64 = payload.Length;
@@ -545,6 +553,20 @@ public sealed class ReviewServer : IReviewServer
                 break; // The client disconnected or the server is shutting down.
             }
         }
+    }
+
+    // The served-page Content-Security-Policy. Distinct from the export CSP: it keeps script-src
+    // 'unsafe-inline' (injected Mermaid runtime + annotation SDK) and connect-src 'self' (same-origin /api/*
+    // POST + poll), while confining images to self + data: and denying every other remote fetch class.
+    private const string ServedPageCsp =
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+        "connect-src 'self'; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+    private static void WriteSecurityHeaders(HttpListenerResponse response)
+    {
+        response.Headers["Content-Security-Policy"] = ServedPageCsp;
+        response.Headers["Referrer-Policy"] = "no-referrer";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
     }
 
     private static void WriteJson(HttpListenerResponse response, string json)
