@@ -23,11 +23,27 @@ internal static class AnnotationApi
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
-    /// <summary>The JSON body a reviewer POSTs to <c>/api/{key}/prompts</c>: the anchor and the note.</summary>
+    /// <summary>
+    /// The JSON body a reviewer POSTs to <c>/api/{key}/prompts</c>: the anchor, the note, and the optional
+    /// sub-part fidelity payload that distinguishes WHICH part of the block was flagged. The fidelity members
+    /// are nullable with defaults so a block-level submission (<c>{ kind, anchorId, note }</c>) still binds and
+    /// leaves them null; because they are now declared, System.Text.Json binds them instead of skipping them.
+    /// </summary>
     /// <param name="Kind">The annotation kind (<c>element</c>, <c>text-range</c>, <c>diagram-node</c>).</param>
     /// <param name="AnchorId">The stable, content-derived block anchor the annotation targets.</param>
     /// <param name="Note">The reviewer's free-text note.</param>
-    public sealed record PromptSubmission(string? Kind, string? AnchorId, string? Note);
+    /// <param name="Quote">Text-range only: the selected text within the block, or <c>null</c>.</param>
+    /// <param name="Start">Text-range only: the selection's start offset within the block, or <c>null</c>.</param>
+    /// <param name="End">Text-range only: the selection's end offset within the block, or <c>null</c>.</param>
+    /// <param name="NodeId">Diagram-node only: the flagged node's identity within the diagram, or <c>null</c>.</param>
+    public sealed record PromptSubmission(
+        string? Kind,
+        string? AnchorId,
+        string? Note,
+        string? Quote = null,
+        int? Start = null,
+        int? End = null,
+        string? NodeId = null);
 
     /// <summary>Parse a submitted kind string to an <see cref="AnnotationKind"/>, defaulting to Element.</summary>
     public static AnnotationKind ParseKind(string? kind)

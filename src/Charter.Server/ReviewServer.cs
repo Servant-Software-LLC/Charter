@@ -456,7 +456,15 @@ public sealed class ReviewServer : IReviewServer
             Kind: AnnotationApi.ParseKind(submission.Kind),
             AnchorId: submission.AnchorId,
             Note: submission.Note ?? string.Empty,
-            SourceLine: sourceLine);
+            SourceLine: sourceLine,
+            // Carry the sub-part fidelity payload verbatim so the drain tells the agent WHICH part of the block
+            // was flagged: quote/start/end for a text-range selection, nodeId for a diagram node (all null for a
+            // whole-block element annotation). Anchor->source-line resolution above is unchanged; these are
+            // additive. WriteDrainedJson serializes the whole Annotation, so these flow to /api/poll unmodified.
+            Quote: submission.Quote,
+            Start: submission.Start,
+            End: submission.End,
+            NodeId: submission.NodeId);
 
         _store.Enqueue(annotation);
 

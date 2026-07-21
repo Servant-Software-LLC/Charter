@@ -153,12 +153,18 @@ window.CharterAnnotate = (function () {
       emit('error', { reason: 'no-anchor', annotation: annotation });
       return Promise.resolve(null);
     }
-    // Each annotation carries the block/anchor id, the kind, and the note text.
+    // Each annotation carries the block/anchor id, the kind, and the note text, plus the optional sub-part
+    // fidelity payload telling the draining agent WHICH part of the block was flagged: quote/start/end for a
+    // text-range selection (from textRangeAnchor), nodeId for a diagram node (from diagramNodeAnchor). All are
+    // null for a whole-block element annotation. start/end are selection offsets that can legitimately be 0, so
+    // they are guarded with an explicit undefined check rather than `|| null` (which would clobber a real 0).
     var payload = {
       anchorId: annotation.anchorId,
       kind: annotation.kind || KIND.element,
       note: annotation.note || '',
       quote: annotation.quote || null,
+      start: (annotation.start === undefined ? null : annotation.start),
+      end: (annotation.end === undefined ? null : annotation.end),
       nodeId: annotation.nodeId || null
     };
     emit('submitting', payload);
