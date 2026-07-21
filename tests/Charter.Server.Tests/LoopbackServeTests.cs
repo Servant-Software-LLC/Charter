@@ -66,6 +66,48 @@ public class LoopbackServeTests
     }
 
     [Fact]
+    public async Task Server_ReReadsSourceEachRequest_ServesEditedContent()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+            var keyedUri = new UriBuilder(server.Address) { Query = "key=" + session.Key.Value }.Uri;
+
+            // First GET serves the ORIGINAL heading (rendered from the source on disk).
+            using (var first = await client.GetAsync(keyedUri))
+            {
+                Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+                Assert.Contains(PlanHeadingText, await first.Content.ReadAsStringAsync());
+            }
+
+            // Edit the source file on disk — the live-reload contract is that ServeStatic re-reads + re-renders
+            // from source on EVERY request, so no server restart is needed to see the change.
+            const string editedHeading = "Charter Live Reload Edited Heading";
+            File.WriteAllText(planPath, "# " + editedHeading + "\n\nAn edited paragraph inside the plan.\n");
+
+            // A second GET serves the NEW content, and the original heading is gone.
+            using (var second = await client.GetAsync(keyedUri))
+            {
+                Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+                var body = await second.Content.ReadAsStringAsync();
+                Assert.Contains(editedHeading, body);
+                Assert.DoesNotContain(PlanHeadingText, body);
+            }
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Server_ServedPage_CarriesSecurityHeaders()
     {
         var planPath = WriteTempPlan();

@@ -187,6 +187,104 @@ public class AnnotationApiTests
         }
     }
 
+    [Fact]
+    public async Task Events_EmitsReloadFrame_WhenSourceFileChanges()
+    {
+        var planPath = WriteTempPlan();
+        using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var stopWriter = new CancellationTokenSource();
+        Task? nudger = null;
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var eventsUri = new Uri(server.Address, "events?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var response =
+                await client.GetAsync(eventsUri, HttpCompletionOption.ResponseHeadersRead, overall.Token);
+            Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+            // A background nudger re-touches the watched source file on a small poll cadence until the reload is
+            // seen. Repeated writes are harmless and defeat the tiny window between the server's initial ping
+            // and its FileSystemWatcher being enabled — so the test never depends on a single write landing
+            // after the watcher is armed (flake-free; the assertion is gated by the reload frame + the bounded
+            // 20s deadline, not by a fixed sleep).
+            nudger = Task.Run(async () =>
+            {
+                var edit = 0;
+                while (!stopWriter.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        File.WriteAllText(planPath, "# Reload Iteration " + (++edit) + "\n\nchanged body\n");
+                    }
+                    catch (IOException)
+                    {
+                        // A transient sharing conflict with the server's per-request read is harmless — retry.
+                    }
+
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(150), stopWriter.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            });
+
+            // Read the SSE stream (initial ping, then keep-alives and reloads) until a reload frame arrives or
+            // the bounded deadline elapses. Reads are cancelled only by the overall deadline — never per-read —
+            // so the HTTP response stream is not left in an undefined state by an interrupted read.
+            await using var stream = await response.Content.ReadAsStreamAsync(overall.Token);
+            var buffer = new byte[2048];
+            var received = new StringBuilder();
+            var reloadSeen = false;
+            try
+            {
+                while (!reloadSeen)
+                {
+                    var n = await stream.ReadAsync(buffer, overall.Token);
+                    if (n == 0)
+                    {
+                        break; // stream closed
+                    }
+
+                    received.Append(Encoding.UTF8.GetString(buffer, 0, n));
+                    reloadSeen = received.ToString().Contains("event: reload", StringComparison.Ordinal);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The bounded deadline elapsed; reloadSeen stays false and the assertion reports it clearly.
+            }
+
+            Assert.True(
+                reloadSeen,
+                "GET /events should emit an `event: reload` frame after the source file changed on disk.");
+        }
+        finally
+        {
+            stopWriter.Cancel();
+            if (nudger is not null)
+            {
+                try
+                {
+                    await nudger;
+                }
+                catch (Exception)
+                {
+                    // The nudger only ever writes the temp file / awaits a cancellable delay; nothing to surface.
+                }
+            }
+
+            TryDelete(planPath);
+        }
+    }
+
     // ---- 4. CSRF / same-origin on the state-changing POST ------------------------------------------------
 
     [Fact]
