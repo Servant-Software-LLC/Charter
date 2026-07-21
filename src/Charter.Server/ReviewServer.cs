@@ -355,7 +355,19 @@ public sealed class ReviewServer : IReviewServer
             body = await reader.ReadToEndAsync().ConfigureAwait(false);
         }
 
-        var submission = JsonSerializer.Deserialize<AnnotationApi.PromptSubmission>(body, AnnotationApi.JsonOptions);
+        AnnotationApi.PromptSubmission? submission;
+        try
+        {
+            submission = JsonSerializer.Deserialize<AnnotationApi.PromptSubmission>(body, AnnotationApi.JsonOptions);
+        }
+        catch (JsonException)
+        {
+            // Malformed JSON is a client error (400), not a server fault (500) — the same guard the answers
+            // route already applies, so both state-changing POST routes reject bad input consistently.
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
         if (submission is null || string.IsNullOrEmpty(submission.AnchorId))
         {
             response.StatusCode = (int)HttpStatusCode.BadRequest;
