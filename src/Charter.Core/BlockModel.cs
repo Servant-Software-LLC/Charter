@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Markdig;
@@ -112,6 +113,85 @@ public sealed class BlockDocument
         }
 
         return new BlockDocument(blocks);
+    }
+}
+
+/// <summary>
+/// The single, document-wide id-assignment pass that BOTH the renderer and the <see cref="SourceMap"/>
+/// consume, so a discriminated id can never differ between the two paths.
+/// </summary>
+/// <remarks>
+/// A pure <see cref="Block.StableId(string)"/> is content-derived, so it ALIASES when the same content
+/// recurs in one document — two identical prose blocks, two identical <c>:::diff</c> added-lines, two
+/// identical <c>:::comparison</c> rows all hash to the same id, and an annotation on the second occurrence
+/// would resolve to the first occurrence's source line (silent misattribution). This pass walks every
+/// anchor slot ONCE, in canonical document order, and for the 2nd+ occurrence of an already-seen base id
+/// appends a positional discriminator (<c>-2</c>, <c>-3</c>, …). The FIRST occurrence keeps the pure
+/// content-derived id, so a document with no duplicates is byte-identical to a bare per-slot hash and every
+/// anchor still survives edits to unrelated blocks (invariant 2). Occurrence counting is GLOBAL across all
+/// slot kinds — a prose block and a diff line that hash alike must still get distinct ids. Both consumers
+/// look a slot's id up by that slot's intrinsic 1-based markdown line; those line numbers are identical
+/// across the renderer's and the source map's independent (but deterministic) parses, so the two paths read
+/// the SAME assignment and cannot drift.
+/// </remarks>
+internal sealed class AnchorAssignment
+{
+    private readonly IReadOnlyDictionary<int, string> _idByLine;
+
+    private AnchorAssignment(IReadOnlyDictionary<int, string> idByLine) => _idByLine = idByLine;
+
+    /// <summary>
+    /// Walk <paramref name="document"/> once and assign every anchor slot its unique, duplicate-discriminated
+    /// id. Deterministic in <paramref name="markdown"/>, so the renderer and the <see cref="SourceMap"/> — each
+    /// calling this over its own parse of the same source — obtain an identical assignment.
+    /// </summary>
+    public static AnchorAssignment Build(MarkdownDocument document, string markdown)
+    {
+        markdown ??= string.Empty;
+
+        var idByLine = new Dictionary<int, string>();
+        var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var (line, baseId) in Slots(document, markdown))
+        {
+            var count = occurrences.TryGetValue(baseId, out var seen) ? seen + 1 : 1;
+            occurrences[baseId] = count;
+
+            // First occurrence keeps the pure content-derived id; the 2nd+ gets -2, -3, … so distinct
+            // occurrences of identical content get distinct, resolvable anchors. A pure base id never
+            // contains '-', so a discriminated id can never collide with another slot's pure id.
+            idByLine[line] = count == 1
+                ? baseId
+                : baseId + "-" + count.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return new AnchorAssignment(idByLine);
+    }
+
+    /// <summary>The assigned (possibly duplicate-discriminated) id of the anchor slot that starts at
+    /// <paramref name="line"/> (its 1-based markdown line).</summary>
+    public string IdForLine(int line) => _idByLine[line];
+
+    /// <summary>
+    /// Every anchor slot in canonical document order — the exact union both consumers already produce: for
+    /// each top-level node, its block slot (start line + content-derived base id) followed by its sub-anchor
+    /// slots (a <c>:::comparison</c>'s rows, a <c>:::diff</c>'s lines) in <see cref="CharterMarkdown.SubAnchors"/>
+    /// order. Walked once here so occurrence counting — and therefore discrimination — is single-sourced.
+    /// Each slot has a distinct 1-based line (a block starts before its sub-elements, sibling sub-elements sit
+    /// on their own lines), so keying the assignment by line identifies each slot uniquely.
+    /// </summary>
+    private static IEnumerable<(int Line, string BaseId)> Slots(MarkdownDocument document, string markdown)
+    {
+        foreach (var node in document)
+        {
+            var (_, rawContent) = CharterMarkdown.Describe(node, markdown);
+            yield return (CharterMarkdown.StartLine(node), Block.StableId(rawContent));
+
+            foreach (var (_, subAnchor, line) in CharterMarkdown.SubAnchors(node, markdown))
+            {
+                yield return (line, subAnchor);
+            }
+        }
     }
 }
 

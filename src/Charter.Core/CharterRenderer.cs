@@ -42,13 +42,18 @@ public static class CharterRenderer
             return errorWriter.ToString();
         }
 
+        // One shared id-assignment pass over this document; the source map builds the SAME assignment over
+        // its own parse of the same markdown, so discriminated ids are identical on both paths (they cannot
+        // drift). Every id/data-anchor the renderer emits below is read from THIS assignment.
+        var assignment = AnchorAssignment.Build(document, markdown);
+
         var hasDiagram = false;
         foreach (var node in document)
         {
-            var (kind, rawContent) = CharterMarkdown.Describe(node, markdown);
+            var (kind, _) = CharterMarkdown.Describe(node, markdown);
 
             var attributes = node.GetAttributes();
-            attributes.Id = Block.StableId(rawContent);
+            attributes.Id = assignment.IdForLine(CharterMarkdown.StartLine(node));
             if (kind == BlockKind.Note)
             {
                 attributes.AddClass("note");
@@ -65,15 +70,15 @@ public static class CharterRenderer
             {
                 attributes.AddClass("comparison");
 
-                // Sub-block anchor model: a :::comparison stamps each row with its OWN content-derived
-                // sub-anchor, so the default list renderer emits
-                // <li data-anchor="{Block.StableId(row source line)}">. Distinct rows get distinct
-                // sub-anchors, each derived from that row's own content — so one row's annotation survives
-                // edits to the others (invariant 2). A :::diff carries its per-line sub-anchors through its
-                // own custom renderer (CharterContainerRenderer) rather than this list-item stamping.
-                foreach (var (row, subAnchor, _) in CharterMarkdown.SubAnchors(node, markdown))
+                // Sub-block anchor model: a :::comparison stamps each row with the shared assignment's id for
+                // that row's line, so the default list renderer emits <li data-anchor="…">. Distinct rows get
+                // distinct sub-anchors, each derived from that row's own content — so one row's annotation
+                // survives edits to the others (invariant 2) — and two identical rows are discriminated (-2)
+                // by the shared pass. A :::diff carries its per-line sub-anchors through its own custom
+                // renderer (CharterContainerRenderer) rather than this list-item stamping.
+                foreach (var (row, _, subLine) in CharterMarkdown.SubAnchors(node, markdown))
                 {
-                    row.GetAttributes().AddProperty("data-anchor", subAnchor);
+                    row.GetAttributes().AddProperty("data-anchor", assignment.IdForLine(subLine));
                 }
             }
         }
@@ -91,7 +96,7 @@ public static class CharterRenderer
         // and a :::diff as a <div class="diff"> of per-line <div>s each carrying its own sub-anchor and
         // add/del class. Every other container (:::note, :::warn, :::comparison) falls through to the
         // default rendering this subclass delegates to.
-        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterContainerRenderer(markdown));
+        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterContainerRenderer(markdown, assignment));
 
         renderer.Render(document);
         writer.Flush();
@@ -147,8 +152,13 @@ public static class CharterRenderer
 internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 {
     private readonly string _markdown;
+    private readonly AnchorAssignment _assignment;
 
-    public CharterContainerRenderer(string markdown) => _markdown = markdown ?? string.Empty;
+    public CharterContainerRenderer(string markdown, AnchorAssignment assignment)
+    {
+        _markdown = markdown ?? string.Empty;
+        _assignment = assignment;
+    }
 
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
     {
@@ -230,13 +240,14 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             renderer.WriteLine(">");
         }
 
-        // Each diff LINE carries its OWN content-derived sub-anchor (Block.StableId of the line's trimmed
-        // text, marker included) — the same anchor SourceMap.Build registers via CharterMarkdown.DiffLines,
-        // so a note on one line round-trips to that line and survives edits to the others (invariant 2). The
-        // add/del/context class makes added vs. removed lines distinguishable in the markup.
-        foreach (var (raw, trimmed, _, cssClass) in CharterMarkdown.DiffLines(obj, _markdown))
+        // Each diff LINE carries its OWN sub-anchor, read from the shared assignment by that line's markdown
+        // line — the same anchor SourceMap.Build registers via the same assignment, so a note on one line
+        // round-trips to that line and survives edits to the others (invariant 2), and two identical diff
+        // lines are discriminated (-2) rather than aliased. The add/del/context class makes added vs. removed
+        // lines distinguishable in the markup.
+        foreach (var (raw, _, line, cssClass) in CharterMarkdown.DiffLines(obj, _markdown))
         {
-            var anchor = Block.StableId(trimmed);
+            var anchor = _assignment.IdForLine(line);
             if (renderer.EnableHtmlForBlock)
             {
                 renderer.Write("<div class=\"diff-line ");
