@@ -73,6 +73,32 @@ public sealed class AnnotationStore
     }
 
     /// <summary>
+    /// Re-add <paramref name="annotations"/> that were drained but never delivered — the poll write failed
+    /// (client disconnected) — to the FRONT of the pending buffer under the same lock, and re-arm the pending
+    /// signal so an outstanding or subsequent <see cref="WaitForPendingAsync"/> re-fetches them. This is the
+    /// at-least-once guarantee: a drained batch that could not be written is not lost. Front insertion keeps
+    /// the un-delivered items ahead of any that arrived after the failed drain, preserving submit order.
+    /// </summary>
+    public void Requeue(IReadOnlyList<Annotation> annotations)
+    {
+        ArgumentNullException.ThrowIfNull(annotations);
+        if (annotations.Count == 0)
+        {
+            return;
+        }
+
+        TaskCompletionSource<bool> signal;
+        lock (_gate)
+        {
+            _pending.InsertRange(0, annotations);
+            signal = _pendingSignal;
+        }
+
+        // Wake any outstanding wait, exactly as Enqueue does — the re-added items are now pending.
+        signal.TrySetResult(true);
+    }
+
+    /// <summary>
     /// The long-poll signal the annotation API waits on. Completes <c>true</c> as soon as an annotation is
     /// available (including one enqueued while the wait is outstanding), or <c>false</c> once
     /// <paramref name="timeout"/> elapses with the buffer still empty.

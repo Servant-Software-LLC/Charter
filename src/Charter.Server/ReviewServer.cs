@@ -398,8 +398,10 @@ public sealed class ReviewServer : IReviewServer
             // The server is shutting down; return whatever is currently drained (typically empty).
         }
 
+        // Drain, then write with requeue-on-failure: if the client disconnected mid-write the drained batch is
+        // re-enqueued (at the front) so a subsequent poll re-fetches it rather than losing it (at-least-once).
         var drained = _store.Drain();
-        WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        WriteDrainedJson(response, drained, _store.Requeue);
     }
 
     private async Task HandleAnswersPostAsync(HttpListenerContext context, string keyFromPath)
@@ -467,8 +469,11 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // Drain, then write with requeue-on-failure: a client that disconnects mid-write does not lose the
+        // drained answers — they are re-enqueued (at the front) so a subsequent GET /api/answers re-fetches
+        // them (at-least-once), mirroring the /api/poll drain.
         var drained = _answers.Drain();
-        WriteJson(response, JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        WriteDrainedJson(response, drained, _answers.Requeue);
     }
 
     private async Task HandleEventsAsync(HttpListenerContext context)
@@ -576,6 +581,43 @@ public sealed class ReviewServer : IReviewServer
         response.ContentType = "application/json; charset=utf-8";
         response.ContentLength64 = payload.Length;
         response.OutputStream.Write(payload, 0, payload.Length);
+    }
+
+    /// <summary>
+    /// Serialize a DRAINED batch as the JSON body and write it, re-enqueuing the batch via
+    /// <paramref name="requeue"/> if the write fails (a disconnected client) — the at-least-once guarantee for
+    /// the poll/answers drains, which clear the buffer under lock BEFORE this write. Without the requeue a
+    /// mid-write disconnect would lose the exact review artifact the drain exists to carry. Callers set the
+    /// response headers; only the body write can fail here, and the exception is rethrown so the shared
+    /// handler closes the broken response as before.
+    /// </summary>
+    private static void WriteDrainedJson<T>(
+        HttpListenerResponse response, IReadOnlyList<T> drained, Action<IReadOnlyList<T>> requeue)
+    {
+        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
+        response.StatusCode = (int)HttpStatusCode.OK;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = payload.Length;
+        WriteBodyOrRequeue(response.OutputStream, payload, () => requeue(drained));
+    }
+
+    /// <summary>
+    /// Write <paramref name="payload"/> to <paramref name="output"/>; on ANY write failure invoke
+    /// <paramref name="onWriteFailure"/> (the drain re-enqueue) and rethrow. The transport-independent core of
+    /// the drain write path, so the requeue-on-write-failure is unit-testable against a throwing stream rather
+    /// than a flaky client abort.
+    /// </summary>
+    internal static void WriteBodyOrRequeue(Stream output, byte[] payload, Action onWriteFailure)
+    {
+        try
+        {
+            output.Write(payload, 0, payload.Length);
+        }
+        catch (Exception)
+        {
+            onWriteFailure();
+            throw;
+        }
     }
 
     private static void TrySetInternalError(HttpListenerResponse response)
