@@ -193,10 +193,15 @@ public sealed class ReviewServer : IReviewServer
         {
             switch (e)
             {
-                // Windows HTTP.sys: ERROR_SHARING_VIOLATION (32), ERROR_ALREADY_EXISTS (183 — the "conflicts
-                // with an existing registration" text), WSAEADDRINUSE (10048). The managed (non-Windows)
-                // HttpListener puts the native EADDRINUSE errno in ErrorCode — 98 on Linux, 48 on macOS.
-                case HttpListenerException hle when hle.ErrorCode is 32 or 183 or 10048 or 98 or 48:
+                // Windows HTTP.sys uses error CODES: ERROR_SHARING_VIOLATION (32), ERROR_ALREADY_EXISTS
+                // (183), WSAEADDRINUSE (10048). The managed (Unix) HttpListener does NOT reuse those codes —
+                // an in-process prefix collision throws with its own message ("conflicts with an existing
+                // registration") and an OS bind race surfaces "address already in use" — so we match those
+                // stable message fragments too. Safe to be permissive: this only gates a benign retry onto a
+                // fresh ephemeral port (genuine failures like ERROR_ACCESS_DENIED match nothing and surface).
+                case HttpListenerException hle when hle.ErrorCode is 32 or 183 or 10048
+                    || hle.Message.Contains("conflicts with an existing registration", StringComparison.OrdinalIgnoreCase)
+                    || hle.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase):
                     return true;
                 // The robust cross-platform signal: a socket "address already in use" anywhere in the chain.
                 case SocketException se when se.SocketErrorCode == SocketError.AddressAlreadyInUse:
