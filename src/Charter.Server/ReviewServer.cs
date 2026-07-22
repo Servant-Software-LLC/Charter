@@ -184,15 +184,28 @@ public sealed class ReviewServer : IReviewServer
     // Whether an exception from HttpListener.Start means "that port/prefix is already taken" — the only case
     // the ephemeral-port retry self-heals. Everything else (e.g. ERROR_ACCESS_DENIED, which needs admin) is a
     // genuine failure and must surface immediately rather than be retried away.
-    internal static bool IsPortConflict(Exception ex) => ex switch
+    internal static bool IsPortConflict(Exception ex)
     {
-        // ERROR_SHARING_VIOLATION (32) and ERROR_ALREADY_EXISTS (183 — the "conflicts with an existing
-        // registration" text) are the HTTP.sys registration collisions; WSAEADDRINUSE (10048) is the socket
-        // collision, which is also how the managed (non-Windows) HttpListener surfaces an in-use port.
-        HttpListenerException hle => hle.ErrorCode is 32 or 183 or 10048,
-        SocketException se => se.SocketErrorCode == SocketError.AddressAlreadyInUse,
-        _ => false,
-    };
+        // Walk the whole exception chain: the Unix (managed) HttpListener commonly wraps the socket error as
+        // an INNER exception, so a top-level-only check misses it — whereas Windows HTTP.sys throws the code
+        // directly. Checking the chain covers both.
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            switch (e)
+            {
+                // Windows HTTP.sys: ERROR_SHARING_VIOLATION (32), ERROR_ALREADY_EXISTS (183 — the "conflicts
+                // with an existing registration" text), WSAEADDRINUSE (10048). The managed (non-Windows)
+                // HttpListener puts the native EADDRINUSE errno in ErrorCode — 98 on Linux, 48 on macOS.
+                case HttpListenerException hle when hle.ErrorCode is 32 or 183 or 10048 or 98 or 48:
+                    return true;
+                // The robust cross-platform signal: a socket "address already in use" anywhere in the chain.
+                case SocketException se when se.SocketErrorCode == SocketError.AddressAlreadyInUse:
+                    return true;
+            }
+        }
+
+        return false;
+    }
 
     private static int ReserveEphemeralPort(IPAddress address)
     {
