@@ -14,13 +14,19 @@ internal static class AnnotationApi
 {
     /// <summary>
     /// One shared serializer contract for every annotation endpoint: web defaults (camelCase names,
-    /// case-insensitive reads) plus enums as their camelCase names, so an <see cref="Annotation"/> round-trips
-    /// as <c>{ "anchorId": ..., "sourceLine": ..., "kind": "element" }</c> — the shape the browser SDK and the
-    /// API tests read.
+    /// case-insensitive reads). The <see cref="AnnotationKindConverter"/> is listed FIRST so it wins over the
+    /// generic camelCase enum converter for <see cref="AnnotationKind"/> — the kind serializes as the SDK's
+    /// hyphenated wire token (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>), so an
+    /// <see cref="Annotation"/> round-trips as <c>{ "anchorId": ..., "sourceLine": ..., "kind": "text-range" }</c>
+    /// exactly as the browser SDK sent it. The camelCase enum converter still covers every other enum.
     /// </summary>
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        Converters =
+        {
+            new AnnotationKindConverter(),
+            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
+        },
     };
 
     /// <summary>
@@ -45,9 +51,46 @@ internal static class AnnotationApi
         int? End = null,
         string? NodeId = null);
 
-    /// <summary>Parse a submitted kind string to an <see cref="AnnotationKind"/>, defaulting to Element.</summary>
-    public static AnnotationKind ParseKind(string? kind)
-        => Enum.TryParse<AnnotationKind>(kind, ignoreCase: true, out var parsed) ? parsed : AnnotationKind.Element;
+    /// <summary>
+    /// Parse a submitted kind string to an <see cref="AnnotationKind"/> using the SAME map that serializes it
+    /// back out (<see cref="AnnotationKindConverter"/>), so inbound and outbound share one source of truth: the
+    /// SDK's hyphenated tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>, case-insensitive) map
+    /// to the matching kind, and an unknown/missing token defaults leniently to <see cref="AnnotationKind.Element"/>.
+    /// </summary>
+    public static AnnotationKind ParseKind(string? kind) => AnnotationKindConverter.Parse(kind);
+
+    /// <summary>
+    /// The single source of truth mapping between <see cref="AnnotationKind"/> and the browser SDK's hyphenated
+    /// wire tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c> — see
+    /// <c>sdk/charter-annotate.js</c>'s <c>KIND</c>). Registered in <see cref="JsonOptions"/> so the kind
+    /// serializes as its SDK token and deserializes back from it, and reused by <see cref="ParseKind"/> so the
+    /// inbound string parse cannot drift from the outbound token. An unrecognized token reads as
+    /// <see cref="AnnotationKind.Element"/> — the same leniency the raw <c>Enum.TryParse</c> gave.
+    /// </summary>
+    private sealed class AnnotationKindConverter : JsonConverter<AnnotationKind>
+    {
+        private static readonly IReadOnlyDictionary<AnnotationKind, string> ToToken =
+            new Dictionary<AnnotationKind, string>
+            {
+                [AnnotationKind.Element] = "element",
+                [AnnotationKind.TextRange] = "text-range",
+                [AnnotationKind.DiagramNode] = "diagram-node",
+            };
+
+        private static readonly IReadOnlyDictionary<string, AnnotationKind> FromToken =
+            ToToken.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Map an SDK token to its kind, defaulting an unknown/missing token to Element.</summary>
+        public static AnnotationKind Parse(string? token)
+            => token is not null && FromToken.TryGetValue(token, out var kind) ? kind : AnnotationKind.Element;
+
+        public override AnnotationKind Read(
+            ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => Parse(reader.GetString());
+
+        public override void Write(Utf8JsonWriter writer, AnnotationKind value, JsonSerializerOptions options)
+            => writer.WriteStringValue(ToToken[value]);
+    }
 
     /// <summary>
     /// The CSRF gate for the state-changing prompts route: allow a request whose <c>Origin</c> is same-origin

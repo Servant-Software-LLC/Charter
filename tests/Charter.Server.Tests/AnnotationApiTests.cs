@@ -566,6 +566,111 @@ public class AnnotationApiTests
         }
     }
 
+    // ---- 7. Issue #15: the annotation `kind` round-trips as the SDK's hyphenated wire token --------------
+
+    // Each SDK kind token POSTed to /api/{key}/prompts must drain back as the SAME hyphenated token
+    // (element / text-range / diagram-node) — not camelCase (the old JsonStringEnumConverter emitted
+    // "textRange"/"diagramNode") and not misclassified to "element" (the old ParseKind fell back to Element
+    // because Enum.TryParse never matched the hyphenated token). Fails today for text-range and diagram-node.
+    [Theory]
+    [InlineData("element")]
+    [InlineData("text-range")]
+    [InlineData("diagram-node")]
+    public async Task RoundTrip_Kind_DrainsAsSameHyphenatedToken(string kind)
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind,
+                anchorId,
+                note = "Kind round-trip for issue #15.",
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
+
+            // The drained kind is the exact hyphenated wire token the SDK POSTed.
+            Assert.Equal(kind, GetString(drained, "kind"));
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    // The STORED classification is correct: a text-range/diagram-node submission is parsed to its matching
+    // AnnotationKind (case-insensitively), and an unknown/missing/empty token stays leniently on Element.
+    [Theory]
+    [InlineData("element", AnnotationKind.Element)]
+    [InlineData("text-range", AnnotationKind.TextRange)]
+    [InlineData("diagram-node", AnnotationKind.DiagramNode)]
+    [InlineData("TEXT-RANGE", AnnotationKind.TextRange)]
+    [InlineData("Diagram-Node", AnnotationKind.DiagramNode)]
+    [InlineData(null, AnnotationKind.Element)]
+    [InlineData("", AnnotationKind.Element)]
+    [InlineData("not-a-real-kind", AnnotationKind.Element)]
+    public void ParseKind_MapsSdkTokens_AndDefaultsLeniently(string? token, AnnotationKind expected)
+        => Assert.Equal(expected, AnnotationApi.ParseKind(token));
+
+    // No-regression: an unknown kind token still POSTs, enqueues, and drains — defaulting to element rather
+    // than being dropped (mirrors the unknown-anchor leniency).
+    [Fact]
+    public async Task RoundTrip_UnknownKind_DrainsAsElement_NoRegression()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+
+            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
+            var payload = JsonSerializer.Serialize(new
+            {
+                kind = "totally-unknown-kind",
+                anchorId,
+                note = "An unrecognized kind must default gracefully, not be dropped.",
+            });
+            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var postResponse = await client.SendAsync(postRequest);
+            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
+
+            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
+            Assert.Equal("element", GetString(drained, "kind"));
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------------------------------------
 
     /// <summary>
