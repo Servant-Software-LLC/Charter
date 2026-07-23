@@ -76,8 +76,29 @@ plan:
 
 ## Install
 
-There's no published release, Homebrew tap, or NuGet package yet — those are gated on the first
-real release. Build from source today.
+Charter ships as a single self-contained native binary (no .NET runtime required) and as a `dotnet`
+tool.
+
+**Homebrew** (macOS / Linux):
+
+```bash
+brew install servant-software-llc/tap/charter
+```
+
+**`dotnet` tool** (any OS with .NET 8+):
+
+```bash
+dotnet tool install --global ServantSoftware.Charter
+```
+
+**Direct download** — grab the binary for your platform from the
+[latest release](https://github.com/Servant-Software-LLC/Charter/releases/latest), extract, and run
+`charter --version`.
+
+> **macOS:** the binaries are not yet code-signed. `brew install` runs them without a prompt, but a
+> browser-downloaded binary is quarantined by Gatekeeper — clear it with
+> `xattr -d com.apple.quarantine ./charter` (or right-click → Open once). Signing is tracked in
+> [#9](https://github.com/Servant-Software-LLC/Charter/issues/9).
 
 ## Build from source
 
