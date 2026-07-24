@@ -209,6 +209,66 @@ public class QuestionResolutionTests
         }
     }
 
+    [Fact]
+    public void ApplyToFile_DuplicateQuestionIds_RefusesTheWrite_LeavingThePlanUntouched()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "charter-apply-dup-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var planPath = Path.Combine(dir, "plan.charter.md");
+            const string markdown =
+                ":::question\n{ \"id\": \"dup\", \"title\": \"First\", \"mode\": \"bool\", \"target\": \"human\" }\n:::\n\n" +
+                ":::question\n{ \"id\": \"dup\", \"title\": \"Second\", \"mode\": \"bool\", \"target\": \"human\" }\n:::";
+            File.WriteAllText(planPath, markdown);
+
+            // Applying an answer to a plan whose two :::question share an id would splice it into BOTH — a
+            // silent double-write. ApplyToFile REFUSES: it throws, names the offending id, and writes nothing.
+            var ex = Assert.Throws<DuplicateQuestionIdException>(
+                () => QuestionResolution.ApplyToFile(planPath, Answers(("dup", new[] { "true" }))));
+            Assert.Contains("dup", ex.Message);
+            Assert.Equal(new[] { "dup" }, ex.Ids);
+
+            // The plan is byte-for-byte untouched (no partial write), and no temp was left behind.
+            Assert.Equal(markdown, File.ReadAllText(planPath));
+            Assert.Equal(new[] { planPath }, Directory.GetFiles(dir));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AtomicWriteIfUnchanged_WhenFileChangedUnderneath_RefusesAndDoesNotClobber()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "charter-precondition-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var planPath = Path.Combine(dir, "plan.charter.md");
+            File.WriteAllText(planPath, "current-on-disk");
+
+            // The concurrent-edit precondition: the caller based its write on "stale-read", but the file now
+            // holds "current-on-disk". Overwriting would silently clobber the external edit, so it is refused.
+            Assert.Throws<IOException>(() =>
+                QuestionResolution.AtomicWriteIfUnchanged(planPath, expectedCurrent: "stale-read", contents: "clobber"));
+
+            // The external edit survived, and the refused write left no temp behind.
+            Assert.Equal("current-on-disk", File.ReadAllText(planPath));
+            Assert.Equal(new[] { planPath }, Directory.GetFiles(dir));
+
+            // When the file DOES still match what the caller read, the write goes through atomically.
+            QuestionResolution.AtomicWriteIfUnchanged(planPath, expectedCurrent: "current-on-disk", contents: "next");
+            Assert.Equal("next", File.ReadAllText(planPath));
+            Assert.Equal(new[] { planPath }, Directory.GetFiles(dir));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     /// <summary>
     /// The JSON body of a <c>:::question</c> block's raw content — the lines between the opening and closing
     /// <c>:::</c> fences — so a resolved block can be re-validated through <see cref="QuestionSpec.Parse"/>.

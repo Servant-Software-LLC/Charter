@@ -22,10 +22,15 @@ public static class PollEnvelope
 {
     /// <summary>
     /// Build the envelope JSON. <paramref name="session"/> is <c>null</c> when no live session was found, so
-    /// an agent always receives parseable JSON with <c>"session": null</c>.
+    /// an agent always receives parseable JSON with <c>"session": null</c>. <paramref name="drainError"/> is
+    /// <c>null</c> on a clean drain and a human-readable reason when a drain could not complete — an agent MUST
+    /// treat a non-null <c>drainError</c> as "queue state unknown", never as "nothing queued" (§DA-weak-4).
     /// </summary>
     public static string Serialize(
-        PollSession? session, IReadOnlyList<Annotation> annotations, IReadOnlyList<Answer> answers)
+        PollSession? session,
+        IReadOnlyList<Annotation> annotations,
+        IReadOnlyList<Answer> answers,
+        string? drainError = null)
     {
         ArgumentNullException.ThrowIfNull(annotations);
         ArgumentNullException.ThrowIfNull(answers);
@@ -36,6 +41,7 @@ public static class PollEnvelope
             annotations,
             answers,
             drained = new { annotations = annotations.Count, answers = answers.Count },
+            drainError,
         };
 
         return JsonSerializer.Serialize(payload, AnnotationApi.JsonOptions);
