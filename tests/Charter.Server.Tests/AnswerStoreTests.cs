@@ -9,30 +9,29 @@ using Xunit;
 namespace Charter.Server.Tests;
 
 /// <summary>
-/// Tests for the <see cref="AnswerStore"/> — the <c>:::question</c> answer buffer that mirrors
-/// <see cref="AnnotationStore"/>'s serialize-all-access lock design but had ZERO unit coverage: the answer
-/// API tests only drove it sequentially, so the concurrent submit-vs-drain race the lock protects (production
-/// runs <see cref="AnswerStore.Enqueue(Answer)"/> and <see cref="AnswerStore.Drain"/> on separate
-/// fire-and-forget request tasks) was never exercised. The load-bearing
-/// <see cref="ConcurrentEnqueueAndDrain_LosesAndDuplicatesNoAnswers"/> proves a concurrent submit interleaved
-/// with a drain loses no answer and duplicates none.
+/// Tests for the <see cref="AnswerStore"/> — the <c>:::question</c> answer buffer. Unlike the annotation
+/// store's destructive drain, answers follow a <b>peek → apply → commit</b> discipline (§1.6): <see cref="AnswerStore.Peek"/>
+/// reports without removing (so a plain poll can never strand an answer), and <see cref="AnswerStore.CommitFront(int)"/>
+/// removes only the peeked-and-applied prefix. The load-bearing
+/// <see cref="ConcurrentEnqueueAndCommit_LosesAndDuplicatesNoAnswers"/> proves a concurrent submit interleaved
+/// with a commit loses no answer and duplicates none — the race the lock protects.
 /// </summary>
 [Trait("Category", "AnswerStore")]
 public class AnswerStoreTests
 {
-    // ---- Enqueue + Drain --------------------------------------------------------------------------------
+    // ---- Peek is non-destructive (report-don't-remove) --------------------------------------------------
 
     [Fact]
-    public void Enqueue_ThenDrain_ReturnsTheAnswer_PreservingItsFields()
+    public void Enqueue_ThenPeek_ReturnsTheAnswer_PreservingItsFields()
     {
         var store = new AnswerStore();
         var answer = MakeAnswer(1);
 
         store.Enqueue(answer);
-        var drained = store.Drain();
+        var peeked = store.Peek();
 
-        var returned = Assert.Single(drained);
-        // Drain preserves the answer's identity and every field (records compare by value).
+        var returned = Assert.Single(peeked);
+        // Peek preserves the answer's identity and every field (records compare by value).
         Assert.Equal(answer, returned);
         Assert.Equal(answer.QuestionId, returned.QuestionId);
         Assert.Equal(answer.Mode, returned.Mode);
@@ -41,51 +40,96 @@ public class AnswerStoreTests
     }
 
     [Fact]
-    public void Drain_ClearsTheBuffer_SoASecondDrainIsEmpty()
+    public void Peek_IsNonDestructive_ASecondPeekStillReturnsTheAnswer()
     {
         var store = new AnswerStore();
         store.Enqueue(MakeAnswer(1));
 
-        var first = store.Drain();
-        var second = store.Drain();
+        var first = store.Peek();
+        var second = store.Peek();
 
-        Assert.Single(first);   // the first Drain returns the enqueued answer...
-        Assert.Empty(second);   // ...and clears it, so the second Drain (no new Enqueue) is empty.
+        // A plain poll peeks but does not remove — the answer stays recoverable for the next peek/apply.
+        Assert.Single(first);
+        Assert.Single(second);
+    }
+
+    // ---- CommitFront removes only the applied prefix ----------------------------------------------------
+
+    [Fact]
+    public void CommitFront_RemovesThePeekedPrefix_LeavingLaterArrivalsQueued()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+        store.Enqueue(MakeAnswer(2));
+
+        // Peek the two queued answers, then a third arrives AFTER the peek (appended to the back).
+        var peeked = store.Peek();
+        Assert.Equal(2, peeked.Count);
+        store.Enqueue(MakeAnswer(3));
+
+        // Commit exactly the peeked count: the two peeked answers are removed; the later arrival survives.
+        var committed = store.CommitFront(peeked.Count);
+        Assert.Equal(new[] { "q-1", "q-2" }, committed.Select(a => a.QuestionId));
+
+        var remaining = store.Peek();
+        Assert.Equal(new[] { "q-3" }, remaining.Select(a => a.QuestionId));
+    }
+
+    [Fact]
+    public void CommitFront_BeyondBufferSize_RemovesOnlyWhatIsPresent()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+
+        var committed = store.CommitFront(5);
+
+        Assert.Single(committed);          // only the one present answer is removed...
+        Assert.Empty(store.Peek());        // ...and the buffer is now empty.
+    }
+
+    [Fact]
+    public void CommitFront_ZeroOrNegative_RemovesNothing()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+
+        Assert.Empty(store.CommitFront(0));
+        Assert.Single(store.Peek()); // an apply that resolved nothing must not remove a queued answer
     }
 
     // ---- Concurrency race (load-bearing: the lock the store exists for) ---------------------------------
 
     [Fact]
-    public async Task ConcurrentEnqueueAndDrain_LosesAndDuplicatesNoAnswers()
+    public async Task ConcurrentEnqueueAndCommit_LosesAndDuplicatesNoAnswers()
     {
         const int count = 500;
         var store = new AnswerStore();
         var toEnqueue = Enumerable.Range(0, count).Select(MakeAnswer).ToArray();
 
-        // Everything any Drain observes, across all threads, accumulates here.
+        // Everything any CommitFront removes, across all threads, accumulates here.
         var observed = new ConcurrentBag<Answer>();
 
-        // N concurrent Enqueues (the "answers" submits) interleaved with N concurrent Drains (the "GET
-        // /api/answers" reads) — no Thread.Sleep timing hacks; the scheduler does the interleaving. A
-        // single-writer / locked store must not tear or drop an answer under this contention.
+        // N concurrent Enqueues (the "answers" submits) interleaved with N concurrent CommitFront(1)s (the
+        // apply commits) — no Thread.Sleep timing hacks; the scheduler does the interleaving. A single-writer
+        // / locked store must not tear or drop an answer under this contention.
         var enqueueTasks = toEnqueue.Select(a => Task.Run(() => store.Enqueue(a)));
-        var drainTasks = Enumerable.Range(0, count).Select(_ => Task.Run(() =>
+        var commitTasks = Enumerable.Range(0, count).Select(_ => Task.Run(() =>
         {
-            foreach (var a in store.Drain())
+            foreach (var a in store.CommitFront(1))
             {
                 observed.Add(a);
             }
         }));
 
-        await Task.WhenAll(enqueueTasks.Concat(drainTasks));
+        await Task.WhenAll(enqueueTasks.Concat(commitTasks));
 
-        // A final Drain sweeps up any answers the interleaved Drains had not yet observed.
-        foreach (var a in store.Drain())
+        // A final commit sweeps up any answers the interleaved commits had not yet removed.
+        foreach (var a in store.CommitFront(count))
         {
             observed.Add(a);
         }
 
-        // The union of everything drained is EXACTLY the enqueued set: none lost, none duplicated.
+        // The union of everything committed is EXACTLY the enqueued set: none lost, none duplicated.
         var observedIds = observed.Select(a => a.QuestionId).ToList();
         Assert.Equal(count, observedIds.Count);                 // no losses and no duplicates change the total
         Assert.Equal(count, observedIds.Distinct().Count());    // every observed id is distinct (no duplicates)

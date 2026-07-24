@@ -73,6 +73,19 @@ public sealed class AnnotationStore
     }
 
     /// <summary>
+    /// Return a snapshot of the currently-pending annotations WITHOUT removing any. Used by the durability
+    /// sidecar to persist the queue on each change; it must not disturb the long-poll signal or the buffer,
+    /// so unlike <see cref="Drain"/> it neither clears the buffer nor resets the pending signal.
+    /// </summary>
+    public IReadOnlyList<Annotation> Snapshot()
+    {
+        lock (_gate)
+        {
+            return _pending.Count == 0 ? Array.Empty<Annotation>() : _pending.ToArray();
+        }
+    }
+
+    /// <summary>
     /// Re-add <paramref name="annotations"/> that were drained but never delivered — the poll write failed
     /// (client disconnected) — to the FRONT of the pending buffer under the same lock, and re-arm the pending
     /// signal so an outstanding or subsequent <see cref="WaitForPendingAsync"/> re-fetches them. This is the

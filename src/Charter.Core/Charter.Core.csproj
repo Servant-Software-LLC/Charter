@@ -9,6 +9,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The test project drives the internal atomic-write-with-precondition seam
+         (QuestionResolution.AtomicWriteIfUnchanged) directly to prove the concurrent-edit precondition
+         refuses a stale-based overwrite without a flaky cross-process file race. -->
+    <InternalsVisibleTo Include="Charter.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Vendor the pinned Mermaid runtime (assets/mermaid.min.js, v11.16.0, MIT) into the assembly so a
          rendered :::diagram ships the library INSIDE the saved HTML and opens standalone with no network
          (load-bearing invariant 1 — portable artifact). NEVER a CDN <script src>: that breaks offline use

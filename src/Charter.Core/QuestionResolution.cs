@@ -78,15 +78,29 @@ public static class QuestionResolution
 
     /// <summary>
     /// Apply <paramref name="answersById"/> to the plan file at <paramref name="planPath"/> IN PLACE via a
-    /// single atomic write: read the current markdown, splice answers with <see cref="Apply"/>, then persist
-    /// the result through a uniquely-named temp file created IN THE PLAN'S OWN DIRECTORY and renamed over the
-    /// original. Because the temp shares the plan's directory (and therefore its volume), the rename is atomic
-    /// on Windows and Unix alike, so a concurrent reader — the review server's per-request
-    /// <c>File.ReadAllText</c> — always sees a complete old-or-new file, never a half-written one. This is the
-    /// single discrete writer the living-document model requires (§1.4): one invocation, one atomic replace,
-    /// no torn read. Returns the rewritten markdown that was persisted. A failure before the rename leaves the
-    /// original file untouched and removes the temp.
+    /// single atomic write: read the current markdown, refuse a plan with duplicate <c>:::question</c> ids,
+    /// splice answers with <see cref="Apply"/>, then persist the result through a uniquely-named temp file
+    /// created IN THE PLAN'S OWN DIRECTORY and renamed over the original. Because the temp shares the plan's
+    /// directory (and therefore its volume), the rename is atomic on Windows and Unix alike, so a concurrent
+    /// reader — the review server's per-request <c>File.ReadAllText</c> — always sees a complete old-or-new
+    /// file, never a half-written one. This is the single discrete writer the living-document model requires
+    /// (§1.4): one invocation, one atomic replace, no torn read. Returns the rewritten markdown that was
+    /// persisted. A failure before the rename leaves the original file untouched and removes the temp.
     /// </summary>
+    /// <remarks>
+    /// Two guards make the write safe against the failure modes a cold review found in the destructive drain:
+    /// <list type="bullet">
+    ///   <item><b>Duplicate-id refusal.</b> If the plan carries two <c>:::question</c> blocks sharing an id,
+    ///   <see cref="Apply"/> would splice the answer into BOTH — a silent double-write. This throws
+    ///   <see cref="DuplicateQuestionIdException"/> BEFORE writing anything, so the plan is left untouched and
+    ///   the caller can preserve the queued answers and report a clear error.</item>
+    ///   <item><b>Concurrent-edit precondition.</b> The atomic rename prevents a torn read, not a lost update
+    ///   versus an external editor (the drafting agent's own <c>Edit</c>/<c>Write</c>, or a second
+    ///   <c>resolve</c>/<c>poll --apply</c>). This captures the content read at the start and, just before the
+    ///   rename, re-reads the file; if it changed underneath, the write is refused with an
+    ///   <see cref="IOException"/> rather than silently clobbering the external edit.</item>
+    /// </list>
+    /// </remarks>
     public static string ApplyToFile(string planPath, IReadOnlyDictionary<string, IReadOnlyList<string>> answersById)
     {
         if (string.IsNullOrEmpty(planPath))
@@ -95,19 +109,37 @@ public static class QuestionResolution
         }
 
         var markdown = File.ReadAllText(planPath);
+
+        // Refuse a duplicate-id plan BEFORE any write: applying an answer to two blocks sharing an id is a
+        // silent double-write, so this is a review-time error, not a resolution to guess at.
+        var duplicates = FindDuplicateQuestionIds(markdown);
+        if (duplicates.Count > 0)
+        {
+            throw new DuplicateQuestionIdException(duplicates);
+        }
+
         var updated = Apply(markdown, answersById);
-        AtomicWrite(planPath, updated);
+        AtomicWriteIfUnchanged(planPath, expectedCurrent: markdown, contents: updated);
         return updated;
     }
 
     /// <summary>
-    /// Write <paramref name="contents"/> to <paramref name="destinationPath"/> atomically: a uniquely-named
-    /// temp file in the SAME directory is written and flushed, then renamed over the destination
+    /// Write <paramref name="contents"/> to <paramref name="destinationPath"/> atomically AND only if the file
+    /// still holds <paramref name="expectedCurrent"/> (the content the caller read before computing the write).
+    /// A uniquely-named temp file in the SAME directory is written, then renamed over the destination
     /// (<see cref="File.Move(string, string, bool)"/>, a same-volume rename). The temp shares the destination's
     /// directory so the rename never crosses volumes; a failure before the rename leaves the destination
     /// untouched, and the temp is removed on a failed write so no orphan is left in the plan directory.
     /// </summary>
-    private static void AtomicWrite(string destinationPath, string contents)
+    /// <remarks>
+    /// The precondition re-reads the file immediately before the rename and compares it to
+    /// <paramref name="expectedCurrent"/>; a mismatch means an external writer changed the file since the
+    /// caller read it, so overwriting would silently lose that edit — this throws an <see cref="IOException"/>
+    /// instead. It narrows, but cannot fully close, the read→write window; the living-document model's real
+    /// guarantee is single-writer discipline (§1.4), and this is the loud backstop when that is violated.
+    /// Exposed <c>internal</c> so the precondition can be proven deterministically without a cross-process race.
+    /// </remarks>
+    internal static void AtomicWriteIfUnchanged(string destinationPath, string expectedCurrent, string contents)
     {
         var fullPath = Path.GetFullPath(destinationPath);
         var directory = Path.GetDirectoryName(fullPath);
@@ -125,6 +157,17 @@ public static class QuestionResolution
         try
         {
             File.WriteAllText(tempPath, contents);
+
+            // Concurrent-edit precondition: re-read the destination as late as possible (just before the
+            // rename) and refuse if it no longer matches what the caller based the write on.
+            var current = File.ReadAllText(fullPath);
+            if (!string.Equals(current, expectedCurrent, StringComparison.Ordinal))
+            {
+                throw new IOException(
+                    $"the plan changed on disk since it was read ({Path.GetFileName(fullPath)}); "
+                    + "not overwriting. Re-run to apply against the current version.");
+            }
+
             File.Move(tempPath, fullPath, overwrite: true);
         }
         catch
