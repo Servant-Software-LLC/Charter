@@ -56,11 +56,17 @@ public enum QuestionTarget
 ///     <see cref="QuestionMode.SingleSelect"/>/<see cref="QuestionMode.MultiSelect"/>; absent/ignored for
 ///     the other three modes.</description></item>
 ///   <item><description><see cref="Target"/> — one of <see cref="QuestionTarget"/> (<c>human</c>/<c>agent</c>).</description></item>
+///   <item><description><see cref="Answer"/> — optional. Absent or empty ⇒ the question is <em>open</em>;
+///     a non-empty array ⇒ the question is <em>resolved</em> and carries the chosen value(s). When present
+///     it must be an array of strings (the same shape as <c>Charter.Server.Answer.Values</c>): a
+///     single/bool/number answer is one element, a multi-select is the selected values, and free-text is the
+///     text as one element.</description></item>
 /// </list>
 /// Contract the tests pin: <see cref="Parse(string)"/> throws <see cref="FormatException"/> on any invalid
 /// body (malformed JSON or a schema violation); <see cref="Validate(string)"/> never throws for a
 /// well-formed-JSON body — it returns <c>(false, error)</c> for a schema violation and <c>(true, null)</c>
-/// when the body is a valid question.
+/// when the body is a valid question. The <see cref="Answer"/> field is purely additive — a body with no
+/// <c>answer</c> key parses exactly as before, as an open question.
 /// </remarks>
 public sealed record QuestionSpec(
     string Id,
@@ -69,6 +75,13 @@ public sealed record QuestionSpec(
     IReadOnlyList<string> Options,
     QuestionTarget Target)
 {
+    /// <summary>
+    /// The resolved answer value(s), or an empty list when the question is still open. A non-empty
+    /// <see cref="Answer"/> is the on-disk marker that a <c>:::question</c> has been decided; it is spliced
+    /// into the block's JSON body by <see cref="QuestionResolution.Apply(string, IReadOnlyDictionary{string, IReadOnlyList{string}})"/>.
+    /// Shape matches <c>Charter.Server.Answer.Values</c>.
+    /// </summary>
+    public IReadOnlyList<string> Answer { get; init; } = Array.Empty<string>();
     /// <summary>
     /// Parse and validate a question <paramref name="body"/> (JSON/YAML) into a <see cref="QuestionSpec"/>.
     /// Throws <see cref="FormatException"/> if the body is malformed or violates the schema (missing id,
@@ -183,7 +196,13 @@ public sealed record QuestionSpec(
                 return (null, $"\"options\" is required and must be non-empty for mode \"{modeToken}\".");
             }
 
-            return (new QuestionSpec(id, title, mode, options, target), null);
+            var (answer, answerError) = ReadStringArray(root, "answer");
+            if (answerError is not null)
+            {
+                return (null, answerError);
+            }
+
+            return (new QuestionSpec(id, title, mode, options, target) { Answer = answer }, null);
         }
     }
 
@@ -221,6 +240,37 @@ public sealed record QuestionSpec(
         }
 
         return (options, null);
+    }
+
+    /// <summary>
+    /// Reads an optional array-of-strings field <paramref name="name"/> (used for <c>answer</c>). Returns an
+    /// empty list when the field is absent or JSON null; returns an error when it is present but not an array
+    /// of strings.
+    /// </summary>
+    private static (IReadOnlyList<string> Values, string? Error) ReadStringArray(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var element) || element.ValueKind == JsonValueKind.Null)
+        {
+            return (Array.Empty<string>(), null);
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return (Array.Empty<string>(), $"\"{name}\" must be an array of strings.");
+        }
+
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                return (Array.Empty<string>(), $"\"{name}\" must be an array of strings.");
+            }
+
+            values.Add(item.GetString()!);
+        }
+
+        return (values, null);
     }
 
     /// <summary>Maps a body <paramref name="token"/> to its <see cref="QuestionMode"/>; false when unknown.</summary>
