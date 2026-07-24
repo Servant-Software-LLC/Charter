@@ -1,7 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -31,6 +33,17 @@ public class PollCommandTests
         "# Poll Loop Plan\n\nAn overview paragraph.\n\n" +
         ":::question\n" +
         "{\"id\":\"q-theme\",\"title\":\"Which theme should ship?\",\"mode\":\"single\",\"options\":[\"A\",\"B\"],\"target\":\"human\"}\n" +
+        ":::\n";
+
+    // Two :::question blocks sharing id "q-theme": applying an answer would double-write, so ApplyToFile
+    // REFUSES. Used to drive the deterministic, cross-platform apply-failure path (answer preserved, exit 5).
+    private const string DuplicateIdPlan =
+        "# Duplicate Id Plan\n\nAn overview paragraph.\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-theme\",\"title\":\"First\",\"mode\":\"single\",\"options\":[\"A\",\"B\"],\"target\":\"human\"}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-theme\",\"title\":\"Second\",\"mode\":\"single\",\"options\":[\"A\",\"B\"],\"target\":\"human\"}\n" +
         ":::\n";
 
     private static readonly Regex ReadyUrl = new(@"https?://127\.0\.0\.1:\d+/\?key=[0-9a-f]+", RegexOptions.Compiled);
@@ -101,7 +114,7 @@ public class PollCommandTests
     // ---- The end-to-end loop (T5 integration) -------------------------------------------------------------
 
     [Fact]
-    public async Task Poll_UrlDrain_EmitsEnvelope_KeyOmitted()
+    public async Task Poll_UrlDrain_ReportsAnswer_ButLeavesItRecoverable()
     {
         var stateDir = NewTempDir();
         var planPath = WriteTempPlan(QuestionPlan);
@@ -113,22 +126,37 @@ public class PollCommandTests
             // The human submits an answer to q-theme through the running review server.
             await PostAnswerAsync(url, "q-theme", new[] { "A" });
 
-            // poll --url drains it (bypassing discovery) and emits the single stdout envelope.
+            // A PLAIN poll --url REPORTS the answer (bypassing discovery) and emits the single stdout envelope.
             var poll = await RunCharterAsync(stateDir, "poll", "--url", url);
             Assert.Equal(0, poll.ExitCode);
 
-            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
-            var root = envelope.RootElement;
-            var session = root.GetProperty("session");
-            Assert.Equal(JsonValueKind.Object, session.ValueKind);
-            Assert.Equal(Path.GetFileName(planPath), session.GetProperty("sourceFile").GetString());
+            using (var envelope = JsonDocument.Parse(poll.StdOut.Trim()))
+            {
+                var root = envelope.RootElement;
+                var session = root.GetProperty("session");
+                Assert.Equal(JsonValueKind.Object, session.ValueKind);
+                Assert.Equal(Path.GetFileName(planPath), session.GetProperty("sourceFile").GetString());
 
-            var answers = root.GetProperty("answers");
-            Assert.Equal(1, answers.GetArrayLength());
-            Assert.Equal("q-theme", answers[0].GetProperty("questionId").GetString());
+                var answers = root.GetProperty("answers");
+                Assert.Equal(1, answers.GetArrayLength());
+                Assert.Equal("q-theme", answers[0].GetProperty("questionId").GetString());
 
-            // The capability key must never appear in the envelope.
-            Assert.DoesNotContain(KeyOf(url), poll.StdOut);
+                // The capability key must never appear in the envelope.
+                Assert.DoesNotContain(KeyOf(url), poll.StdOut);
+            }
+
+            // A plain poll REPORTS but does NOT remove (§1.6): the plan is still OPEN on disk (no inline write),
+            // AND the answer is still queued — proven by a following --apply that STILL resolves it. The old
+            // destructive drain would have stranded the answer here (removed from the store, absent from the
+            // file). This is the exact data-loss the report-don't-remove semantics close.
+            Assert.Null(ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme"));
+
+            var apply = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+            Assert.Equal(0, apply.ExitCode);
+
+            var resolved = ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme");
+            Assert.NotNull(resolved);
+            Assert.Equal(new[] { "A" }, resolved);
         }
         finally
         {
@@ -176,6 +204,205 @@ public class PollCommandTests
             var resolved = ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme");
             Assert.NotNull(resolved);
             Assert.Equal(new[] { "A" }, resolved);
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Poll_Apply_DuplicateIds_RefusesWithClearError_AndPreservesAnswer()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(DuplicateIdPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+
+            // --apply is REFUSED: the plan's two :::question share an id, so applying would double-write. This
+            // is the deterministic, cross-platform apply-failure — distinct exit 5, a clear message naming the
+            // id, and (the whole point) the answer is NOT lost: peek → apply → commit never committed it.
+            var apply = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+            Assert.Equal(5, apply.ExitCode);
+            Assert.Contains("apply failed", apply.StdErr);
+            Assert.Contains("q-theme", apply.StdErr);
+
+            // The plan stayed OPEN (no partial/double write)...
+            Assert.Null(ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme"));
+
+            // ...and the answer is PRESERVED — a following plain poll still reports it (recoverable, not lost).
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url);
+            Assert.Equal(0, poll.ExitCode);
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Poll_DrainTransportFailure_Exits4_WithDrainError_NotCleanEmpty()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        HttpListener? stub = null;
+        try
+        {
+            // A stub that PROVES LIVE (GET /api/sessions → 200) but FAILS every drain (poll/answers → 500):
+            // exactly the "transport failed mid-drain" case a swallowed error would misreport as empty.
+            (stub, var url) = StartFailingDrainStub(planPath);
+
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url);
+
+            // Distinct exit 4 (NOT 2=clean-empty): the queue state is unknown, so an agent must not hand off on
+            // a false "nothing queued". The envelope surfaces a non-null drainError alongside the live session.
+            Assert.Equal(4, poll.ExitCode);
+            Assert.Contains("queue state is unknown", poll.StdErr);
+
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            var root = envelope.RootElement;
+            Assert.Equal(JsonValueKind.Object, root.GetProperty("session").ValueKind); // probe succeeded
+            Assert.Equal(JsonValueKind.String, root.GetProperty("drainError").ValueKind); // failure surfaced
+        }
+        finally
+        {
+            stub?.Close();
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    // ---- charter resolve (§1.6 solo-review companion) -----------------------------------------------------
+
+    [Fact]
+    public async Task Resolve_FromLiveServer_AppliesQueuedAnswerInline()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+            Assert.Null(ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme"));
+
+            // resolve discovers the live session by plan path and applies inline (peek → apply → commit).
+            var resolve = await RunCharterAsync(stateDir, "resolve", planPath);
+            Assert.Equal(0, resolve.ExitCode);
+
+            var resolved = ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme");
+            Assert.Equal(new[] { "A" }, resolved);
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Resolve_FromSidecar_NoLiveServer_AppliesQueuedAnswerInline()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+            await PostAnswerAsync(url, "q-theme", new[] { "A" }); // server persists the durable sidecar
+
+            // Kill the review (NOT clean): the sidecar survives on disk; the descriptor is orphaned pointing at
+            // a dead port — the solo case where a human answered then the review process is gone.
+            TryKill(review);
+            review = null;
+
+            // resolve finds no LIVE server (probe fails), falls back to the durable sidecar, and applies inline.
+            var resolve = await RunCharterAsync(stateDir, "resolve", planPath);
+            Assert.Equal(0, resolve.ExitCode);
+
+            var resolved = ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme");
+            Assert.Equal(new[] { "A" }, resolved);
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Resolve_DuplicateIds_RefusesWithClearError_AndPreservesAnswer()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(DuplicateIdPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+
+            var resolve = await RunCharterAsync(stateDir, "resolve", planPath);
+            Assert.Equal(5, resolve.ExitCode);
+            Assert.Contains("apply failed", resolve.StdErr);
+            Assert.Contains("q-theme", resolve.StdErr);
+
+            // Preserved: the answer stays queued (a plain poll still reports it).
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url);
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Resolve_NoQueuedAnswers_Exits2()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, _) = await StartReviewAsync(stateDir, planPath);
+
+            // A live session but nothing answered: resolve is a clean no-op (exit 2), not a failure.
+            var resolve = await RunCharterAsync(stateDir, "resolve", planPath);
+            Assert.Equal(2, resolve.ExitCode);
         }
         finally
         {
@@ -342,6 +569,92 @@ public class PollCommandTests
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Start a stub loopback server that PROVES LIVE — <c>GET /api/sessions</c> returns 200 with the plan's
+    /// sourcePath so <c>poll</c>'s liveness probe succeeds — but FAILS every drain (<c>/api/poll</c> and
+    /// <c>/api/answers</c> return 500). This reproduces a transport failure mid-drain deterministically, so
+    /// the test can assert <c>poll</c> surfaces a drainError and exits 4 (not a false clean-empty). The caller
+    /// closes the returned listener.
+    /// </summary>
+    private static (HttpListener Listener, string Url) StartFailingDrainStub(string sourcePath)
+    {
+        const string key = "stubkey0000000000000";
+        var port = ReserveEphemeralPort();
+        var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+
+        _ = Task.Run(async () =>
+        {
+            while (listener.IsListening)
+            {
+                HttpListenerContext context;
+                try
+                {
+                    context = await listener.GetContextAsync();
+                }
+                catch (Exception)
+                {
+                    break; // listener closed
+                }
+
+                _ = Task.Run(() => RespondStub(context, sourcePath));
+            }
+        });
+
+        return (listener, $"http://127.0.0.1:{port}/?key={key}");
+    }
+
+    private static void RespondStub(HttpListenerContext context, string sourcePath)
+    {
+        try
+        {
+            var path = context.Request.Url?.AbsolutePath ?? "/";
+            if (path.Contains("sessions", StringComparison.Ordinal))
+            {
+                var json = JsonSerializer.Serialize(
+                    new { sourcePath, sourceFile = Path.GetFileName(sourcePath) });
+                var payload = Encoding.UTF8.GetBytes(json);
+                context.Response.StatusCode = 200;
+                context.Response.ContentType = "application/json";
+                context.Response.OutputStream.Write(payload, 0, payload.Length);
+            }
+            else
+            {
+                // Every drain fails: the exact transport failure a swallow-to-empty would misreport as clean.
+                context.Response.StatusCode = 500;
+            }
+        }
+        catch (Exception)
+        {
+            // Best-effort stub.
+        }
+        finally
+        {
+            try
+            {
+                context.Response.Close();
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private static int ReserveEphemeralPort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        try
+        {
+            return ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
+        finally
+        {
+            probe.Stop();
+        }
     }
 
     private static string KeyOf(string capabilityUrl)

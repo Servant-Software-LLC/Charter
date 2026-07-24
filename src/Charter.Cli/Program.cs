@@ -77,6 +77,16 @@ if (args.Length >= 1 && args[0] == "poll")
     return BuildPollRoot().Parse(args).Invoke();
 }
 
+// `charter resolve <plan.charter.md>`: the solo-review companion to `poll --apply` (§1.6). Apply a human
+// reviewer's queued answers INLINE into the plan's :::question blocks when no agent is looping `poll --apply`.
+// Prefers a live review server (peek -> apply -> commit), else reads the server-owned durable sidecar. The
+// inline write is single-writer-safe (duplicate-id refusal + concurrent-edit precondition, atomic in the plan
+// dir). Parsed with System.CommandLine, parallel to `render`; only entered for the `resolve` verb.
+if (args.Length >= 1 && args[0] == "resolve")
+{
+    return BuildResolveRoot().Parse(args).Invoke();
+}
+
 // Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
 // returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
 // list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
@@ -85,7 +95,7 @@ if (args.Length >= 1 && args[0] == "poll")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff, skills, poll. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, handoff, skills, poll, resolve. Flags: --version, --help.");
     return 1;
 }
 
@@ -93,7 +103,7 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/], [green]poll[/].");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/], [green]poll[/], [green]resolve[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
@@ -367,9 +377,13 @@ static RootCommand BuildReviewRoot()
 
         // The session confines the served root to the plan's directory and mints a per-session capability
         // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates
-        // every request on that key.
+        // every request on that key. SidecarDirectory turns on durability (§1.6): the server persists its
+        // queued annotations/answers to a server-owned sidecar under the per-user state dir and rehydrates
+        // from it on start, so a review-process crash before drain loses nothing — and a solo reviewer's
+        // answers survive to be applied later by `charter resolve`.
         var session = ReviewSession.Create(inputPath);
-        using var server = ReviewServer.Start(session);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { SidecarDirectory = StateDirectory.Sidecars() });
 
         // Register this running session in the per-user state dir so `charter poll` can discover it (address
         // + capability key + source path) WITHOUT the key ever crossing a command line. Written AFTER Start
@@ -482,6 +496,41 @@ static RootCommand BuildPollRoot()
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
         poll,
+    };
+}
+
+// Builds the root command hosting the `resolve` subcommand wired to Charter.Cli.ResolveCommand (which applies
+// a solo reviewer's queued answers inline, via a live server or the durable sidecar).
+static RootCommand BuildResolveRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the Charter plan (.charter.md) whose queued answers to apply inline.",
+    };
+
+    var resolve = new Command(
+        "resolve",
+        "Apply a solo reviewer's queued :::question answers INLINE into the plan (single-writer-safe; via a live review server or the durable sidecar).")
+    {
+        inputArgument,
+    };
+
+    resolve.SetAction(parseResult => RunVerb("resolve", () =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"charter resolve: input plan not found: {inputPath}");
+            return 1;
+        }
+
+        return ResolveCommand.Execute(inputPath);
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        resolve,
     };
 }
 
