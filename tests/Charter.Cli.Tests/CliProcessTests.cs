@@ -119,6 +119,65 @@ public class CliProcessTests
         }
     }
 
+    [Fact]
+    public void Convert_PlainMarkdown_WritesSeed_ThatRendersWithNoVersionMarkerWarning()
+    {
+        string workDir = NewTempDirectory();
+        try
+        {
+            string input = Path.Combine(workDir, "plain.md");
+            File.WriteAllText(
+                input,
+                "# A Plain Markdown Doc\n\nSome prose.\n\n## Open Questions\n\n"
+                    + "- Which datastore should the read path use?\n"
+                    + "- Do we need multi-region on day one?\n");
+            string seedPath = Path.Combine(workDir, "plan.charter.md");
+
+            var convertResult = RunCharter("convert", input, "-o", seedPath);
+
+            // convert succeeds, reports the transform, and writes the seed. A plain .md is marker-less by
+            // definition, so convert must NOT emit a version-marker warning — it ADDS the marker.
+            Assert.Equal(0, convertResult.ExitCode);
+            Assert.Contains("Converted", convertResult.StdOut);
+            Assert.DoesNotContain("warning:", convertResult.StdErr);
+            Assert.True(File.Exists(seedPath));
+
+            string seed = File.ReadAllText(seedPath);
+            Assert.Contains("charter-format-version: 1", seed);
+            Assert.Contains(":::question", seed);
+
+            // The seed round-trips: `charter render` processes it with NO version-marker warning and no error.
+            string outputHtml = Path.Combine(workDir, "out.html");
+            var renderResult = RunCharter("render", seedPath, "-o", outputHtml);
+
+            Assert.Equal(0, renderResult.ExitCode);
+            Assert.Contains("Rendered", renderResult.StdOut);
+            Assert.DoesNotContain("charter render: warning:", renderResult.StdErr);
+            Assert.DoesNotContain("charter-format-version", renderResult.StdErr);
+            Assert.True(File.Exists(outputHtml));
+        }
+        finally
+        {
+            TryDeleteDirectory(workDir);
+        }
+    }
+
+    [Fact]
+    public void Convert_MissingInput_Exits1_WithCleanError()
+    {
+        string missingInput = Path.Combine(Path.GetTempPath(), "charter-missing-" + Guid.NewGuid().ToString("N") + ".md");
+        string outputPath = Path.Combine(Path.GetTempPath(), "charter-seed-" + Guid.NewGuid().ToString("N") + ".charter.md");
+
+        var result = RunCharter("convert", missingInput, "-o", outputPath);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("charter convert:", result.StdErr);
+
+        string combined = result.StdOut + "\n" + result.StdErr;
+        Assert.DoesNotContain("Unhandled exception", combined);
+        Assert.DoesNotContain("   at ", combined);
+    }
+
     /// <summary>
     /// Runs the built CLI as a child process via <c>dotnet exec &lt;Charter.Cli.dll&gt;</c> and returns its exit
     /// code and captured streams. The DLL path is the Charter.Cli build output resolved by MSBuild at compile
