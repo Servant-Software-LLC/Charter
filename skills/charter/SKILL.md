@@ -10,10 +10,11 @@ Charter is the front door of an agentic delivery pipeline (`Charter → Guardrai
 reviews it in the browser and **comments in place** (notes anchored to the exact block); you drain that
 feedback and revise; then you hand the approved plan to Guardrails, which breaks it into a task DAG.
 
-This skill teaches you to *drive* Charter. You interact with it through exactly four CLI verbs plus two
-HTTP endpoints on the review server — nothing else exists. Ground anything ambiguous in
-`src/Charter.Cli/Program.cs` (the verb list) and `docs/plans/01-combine-lavish-and-visual-plan.md` (the
-block catalog and load-bearing invariants — the single source of truth this skill cites, never forks).
+This skill teaches you to *drive* Charter. You interact with it through a small set of CLI verbs over a
+loopback review server — ground anything ambiguous in `src/Charter.Cli/Program.cs` (the verb list). The
+block catalog and `:::question` schema are normative in the **`charter-format`** skill — the single source
+of truth this skill cites, never forks; the architecture and load-bearing invariants live in
+`docs/plans/01-combine-lavish-and-visual-plan.md`.
 
 ## When to use
 
@@ -31,12 +32,18 @@ reporting on work already finished.
 |---|---|
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
+| `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. |
+| `charter resolve <plan.charter.md>` | Solo-reviewer companion to `poll --apply`: fold a human reviewer's queued answers **inline** into the plan when no agent is looping `poll`. |
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
-| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for Guardrails `plan-breakdown`. |
+| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the headless Guardrails `plan-breakdown` path. |
+| `charter skills install [--project] [--force]` | Install the bundled `charter` + `charter-format` skills so Guardrails `plan-breakdown` can discover them. |
 | `charter --version` | Print the version. |
 
-There is **no** CLI verb for reading the human's feedback. The review server exposes it over HTTP, and
-you drain it there — see [The review loop](#the-review-loop) and `references/review-loop.md`.
+You read the human's feedback with **`charter poll`** — it drains the queued annotations and `:::question`
+answers from the running review server, discovering the session from a per-user registry so the capability
+key never crosses your command line. `charter poll --apply` (agent-in-the-loop) and `charter resolve` (solo
+human reviewer) then fold the answers **inline** into the plan's `:::question` blocks. The loopback HTTP
+endpoints still sit beneath `poll` — see [The review loop](#the-review-loop) and `references/review-loop.md`.
 
 ## The workflow: AUTHOR → REVIEW → HANDOFF
 
@@ -44,7 +51,9 @@ you drain it there — see [The review loop](#the-review-loop) and `references/r
 
 Write the plan as a `.charter.md` file using the [block catalog](#block-catalog). Begin the file with a
 plain-YAML frontmatter marker declaring the format version (`---` / `charter-format-version: 1` / `---`) —
-normative in the `charter-format` skill. Then render it to check the artifact:
+normative in the `charter-format` skill. Starting from a prompt, an existing doc, a PDF, or a Confluence
+page? `references/authoring-from-source.md` is the on-ramp: how to ingest each source and choose the right
+block for its content. Then render it to check the artifact:
 
 ```
 charter render plan.charter.md -o plan.html
@@ -55,7 +64,7 @@ injected **only at serve time**, never baked into this file (invariant 1: *porta
 is your fast inner loop while drafting; open `plan.html` yourself to sanity-check layout before you put
 it in front of the human.
 
-### 2. REVIEW — `charter review`, then drain feedback over HTTP
+### 2. REVIEW — `charter review`, then drain feedback with `charter poll`
 
 ```
 charter review plan.charter.md
@@ -75,17 +84,18 @@ no browser should launch (headless/CI).
 
 In the browser the human annotates **elements** (whole blocks), **text ranges** (a selection inside a
 block), and **diagram nodes** (a node inside a rendered diagram), and submits answers to any
-`:::question` blocks. You read that feedback back by **draining the server's HTTP endpoints** — there is
-no CLI verb for this:
+`:::question` blocks. You read that feedback back by running **`charter poll`**, which drains the review
+session's two streams:
 
-- **`GET /api/poll?key=<key>`** — long-polls (~30 s) and returns the queued **annotations** as a JSON
-  array; each carries the resolved **markdown source line** so you know exactly which line to edit.
-- **`GET /api/answers?key=<key>`** — drains the queued **`:::question` answers** as a JSON array.
+- **annotations** — each carries the resolved **markdown source line** so you know exactly which line to
+  edit; act on them by editing the source.
+- **`:::question` answers** — fold them into the plan with `charter poll --apply` (or `charter resolve`),
+  which writes each chosen answer **inline** into its `:::question` block (the living-document write).
 
 Edit the markdown source in response; the server re-renders from source on the next request (live
 reload), so the human sees your revision without restarting. Loop — poll, revise, let them re-review —
-until the plan is approved. The exact JSON shapes, the long-poll semantics, and a concrete drain loop are
-in `references/review-loop.md`.
+until the plan is approved. The JSON envelope shapes, the long-poll semantics, and a concrete drain loop
+are in `references/review-loop.md`.
 
 ### 3. HANDOFF — `charter export` (optional) then `charter handoff`
 
@@ -106,17 +116,18 @@ charter handoff plan.charter.md -o plan.md --answers answers.json
 ```
 
 `handoff` rewrites every `:::` directive (`:::note`, `:::warn`, `:::comparison`, `:::diagram`,
-`:::question`, …) into **plain CommonMark** — Guardrails does *not* parse Charter's directives (invariant
-5: *feeds Guardrails via plain markdown*). Each `:::question` resolves against the optional `--answers`
-JSON: supplied answers become an **"Answered:"** line; anything left unanswered becomes an **"Open
-question"** line. Omit `--answers` and every question hands off as open. The `--answers` shape and the
-Open-vs-Answered rendering are in `references/handoff.md`.
+`:::question`, …) into **plain CommonMark** — the flattened form the **headless** Guardrails
+`plan-breakdown` path consumes (invariant 5: *dual handoff* — the **interactive** `/plan-breakdown` instead
+reads the `.charter.md` directly via the `charter-format` skill). Each `:::question` resolves against the
+optional `--answers` JSON: supplied answers become an **"Answered:"** line; anything left unanswered becomes
+an **"Open question"** line. Omit `--answers` and every question hands off as open. The `--answers` shape and
+the Open-vs-Answered rendering are in `references/handoff.md`.
 
 ## Block catalog
 
-Blocks are **CommonMark prose plus `:::` directive containers**. The catalog is single-sourced in
-`docs/plans/01-combine-lavish-and-visual-plan.md` (§ *Format & block catalog*, invariant 3: *format
-single-sourced*) — this table cites it; the renderer owns it. Do not fork or invent directives.
+Blocks are **CommonMark prose plus `:::` directive containers**. The catalog is single-sourced in the
+**`charter-format`** skill (invariant 3: *format single-sourced*) — this table cites it, the renderer owns
+it, and a drift test binds them. Do not fork or invent directives.
 
 | Block | Directive |
 |---|---|
@@ -129,12 +140,13 @@ single-sourced*) — this table cites it; the renderer owns it. Do not fork or i
 | **question (elicitation)** | **`:::question`** |
 
 **`:::question`** is the elicitation block — how you ask the human to *decide* something inside the plan.
-Its body is a validated payload: each question has an `id`, a `title`, a `mode`
-(`single-select` / `multi-select` / `free-text` / `boolean` / `number`), `options`, and a `target`
-(`human` or `agent`). It renders to a native HTML `<form>`; submitting posts structured answers that you
-drain from `GET /api/answers` and later resolve at handoff. Every block also gets a content-derived
-**stable ID** and a **source-map** back to its markdown line range, which is what lets an annotation on
-the rendered HTML round-trip to the source line you edit.
+Its body is a validated **JSON** payload — `id`, `title`, `mode`, `options`, `target`, and an optional
+`answer` (whose presence marks the question resolved). The `mode` tokens and the full schema, including the
+open-vs-resolved rule, are normative in the **`charter-format`** skill — cite it, don't restate it here. It
+renders to a native HTML `<form>`; submitting posts structured answers that you drain with `charter poll`
+and fold in with `poll --apply` / `charter resolve`. Every block also gets a content-derived **stable ID**
+and a **source-map** back to its markdown line range, which is what lets an annotation on the rendered HTML
+round-trip to the source line you edit.
 
 The full catalog with each block's syntax, the `:::question` schema in depth, and a sample `.charter.md`
 skeleton are in `references/authoring-plans.md`.
@@ -143,8 +155,11 @@ skeleton are in `references/authoring-plans.md`.
 
 Keep this file lean; the depth lives in `references/`:
 
+- **`references/authoring-from-source.md`** — the on-ramp: turn any source (a prompt, a markdown file, a
+  PDF, a link, a Confluence page) into a rich `.charter.md` — how to ingest each, and how to choose the
+  right block for its content.
 - **`references/authoring-plans.md`** — the block catalog in depth + a short sample `.charter.md` skeleton.
 - **`references/review-loop.md`** — running `charter review`, in-browser annotation, and draining
-  feedback via `GET /api/poll` and `GET /api/answers` on the loopback server.
+  feedback with `charter poll` (`--apply` / `charter resolve` fold answers inline) on the loopback server.
 - **`references/handoff.md`** — `charter export` (offline artifact) and `charter handoff` (→ plain
   CommonMark; the `--answers` JSON shape; Open-question vs Answered).

@@ -13,9 +13,9 @@ charter-format-version: 1
 The marker and the format range are normative in the `charter-format` skill (the format single source of
 truth); keep it a mention here. Write the narrative as ordinary markdown; reach for a
 directive only when a block needs to be *rendered specially*, *annotated as a unit*, or *elicit a
-decision*. The catalog below is single-sourced in
-`docs/plans/01-combine-lavish-and-visual-plan.md` (§ *Format & block catalog*) — invariant 3, *format
-single-sourced*: this playbook cites that catalog; the renderer owns it. Don't invent new directives.
+decision*. The catalog below is single-sourced in the **`charter-format`** skill (invariant 3, *format
+single-sourced*): this playbook cites that catalog; the renderer owns it and a drift test binds them.
+Don't invent new directives.
 
 ## Why this shape
 
@@ -106,33 +106,23 @@ element. Reach for it last — the more expressive the block, the less constrain
 ### Question (elicitation) — `:::question`
 
 The one block with a **strict, validated schema** — it's how you ask the human to *decide* something
-inside the plan. The body is a payload (YAML/JSON) validated against a C# record:
-
-| Field | Meaning |
-|---|---|
-| `id` | Opaque, stable question id — you reference it later in the `--answers` handoff JSON. |
-| `title` | The question shown to the reviewer. |
-| `mode` | One of `single-select`, `multi-select`, `free-text`, `boolean`, `number`. |
-| `options` | The choices (for the select modes). |
-| `target` | `human` or `agent` — who the resolved answer is routed to on handoff. |
+inside the plan. The body is a **JSON object** (parsed as JSON, which is a subset of YAML) validated
+against a C# record. Its fields — `id`, `title`, `mode`, `options`, `target`, and the optional `answer` —
+the exact `mode` tokens, and the **open-vs-resolved rule** (omit `answer` ⇒ open; a non-empty `answer` ⇒
+resolved) are normative in the **`charter-format`** skill. Cite that skill for the schema rather than
+restating it here.
 
 ```
 :::question
-id: db-choice
-title: Which datastore should the service use?
-mode: single-select
-target: agent
-options:
-  - Postgres
-  - DynamoDB
-  - SQLite
+{ "id": "db-choice", "title": "Which datastore should the service use?",
+  "mode": "single", "options": ["Postgres", "DynamoDB", "SQLite"], "target": "agent" }
 :::
 ```
 
-It renders to a native HTML `<form>`. When the human submits, the review server queues a structured
-answer that you drain from `GET /api/answers` (see `review-loop.md`), and that same `id` is what you map
-in the `--answers` JSON at handoff (see `handoff.md`). A `:::question` left unanswered becomes an "Open
-question" line in the handoff — a legitimate, common outcome.
+It renders to a native HTML `<form>`. When the human submits, the review server queues a structured answer
+you drain with `charter poll` (see `review-loop.md`); `charter poll --apply` or `charter resolve` then
+folds it **inline** into the block's `answer` field, resolving the question in place. A `:::question` left
+open (no `answer`) is a legitimate, common outcome — surfaced, never silently defaulted.
 
 ## A sample `.charter.md` skeleton
 
@@ -168,13 +158,8 @@ flowchart LR
 ## Decisions we need from you
 
 :::question
-id: db-choice
-title: Which datastore should the service use?
-mode: single-select
-target: agent
-options:
-  - Postgres
-  - DynamoDB
+{ "id": "db-choice", "title": "Which datastore should the service use?",
+  "mode": "single", "options": ["Postgres", "DynamoDB"], "target": "agent" }
 :::
 
 :::warn

@@ -1,9 +1,12 @@
 # The review loop — serve, annotate, drain feedback
 
 This is the load-bearing part of driving Charter: the human reviews the plan in the browser and comments
-**in place**, and you read that feedback back and revise. There is **no CLI verb** that hands you the
-feedback — the review server exposes it over HTTP on the loopback interface, and you drain it there. This
-playbook teaches that drain explicitly.
+**in place**, and you read that feedback back and revise. You drain that feedback with **`charter poll`** —
+a CLI client over the loopback review server that discovers the running session (so the capability key
+never crosses your command line), returns the queued annotations + `:::question` answers, and, with
+`--apply`, writes the answers **inline** into the plan's `:::question` blocks. `charter resolve` is the
+solo-human-reviewer companion that folds queued answers in when no agent is looping `poll`. The loopback
+HTTP endpoints documented below are what `poll` wraps (and what its `--url` escape hatch targets directly).
 
 ## Start the server
 
@@ -43,11 +46,12 @@ They also fill in and submit any **`:::question`** forms. Each annotation is res
 **1-based markdown source line** of the block it points at (via the content-derived source-map), so the
 feedback you drain tells you exactly which line to edit — that round-trip is the whole point (invariant 2).
 
-## Draining feedback — the two HTTP endpoints
+## Draining feedback — what `charter poll` returns (and the endpoints beneath it)
 
-The server queues two independent streams and you drain each with a plain HTTP `GET` carrying the session
-key on the query string. Both are read-only drains; you don't POST anything (the browser SDK does the
-POSTing, which is CSRF/same-origin gated — your GETs just need the key).
+`charter poll` returns both streams below in one JSON envelope on stdout. If you need the raw surface —
+scripting, debugging, or the `--url` path — the server exposes each as a plain HTTP `GET` carrying the
+session key on the query string. Both are read-only reads; you don't POST anything (the browser SDK does
+the POSTing, which is CSRF/same-origin gated — your GETs just need the key).
 
 ### `GET /api/poll?key=<key>` — queued annotations (long-poll)
 
@@ -83,14 +87,16 @@ again. Each element:
 GET http://127.0.0.1:<port>/api/answers?key=<key>
 ```
 
-Drains the queued answers submitted through `:::question` forms and returns them as a JSON array (no
-long-poll — it returns immediately with whatever is queued, `[]` if nothing). Each element:
+Reports the queued answers submitted through `:::question` forms and returns them as a JSON array (no
+long-poll — it returns immediately with whatever is queued, `[]` if nothing). This is a **peek**: it does
+not remove the answers — `charter poll --apply` / `charter resolve` remove them only after folding them
+**inline** into the plan, so a plain poll can never strand a reviewer's decision. Each element:
 
 ```json
 [
   {
     "questionId": "db-choice",
-    "mode": "single-select",
+    "mode": "single",
     "values": ["Postgres"],
     "target": "agent"
   }
@@ -99,28 +105,28 @@ long-poll — it returns immediately with whatever is queued, `[]` if nothing). 
 
 - `questionId` — matches the `id` you gave the `:::question` block; this is the key you'll use in the
   `--answers` handoff JSON.
-- `mode` — the question's selection mode.
+- `mode` — the question's `charter-format` mode token (`single` / `multi` / `free-text` / `bool` / `number`).
 - `values` — the selected option value(s); always an array (empty if none).
 - `target` — `human` or `agent`, echoed verbatim for downstream routing.
 
 ## The loop
 
-Put the two drains together and iterate until the plan is approved:
+Put the drains together and iterate until the plan is approved:
 
-1. Start `charter review plan.charter.md` in the background; parse `<port>` and `<key>` from the ready line.
-2. `GET /api/poll?key=<key>` — for each returned annotation, jump to its `sourceLine` in `plan.charter.md` and
-   revise per the `note`. An empty array just means "nothing yet"; poll again.
-3. `GET /api/answers?key=<key>` — for each answer, record the decision against its `questionId`; you'll
-   feed these into the handoff `--answers` JSON (see `handoff.md`). Fold consequential decisions back
-   into the plan prose too.
-4. Save `plan.charter.md`. The human's next refresh shows the revision (live reload).
-5. Repeat until the human signals approval, then stop the server (Ctrl+C) and move to handoff.
+1. Start `charter review plan.charter.md` in the background (the ready line confirms it's up).
+2. `charter poll --apply` — for each returned annotation, jump to its `sourceLine` in `plan.charter.md`
+   and revise per the `note`; each drained `:::question` answer is folded **inline** into its block's
+   `answer` field by `--apply`. Nothing queued yet is a clean-empty result — poll again. (A solo human
+   reviewer with no looping agent uses `charter resolve` to fold in their own answers instead.)
+3. Save `plan.charter.md`. The human's next refresh shows the revision (live reload).
+4. Repeat until the human signals approval, then stop the server (Ctrl+C) and move to handoff.
 
-Example drain with `curl` (any HTTP client works — this is a plain GET):
+The low-level surface, if you need it (scripting, debugging, the `--url` path): each stream is a plain
+`GET` — any HTTP client works.
 
 ```
 curl "http://127.0.0.1:53201/api/poll?key=Yb3…"     # queued annotations (waits up to ~30s)
-curl "http://127.0.0.1:53201/api/answers?key=Yb3…"  # queued :::question answers (returns immediately)
+curl "http://127.0.0.1:53201/api/answers?key=Yb3…"  # queued :::question answers (peek; returns immediately)
 ```
 
 Once the plan is approved, capture and hand it off — see `references/handoff.md`.

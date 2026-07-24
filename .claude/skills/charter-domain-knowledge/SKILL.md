@@ -33,18 +33,20 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
 
 ## The model
 
-- **Deliverable = block-structured markdown** (`.mdx`), rendered to one portable HTML artifact. Blocks
-  are CommonMark prose plus `:::` directive containers (Markdig `CustomContainer`), each validated
+- **Deliverable = block-structured markdown** (`.charter.md`), rendered to one portable HTML artifact.
+  Blocks are CommonMark prose plus `:::` directive containers (Markdig `CustomContainer`), each validated
   against a C# record.
 - **Block catalog:** prose/heading/list, `:::note`/`:::warn`, tables + `:::comparison`, fenced code +
-  `:::diff`, `:::annotated-code`, `:::file-tree`, `:::diagram` (Mermaid), `:::custom-html` (escape
-  hatch), and **`:::question`** (the elicitation block).
-- **`:::question` (elicitation):** body is a validated payload — each question has `id`, `title`,
-  `mode` (single-select / multi-select / free-text / boolean / number), `options`, and a `target`
-  (`human` / `agent`). Renders to a native HTML `<form>`; submitting posts structured answers back
-  through the review loop. Reproduces **visual-plan's `question-form`** — the input gap this fills is
-  in *base markdown* (CommonMark has no input primitive), not in visual-plan (which elicits via
-  `question-form` and its `visual-intake` mode).
+  `:::diff`, `:::diagram` (Mermaid), `:::custom-html` (escape hatch), and **`:::question`** (the
+  elicitation block). The normative catalog — including the fact that there is **no** `:::annotated-code`
+  or `:::file-tree` (they have no renderer) — is single-sourced in the **`charter-format`** skill; cite it,
+  don't fork it.
+- **`:::question` (elicitation):** body is a validated **JSON** payload — `id`, `title`, `mode`, `options`,
+  `target`, and an optional `answer` (its presence marks the question resolved). The `mode` tokens and full
+  schema are normative in the **`charter-format`** skill (cite it, don't restate). Renders to a native HTML
+  `<form>`; submitting posts structured answers back through the review loop. Reproduces **visual-plan's
+  `question-form`** — the input gap this fills is in *base markdown* (CommonMark has no input primitive),
+  not in visual-plan (which elicits via `question-form` and its `visual-intake` mode).
 - **Anchors + source-map:** every block gets a content-derived **stable ID**. The renderer carries a
   **source-map (anchor ID → markdown line range)** so a human annotation on the *rendered HTML*
   round-trips to the *markdown source* the agent edits. This is the deepest correctness concern —
@@ -54,18 +56,22 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
 
 ## Review-loop semantics
 
-Author `.mdx` → `charter render` → `charter <file>` serves the artifact on `127.0.0.1` (SDK injected
-at serve time) and opens the browser → human annotates elements / text ranges / diagram nodes and
-submits question answers → those post to the local server → `charter poll` long-polls and returns them
-(with the source anchor) to the agent → agent edits the markdown → live reload re-renders. Loop until
-the human approves. The saved artifact never contains the SDK, so it opens standalone.
+Author `.charter.md` → `charter render` → `charter review <file>` serves the artifact on `127.0.0.1` (SDK
+injected at serve time) and opens the browser → human annotates elements / text ranges / diagram nodes and
+submits question answers → those post to the local server → `charter poll` drains them (with the source
+anchor) to the agent, and `poll --apply` / `charter resolve` fold answers **inline** into the `:::question`
+blocks → agent edits the markdown → live reload re-renders. Loop until the human approves. The saved
+artifact never contains the SDK, so it opens standalone.
 
 ## The workflow
 
-**AUTHOR → REVIEW → HANDOFF.** The reviewed, approved deliverable is emitted as **canonical reviewed
-markdown** (plain markdown + resolved decisions) and handed to Guardrails `plan-breakdown`. The handoff
-is plain markdown by design — Guardrails is NOT extended to parse Charter's directives (that would
-couple two independently-versioned formats for no benefit).
+**AUTHOR → REVIEW → HANDOFF.** The handoff to Guardrails is **dual** (Architecture B, of record): the
+**interactive** `/plan-breakdown` consumes the `.charter.md` **directly**, interpreting the `:::` blocks
+via the `charter-format` skill; the **headless/autonomous** path consumes the retained **flattened**
+`charter handoff` output — plain CommonMark with each `:::question` resolved from its inline `answer` (or a
+`--answers` file) and open questions clearly flagged. So Charter's directives DO reach Guardrails on the
+interactive path (through the shared `charter-format` skill), while the flattened markdown stays the
+contract for the headless path.
 
 ## Format decision (settled)
 
@@ -84,7 +90,10 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
    markdown source lines; they survive re-render of unrelated blocks.
 3. **Format single-sourced** — the block schema lives in one place; renderer, SDK, and skill cite it.
 4. **Loopback + capability** — `127.0.0.1` default, per-session capability key, path-confined serving.
-5. **Feeds Guardrails via plain markdown** — no MDX crosses the handoff.
+5. **Dual handoff to Guardrails** — the interactive `/plan-breakdown` reads the `.charter.md` directly
+   (interpreting `:::` blocks via the `charter-format` skill); the headless/autonomous path consumes the
+   retained flattened `charter handoff` plain-CommonMark output. (Architecture B — flipped from the earlier
+   "plain-markdown-only handoff"; see `docs/plans/02-architecture-b-living-document.md`.)
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`.
 7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag
    does not prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a
@@ -94,13 +103,16 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 
 | Question | Authoritative source |
 |---|---|
+| Block catalog + `:::question` schema (normative, drift-tested) | skill `charter-format` |
 | Architecture, milestones, decisions D1/D2 | `docs/plans/01-combine-lavish-and-visual-plan.md` |
+| Living-document / dual-handoff design (Architecture B) | `docs/plans/02-architecture-b-living-document.md` |
 | Build / test / package / distribution / gotchas | skill `charter-dev-knowledge` |
 | Format rationale (vs alternatives) | plan D1 + the format-research verdict it cites |
 | Guardrails handoff shape | to be pinned as a fixture in M0 |
 
 ## Status (update as milestones complete)
 
-- **Scaffold complete** — .NET solution, CI/release/tap pipeline (validated green), installers.
+- **Released** — v0.1.0 GA on all channels (Homebrew, NuGet `dotnet` tool, native binaries): the renderer, source-map, loopback review server, in-place annotation loop, offline export, and `charter handoff` all ship.
+- **Architecture B (living `.charter.md`)** — of record (`docs/plans/02-architecture-b-living-document.md`) and largely built on master: the `.charter.md` format + `charter-format` skill + the `charter-format-version` frontmatter marker; `charter skills install`; and the full review→apply→handoff loop — `charter poll --apply` / `charter resolve` fold reviewer answers back into the `.charter.md` (durable sidecar + peek→apply→commit, so nothing is lost).
+- **Pending** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393, their team); `charter convert` (#17); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).
-- **Not yet built** — renderer, source-map, review server, annotation loop (M0 spike is next).

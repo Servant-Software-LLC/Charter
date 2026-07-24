@@ -29,13 +29,18 @@ charter handoff plan.charter.md -o plan.md --answers answers.json
 ```
 
 `handoff` reads the reviewed plan and rewrites **every `:::` directive** — `:::note`, `:::warn`,
-`:::comparison`, `:::diagram`, `:::custom-html`, `:::question`, … —
-into **plain CommonMark**. This is deliberate (invariant 5, *feeds Guardrails via plain markdown*):
-Guardrails does **not** parse Charter's directives, so coupling the two independently-versioned formats
-would buy nothing. The output `plan.md` is what you pass to Guardrails `plan-breakdown`.
+`:::comparison`, `:::diagram`, `:::custom-html`, `:::question`, … — into **plain CommonMark**. This is the
+**headless** half of Charter's dual handoff (invariant 5, *dual handoff to Guardrails*): the flattened
+`plan.md` is what the autonomous Guardrails `plan-breakdown` path consumes. The **interactive**
+`/plan-breakdown` doesn't need it — it reads the `.charter.md` directly, interpreting the `:::` blocks via
+the `charter-format` skill. Reach for `handoff` when you're feeding the headless path.
 
-`--answers` is **optional**. Omit it and every `:::question` hands off as an open question — a legitimate,
-common case when the human hasn't decided yet. Supply it to resolve questions to their chosen answers.
+`--answers` is **optional**. A `:::question` already resolved **inline** — its `answer` filled in by
+`charter poll --apply` / `charter resolve` during review — hands off as **Answered** on its own, because
+`handoff` reads the inline answer. `--answers` is for questions **not** already answered inline: supply it
+to resolve them (a matching `id` in `--answers` takes precedence over an inline answer). Omit it, and any
+question with no inline answer hands off as an **open question** — a legitimate, common case when the human
+hasn't decided yet.
 
 ### The `--answers` JSON shape
 
@@ -50,9 +55,9 @@ A **flat object** mapping each question's `id` (the `id` you gave the `:::questi
 }
 ```
 
-- Single-select / boolean / number → a **one-element** array (`["Postgres"]`, `["true"]`, `["3"]`).
-- Multi-select → the **selected values** (`["us-east-1", "eu-west-1"]`).
-- Free-text → the **text as one element** (`["Keep the read path Postgres-only for v1."]`).
+- `single` / `bool` / `number` → a **one-element** array (`["Postgres"]`, `["true"]`, `["3"]`).
+- `multi` → the **selected values** (`["us-east-1", "eu-west-1"]`).
+- `free-text` → the **text as one element** (`["Keep the read path Postgres-only for v1."]`).
 
 This file is **hand-authored** — you write it from the answers you drained during review. It is
 deliberately a plain file-in/file-out shape with no dependency on a running review server: `handoff` is
@@ -62,9 +67,10 @@ an offline command.
 
 For each `:::question`, `handoff` emits one of two plain-markdown lines:
 
-- **Unanswered** (no matching `id` in `--answers`, or no `--answers` at all) → an **"Open question"**
-  line. Guardrails sees an unresolved decision it can surface for a human.
-- **Answered** (a matching `id` with value(s)) → an **"Answered:"** line carrying the chosen value(s).
+- **Answered** (a matching `id` in `--answers`, or an `answer` already filled in inline) → an
+  **"Answered:"** line carrying the chosen value(s).
+- **Open** (no inline `answer` and no matching `--answers` id) → an **"Open question (unresolved)"** line.
+  Guardrails sees an unresolved decision it can surface for a human.
 
 So the same plan hands off differently depending on what you supply:
 
@@ -78,10 +84,12 @@ Open question: Which datastore should the service use?
 
 ### The end-to-end shape
 
-1. Author `plan.charter.md` (`references/authoring-plans.md`).
-2. `charter render` to check, `charter review` to get in-browser feedback, draining `GET /api/poll` and
-   `GET /api/answers` (`references/review-loop.md`); revise until approved.
-3. Build `answers.json` from the `:::question` answers you drained.
+1. Author `plan.charter.md` (`references/authoring-from-source.md`, `references/authoring-plans.md`).
+2. `charter render` to check, `charter review` to get in-browser feedback — drain it with `charter poll`
+   and fold answers inline via `poll --apply` / `charter resolve` (`references/review-loop.md`); revise
+   until approved.
+3. *(Optional)* Build `answers.json` for any `:::question` not already resolved inline (or to override one).
 4. Optionally `charter export plan.charter.md -o plan.html` for a shareable offline snapshot.
-5. `charter handoff plan.charter.md -o plan.md --answers answers.json` → hand `plan.md` to Guardrails
-   `plan-breakdown`.
+5. `charter handoff plan.charter.md -o plan.md [--answers answers.json]` → hand `plan.md` to the headless
+   Guardrails `plan-breakdown` path. (The interactive `/plan-breakdown` skips this and reads the
+   `.charter.md` directly.)
