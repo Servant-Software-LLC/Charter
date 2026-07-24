@@ -498,13 +498,20 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        try
+        // `wait=0` skips the long-poll wait and drains whatever is queued right now (returns [] fast when
+        // empty). The browser SDK never sends it, so the default long-poll and every existing test are
+        // unchanged; `charter poll` uses wait=0 for its non-blocking drain and omits it only under --wait.
+        var immediate = string.Equals(context.Request.QueryString["wait"], "0", StringComparison.Ordinal);
+        if (!immediate)
         {
-            await _store.WaitForPendingAsync(PollTimeout, _shutdown.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // The server is shutting down; return whatever is currently drained (typically empty).
+            try
+            {
+                await _store.WaitForPendingAsync(PollTimeout, _shutdown.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The server is shutting down; return whatever is currently drained (typically empty).
+            }
         }
 
         // Drain, then write with requeue-on-failure: if the client disconnected mid-write the drained batch is
