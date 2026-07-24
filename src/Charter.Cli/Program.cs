@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Charter.Cli;
 using Charter.Core;
 using Charter.Server;
 using Spectre.Console;
@@ -56,6 +57,15 @@ if (args.Length >= 1 && args[0] == "handoff")
     return BuildHandoffRoot().Parse(args).Invoke();
 }
 
+// `charter skills install [--project] [--target <dir>] [--force]`: extract the skills bundled inside this
+// binary (skills/charter + skills/charter-format, embedded as resources) into Claude Code's skills directory
+// so `charter-format` becomes discoverable to Guardrails plan-breakdown. Parsed with System.CommandLine,
+// parallel to `render`; only entered for the `skills` verb so the banner / --version behavior stays as-is.
+if (args.Length >= 1 && args[0] == "skills")
+{
+    return SkillsCommand.BuildRoot().Parse(args).Invoke();
+}
+
 // Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
 // returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
 // list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
@@ -64,7 +74,7 @@ if (args.Length >= 1 && args[0] == "handoff")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, handoff, skills. Flags: --version, --help.");
     return 1;
 }
 
@@ -72,7 +82,7 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/].");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
