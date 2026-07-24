@@ -66,6 +66,17 @@ if (args.Length >= 1 && args[0] == "skills")
     return SkillsCommand.BuildRoot().Parse(args).Invoke();
 }
 
+// `charter poll [<plan.charter.md>] [--session <descriptor>] [--url <cap-url>] [--wait] [--apply]`: drain
+// queued review feedback (annotations + answers) from a running review server, closing the
+// author -> review -> handoff loop. Discovers the session via the per-user registry (or --session / --url),
+// proves it live, and writes one JSON envelope to stdout; with --apply it also writes the drained answers
+// INLINE into the plan's :::question blocks (the living-document write). Parsed with System.CommandLine,
+// parallel to `render`; only entered for the `poll` verb so the banner / --version behavior above stays as-is.
+if (args.Length >= 1 && args[0] == "poll")
+{
+    return BuildPollRoot().Parse(args).Invoke();
+}
+
 // Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
 // returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
 // list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
@@ -74,7 +85,7 @@ if (args.Length >= 1 && args[0] == "skills")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff, skills. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, handoff, skills, poll. Flags: --version, --help.");
     return 1;
 }
 
@@ -82,7 +93,7 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/].");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/], [green]poll[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
@@ -360,6 +371,33 @@ static RootCommand BuildReviewRoot()
         var session = ReviewSession.Create(inputPath);
         using var server = ReviewServer.Start(session);
 
+        // Register this running session in the per-user state dir so `charter poll` can discover it (address
+        // + capability key + source path) WITHOUT the key ever crossing a command line. Written AFTER Start
+        // (the address is now known) and — deliberately — before the ready line. Best-effort: a non-writable
+        // state dir must not break `review`, so a write failure only warns and keeps serving.
+        var sessionsDirectory = StateDirectory.Sessions();
+        string? descriptorPath = null;
+        try
+        {
+            descriptorPath = SessionRegistry.Write(
+                sessionsDirectory, SessionDescriptor.ForSession(session, server.Address));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"charter review: could not register the session for `charter poll` ({ex.Message}); still serving.");
+        }
+
+        // Handle Ctrl+C gracefully so the listener is disposed (port freed) and the descriptor removed on the
+        // way out. Subscribed BEFORE the ready line so an interrupt arriving the instant the server is up is
+        // still caught (rather than defaulting to abrupt termination that would orphan the descriptor).
+        using var stop = new ManualResetEventSlim(false);
+        Console.CancelKeyPress += (_, keyPress) =>
+        {
+            keyPress.Cancel = true;
+            stop.Set();
+        };
+
         // The capability URL: the keyless loopback Address plus the session key on the ?key= query string
         // (the form the server authorizes and the browser opens). Address ends in '/', so this yields
         // exactly http://127.0.0.1:<port>/?key=<key>.
@@ -372,21 +410,78 @@ static RootCommand BuildReviewRoot()
             TryOpenBrowser(reviewUrl);
         }
 
-        // Keep serving until the process is stopped (Ctrl+C). Handle Ctrl+C gracefully so the listener is
-        // disposed (and its port freed) on the way out rather than left to the OS.
-        using var stop = new ManualResetEventSlim(false);
-        Console.CancelKeyPress += (_, keyPress) =>
+        // Keep serving until the process is stopped (Ctrl+C); remove the session descriptor on clean exit so a
+        // subsequent `poll` does not have to prune it as stale.
+        try
         {
-            keyPress.Cancel = true;
-            stop.Set();
-        };
-        stop.Wait();
-        return 0;
+            stop.Wait();
+            return 0;
+        }
+        finally
+        {
+            if (descriptorPath is not null)
+            {
+                SessionRegistry.Delete(descriptorPath);
+            }
+        }
     }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
         review,
+    };
+}
+
+// Builds the root command hosting the `poll` subcommand wired to Charter.Cli.PollCommand (which orchestrates
+// Charter.Server's ReviewClient / SessionRegistry / PollEnvelope). The plan argument is OPTIONAL: omitted, poll
+// auto-selects the single live session.
+static RootCommand BuildPollRoot()
+{
+    var inputArgument = new Argument<string?>("input")
+    {
+        Description = "Optional path to the Charter plan (.charter.md) whose review session to drain. Omitted: auto-select the single live session.",
+        Arity = ArgumentArity.ZeroOrOne,
+    };
+    var sessionOption = new Option<string?>("--session")
+    {
+        Description = "Path to an explicit session descriptor file to read instead of discovering by plan.",
+    };
+    var urlOption = new Option<string?>("--url")
+    {
+        Description = "Capability URL (http://127.0.0.1:PORT/?key=KEY) to drain directly, bypassing session discovery.",
+    };
+    var waitOption = new Option<bool>("--wait")
+    {
+        Description = "Run one native long-poll cycle for annotations before draining, instead of a non-blocking immediate drain.",
+    };
+    var applyOption = new Option<bool>("--apply")
+    {
+        Description = "Write the drained answers INLINE into the plan's :::question blocks (atomic in-place write), resolving them.",
+    };
+
+    var poll = new Command("poll", "Drain queued review feedback (annotations + answers) from a running review session.")
+    {
+        inputArgument,
+        sessionOption,
+        urlOption,
+        waitOption,
+        applyOption,
+    };
+
+    poll.SetAction(parseResult => RunVerb("poll", () =>
+    {
+        string? input = parseResult.GetValue(inputArgument);
+        string? sessionPath = parseResult.GetValue(sessionOption);
+        string? url = parseResult.GetValue(urlOption);
+        bool wait = parseResult.GetValue(waitOption);
+        bool apply = parseResult.GetValue(applyOption);
+
+        return PollCommand.Execute(input, sessionPath, url, wait, apply);
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        poll,
     };
 }
 
