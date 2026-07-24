@@ -154,15 +154,53 @@ public class ReviewClientTests
             using var client = new ReviewClient(server.Address, session.Key.Value);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
-            // The non-blocking (wait=0) annotation drain returns the queued annotation.
+            // The non-blocking (wait=0) annotation drain returns the queued annotation (and no drain error).
             var annotations = await client.DrainAnnotationsAsync(wait: false, cts.Token);
-            Assert.Single(annotations);
-            Assert.Equal("Please clarify.", annotations[0].Note);
+            Assert.False(annotations.Failed);
+            Assert.Single(annotations.Items);
+            Assert.Equal("Please clarify.", annotations.Items[0].Note);
 
-            var answers = await client.DrainAnswersAsync(cts.Token);
-            Assert.Single(answers);
-            Assert.Equal("q-1", answers[0].QuestionId);
-            Assert.Equal(new[] { "A" }, answers[0].Values);
+            // Answers PEEK (non-destructive) returns the queued answer without removing it.
+            var answers = await client.PeekAnswersAsync(cts.Token);
+            Assert.False(answers.Failed);
+            Assert.Single(answers.Items);
+            Assert.Equal("q-1", answers.Items[0].QuestionId);
+            Assert.Equal(new[] { "A" }, answers.Items[0].Values);
+
+            // Peek left it in the store — a second peek still returns it (report-don't-remove, §1.6).
+            var secondPeek = await client.PeekAnswersAsync(cts.Token);
+            Assert.Single(secondPeek.Items);
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task Peek_AgainstDeadServer_ReportsDrainFailure_NotSilentEmpty()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            Uri address;
+            using (var server = ReviewServer.Start(
+                       session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 }))
+            {
+                address = server.Address;
+            }
+
+            // The server is gone: a peek against the freed port is a TRANSPORT FAILURE, not an empty queue.
+            // Surfacing this (Error set) is what stops an agent handing off on a false "nothing queued" — a
+            // swallowed failure would look identical to a genuinely empty session (§DA-weak-4).
+            using var client = new ReviewClient(address, session.Key.Value);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var answers = await client.PeekAnswersAsync(cts.Token);
+
+            Assert.True(answers.Failed);
+            Assert.NotNull(answers.Error);
+            Assert.Empty(answers.Items);
         }
         finally
         {

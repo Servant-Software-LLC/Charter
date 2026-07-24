@@ -7,12 +7,14 @@ using Xunit;
 namespace Charter.Server.Tests;
 
 /// <summary>
-/// At-least-once drain tests for the poll and answers write paths. Both drains clear the store buffer under
-/// lock BEFORE the synchronous body write, so a mid-write disconnect used to lose the drained batch forever
-/// (in-memory only). These drive the transport-independent write-path seam
+/// At-least-once drain test for the annotation poll write path: the drain clears the store buffer under lock
+/// BEFORE the synchronous body write, so a mid-write disconnect used to lose the drained batch forever
+/// (in-memory only). This drives the transport-independent write-path seam
 /// (<see cref="ReviewServer.WriteBodyOrRequeue(Stream, byte[], Action)"/>) against a stream that throws on
-/// <c>Write</c> — deterministic, no flaky client abort — and assert a SUBSEQUENT <see cref="AnnotationStore.Drain"/>
-/// / <see cref="AnswerStore.Drain"/> STILL returns the item, proving requeue rather than loss.
+/// <c>Write</c> — deterministic, no flaky client abort — and asserts a SUBSEQUENT <see cref="AnnotationStore.Drain"/>
+/// STILL returns the item, proving requeue rather than loss. (Answers no longer drain destructively — they
+/// PEEK and are removed only by a post-apply commit, §1.6 — so there is no answer requeue-on-write-failure to
+/// cover here; a dropped peek write loses nothing.)
 /// </summary>
 [Trait("Category", "DrainRequeue")]
 public class DrainRequeueTests
@@ -43,31 +45,6 @@ public class DrainRequeueTests
 
         // And the pending signal was re-armed by Requeue, so an outstanding/next wait sees it immediately.
         // (Re-enqueue then re-drain leaves the buffer empty again.)
-        Assert.Empty(store.Drain());
-    }
-
-    [Fact]
-    public void AnswersDrainWrite_WhenBodyWriteFails_RequeuesAnswers_NotLost()
-    {
-        var store = new AnswerStore();
-        var answer = new Answer(
-            QuestionId: "q-1", Mode: "single-select", Values: new[] { "ship-it" }, Target: "human");
-        store.Enqueue(answer);
-
-        // Drain removes it from the buffer (as HandleAnswersDrain does before writing). A second drain is empty.
-        var drained = store.Drain();
-        Assert.Single(drained);
-        Assert.Empty(store.Drain());
-
-        // Simulate the answers-drain body write failing on a disconnected client: the seam must requeue.
-        var payload = Encoding.UTF8.GetBytes("[{\"questionId\":\"q-1\"}]");
-        Assert.Throws<IOException>(() =>
-            ReviewServer.WriteBodyOrRequeue(new ThrowingStream(), payload, () => store.Requeue(drained)));
-
-        // The write failed, but the answer is NOT lost — a subsequent GET /api/answers drain re-fetches it.
-        var again = store.Drain();
-        var recovered = Assert.Single(again);
-        Assert.Equal(answer, recovered);
         Assert.Empty(store.Drain());
     }
 

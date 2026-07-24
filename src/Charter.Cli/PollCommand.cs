@@ -1,4 +1,3 @@
-using Charter.Core;
 using Charter.Server;
 
 namespace Charter.Cli;
@@ -42,30 +41,65 @@ internal static class PollCommand
             }
 
             Console.WriteLine(PollEnvelope.Serialize(null, Array.Empty<Annotation>(), Array.Empty<Answer>()));
-            return 3;
+            return ReviewExitCodes.NoSession;
         }
 
         using var client = resolution.Client;
         using var drainCts = new CancellationTokenSource(wait ? WaitDrainDeadline : ImmediateDrainDeadline);
 
+        // Annotations drain destructively (ephemeral notes the agent acts on by editing). Answers are PEEKED —
+        // reported but NOT removed — so a plain poll can never strand an answer with no durable home; they are
+        // removed server-side only after a successful --apply commit (§1.6). A drain that could not complete
+        // reports an Error (never a silent empty), so a transient failure is not mistaken for "nothing queued".
         var annotations = await client.DrainAnnotationsAsync(wait, drainCts.Token).ConfigureAwait(false);
-        var answers = await client.DrainAnswersAsync(drainCts.Token).ConfigureAwait(false);
+        var answers = await client.PeekAnswersAsync(drainCts.Token).ConfigureAwait(false);
+        var drainError = annotations.Error ?? answers.Error;
 
         // stdout: always exactly one envelope (key omitted). VERBATIM server wire shapes, no reshaping. Emitted
-        // BEFORE the --apply write so the agent always receives the drained answers even if the inline write
-        // fails (RunVerb maps that to exit 1) — the envelope is the primary contract, the write is the effect.
-        Console.WriteLine(PollEnvelope.Serialize(resolution.Session, annotations, answers));
+        // BEFORE the --apply write so the agent always receives the reported answers even if the inline write
+        // fails — the envelope is the primary contract, the write is the effect. A non-null drainError rides
+        // the envelope so the caller sees WHY a drain came back empty.
+        Console.WriteLine(PollEnvelope.Serialize(resolution.Session, annotations.Items, answers.Items, drainError));
 
-        // --apply is the living-document write: splice the drained answers INLINE into the plan's :::question
-        // blocks. resolution.Session (non-null whenever Client is) carries the server-reported SourcePath, so
-        // this locates the plan even on the --url path. Skipped when nothing was answered (no spurious rewrite).
-        if (apply && answers.Count > 0)
+        // --apply is the living-document write: peek → apply → commit. resolution.Session (non-null whenever
+        // Client is) carries the server-reported SourcePath, so this locates the plan even on the --url path.
+        // Skipped when nothing was answered (no spurious rewrite). A refused apply PRESERVES the answers (never
+        // committed) and exits with a distinct code so the reviewer's decision is recoverable, not lost.
+        if (apply && answers.Items.Count > 0)
         {
-            ApplyAnswersToPlan(resolution.Session!, answers);
+            var result = await AnswerApplication
+                .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
+                .ConfigureAwait(false);
+
+            if (!result.Applied)
+            {
+                Console.Error.WriteLine($"charter poll: apply failed: {result.Error}");
+                Console.Error.WriteLine(
+                    "charter poll: the queued answers remain in the review store; fix the plan and re-run "
+                    + "'charter poll --apply' (or 'charter resolve') to retry.");
+                return ReviewExitCodes.ApplyFailed;
+            }
+
+            if (!result.Committed)
+            {
+                Console.Error.WriteLine(
+                    "charter poll: applied the answers inline, but could not remove them from the review store; "
+                    + "they may be re-reported until the next successful drain (a re-apply is idempotent).");
+            }
         }
 
-        // 0 => drained >= 1 item; 2 => live session but nothing queued.
-        return annotations.Count + answers.Count >= 1 ? 0 : 2;
+        // A failed drain outranks the clean-empty verdict: the queue state is unknown, so never report
+        // "nothing queued". Distinct exit 4 so an agent does not hand off on a false negative.
+        if (drainError is not null)
+        {
+            Console.Error.WriteLine(
+                $"charter poll: {drainError}; the queue state is unknown — not reporting 'nothing queued'.");
+            return ReviewExitCodes.DrainFailed;
+        }
+
+        return annotations.Items.Count + answers.Items.Count >= 1
+            ? ReviewExitCodes.Drained
+            : ReviewExitCodes.CleanEmpty;
     }
 
     private static async Task<SessionResolution> ResolveSessionAsync(string? input, string? sessionPath, string? url)
@@ -171,25 +205,6 @@ internal static class PollCommand
         }
 
         return new SessionResolution(null, null, Ambiguous: true);
-    }
-
-    // Write the drained answers INLINE into the session's plan file, resolving each :::question. Maps the
-    // drained Answers to the id -> values shape QuestionResolution.Apply consumes; answers are submit-ordered,
-    // so a repeated question id is LAST-WINS (the reviewer's most recent submission). The write is atomic
-    // (temp + rename in the plan's own directory), so the review server's per-request re-read never sees a
-    // half-written file — the single discrete writer the living-document model requires (§1.4).
-    private static void ApplyAnswersToPlan(PollSession session, IReadOnlyList<Answer> answers)
-    {
-        var answersById = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
-        foreach (var answer in answers)
-        {
-            if (!string.IsNullOrEmpty(answer.QuestionId))
-            {
-                answersById[answer.QuestionId] = answer.Values ?? (IReadOnlyList<string>)Array.Empty<string>();
-            }
-        }
-
-        QuestionResolution.ApplyToFile(session.SourcePath, answersById);
     }
 
     // The outcome of session discovery: a live client+session, plain no-session, or an ambiguous refusal

@@ -128,46 +128,85 @@ public sealed class ReviewClient : IDisposable
 
     /// <summary>
     /// Drain queued annotations. When <paramref name="wait"/> is false (the default), uses <c>wait=0</c> for
-    /// an immediate, non-blocking drain; when true, runs one native long-poll cycle. Any transport/parse
-    /// failure yields an empty list rather than throwing — a drain that could not complete is "nothing", not
-    /// a crash.
+    /// an immediate, non-blocking drain; when true, runs one native long-poll cycle. A transport/parse failure
+    /// is reported in <see cref="DrainOutcome{T}.Error"/> (NOT swallowed to an empty list), so the caller can
+    /// tell a genuinely empty queue apart from a drain that could not complete and never proceeds on a false
+    /// "nothing queued" (§DA-weak-4).
     /// </summary>
-    public async Task<IReadOnlyList<Annotation>> DrainAnnotationsAsync(bool wait, CancellationToken cancellationToken)
+    public async Task<DrainOutcome<Annotation>> DrainAnnotationsAsync(bool wait, CancellationToken cancellationToken)
     {
         var route = wait
             ? $"api/poll?key={Escaped(_key)}"
             : $"api/poll?key={Escaped(_key)}&wait=0";
-        return await DrainAsync<Annotation>(route, cancellationToken).ConfigureAwait(false);
+        return await DrainAsync<Annotation>(route, "annotations", cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Drain queued <c>:::question</c> answers via <c>GET /api/answers?key=…</c>.</summary>
-    public async Task<IReadOnlyList<Answer>> DrainAnswersAsync(CancellationToken cancellationToken)
-        => await DrainAsync<Answer>($"api/answers?key={Escaped(_key)}", cancellationToken).ConfigureAwait(false);
+    /// <summary>
+    /// PEEK queued <c>:::question</c> answers via <c>GET /api/answers?key=…</c> — a non-destructive report
+    /// that leaves the answers in the store. They are removed server-side only by
+    /// <see cref="CommitAnswersAsync"/>, after the caller has durably applied them. A transport/parse failure
+    /// is surfaced in <see cref="DrainOutcome{T}.Error"/> rather than swallowed to empty.
+    /// </summary>
+    public async Task<DrainOutcome<Answer>> PeekAnswersAsync(CancellationToken cancellationToken)
+        => await DrainAsync<Answer>($"api/answers?key={Escaped(_key)}", "answers", cancellationToken)
+            .ConfigureAwait(false);
 
-    private async Task<IReadOnlyList<T>> DrainAsync<T>(string route, CancellationToken cancellationToken)
+    /// <summary>
+    /// Commit (remove) the front <paramref name="count"/> answers — the prefix the caller peeked and has now
+    /// durably written into the plan — via <c>POST /api/{key}/answers/ack?count=…</c>. Returns <c>true</c> on
+    /// a 200. A failure is NON-fatal to the caller: the answers simply stay queued and a re-run re-applies
+    /// them idempotently, so this returns <c>false</c> rather than throwing.
+    /// </summary>
+    public async Task<bool> CommitAnswersAsync(int count, CancellationToken cancellationToken)
+    {
+        if (count <= 0)
+        {
+            return true;
+        }
+
+        var uri = new Uri(_base, $"api/{Escaped(_key)}/answers/ack?count={count}");
+        try
+        {
+            using var content = new StringContent(string.Empty);
+            using var response = await _http.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
+            return response.StatusCode == HttpStatusCode.OK;
+        }
+        catch (HttpRequestException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<DrainOutcome<T>> DrainAsync<T>(
+        string route, string label, CancellationToken cancellationToken)
     {
         try
         {
             using var response = await _http.GetAsync(new Uri(_base, route), cancellationToken).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
             {
-                return Array.Empty<T>();
+                return DrainOutcome<T>.Failure($"the review server returned {(int)response.StatusCode} draining {label}");
             }
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<List<T>>(body, AnnotationApi.JsonOptions) ?? new List<T>();
+            var items = JsonSerializer.Deserialize<List<T>>(body, AnnotationApi.JsonOptions) ?? new List<T>();
+            return DrainOutcome<T>.Success(items);
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
-            return Array.Empty<T>();
+            return DrainOutcome<T>.Failure($"could not reach the review server draining {label} ({ex.Message})");
         }
         catch (OperationCanceledException)
         {
-            return Array.Empty<T>();
+            return DrainOutcome<T>.Failure($"timed out draining {label} from the review server");
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            return Array.Empty<T>();
+            return DrainOutcome<T>.Failure($"could not parse the {label} drain response ({ex.Message})");
         }
     }
 

@@ -41,17 +41,27 @@ public sealed class ReviewServer : IReviewServer
     private readonly ReviewSession _session;
     private readonly AnnotationStore _store;
     private readonly AnswerStore _answers;
+
+    // The durability sidecar, or null when durability is off (no SidecarDirectory configured). Every mutation
+    // of a store is followed by _sidecar?.Persist() so a crash before drain loses nothing (§1.6).
+    private readonly ReviewSidecar? _sidecar;
     private readonly HttpListener _listener;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _acceptLoop;
     private bool _disposed;
 
     private ReviewServer(
-        ReviewSession session, AnnotationStore store, AnswerStore answers, HttpListener listener, Uri address)
+        ReviewSession session,
+        AnnotationStore store,
+        AnswerStore answers,
+        ReviewSidecar? sidecar,
+        HttpListener listener,
+        Uri address)
     {
         _session = session;
         _store = store;
         _answers = answers;
+        _sidecar = sidecar;
         _listener = listener;
         Address = address;
         _acceptLoop = Task.Run(AcceptLoopAsync);
@@ -90,10 +100,33 @@ public sealed class ReviewServer : IReviewServer
         var store = new AnnotationStore();
 
         // One per-session answer store alongside it (same lifetime): POST /api/{key}/answers enqueues into
-        // it and GET /api/answers drains it. Kept separate from the annotation store so the wave-3 poll
-        // contract is untouched.
+        // it, GET /api/answers PEEKS it (non-destructive report), and POST /api/{key}/answers/ack commits the
+        // applied prefix. Kept separate from the annotation store so the wave-3 poll contract is untouched.
         var answers = new AnswerStore();
-        return new ReviewServer(session, store, answers, listener, address);
+
+        // Durability (§1.6): when a sidecar directory is configured, REHYDRATE the stores from the server-owned
+        // sidecar BEFORE wiring it — seeding via Enqueue re-arms the long-poll signal but does not re-persist
+        // (the sidecar reference is created only after seeding) — so a review process that crashed before drain
+        // comes back with its queue intact. With no sidecar directory, durability is off (in-memory only).
+        ReviewSidecar? sidecar = null;
+        if (!string.IsNullOrEmpty(options.SidecarDirectory))
+        {
+            var sidecarPath = ReviewSidecar.PathForPlan(options.SidecarDirectory, session.SourcePath);
+            var restored = ReviewSidecar.Rehydrate(sidecarPath);
+            foreach (var annotation in restored.Annotations)
+            {
+                store.Enqueue(annotation);
+            }
+
+            foreach (var answer in restored.Answers)
+            {
+                answers.Enqueue(answer);
+            }
+
+            sidecar = new ReviewSidecar(sidecarPath, session.SourcePath, store, answers);
+        }
+
+        return new ReviewServer(session, store, answers, sidecar, listener, address);
     }
 
     /// <summary>Stop the server and release the bound port.</summary>
@@ -357,6 +390,18 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/answers/ack?count=N — commit (remove) the front N answers the caller has peeked and
+        // durably applied (state-changing: capability key + CSRF gated). This is the ONLY path that removes an
+        // answer, so a plain poll can never strand one (§1.6). Checked before the 3-segment answers route.
+        if (segments.Length == 4 &&
+            string.Equals(segments[2], "answers", StringComparison.Ordinal) &&
+            string.Equals(segments[3], "ack", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnswersAck(context, segments[1]);
+            return;
+        }
+
         // POST /api/{key}/answers — submit a :::question answer (state-changing: capability key + CSRF gated,
         // mirroring /prompts). A dedicated route, not /prompts, because an answer's shape differs and reusing
         // the poll stream would break the wave-3 annotation contract.
@@ -386,12 +431,13 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        // GET /api/answers — drain queued :::question answers (capability key on the query string, like /poll).
+        // GET /api/answers — PEEK queued :::question answers WITHOUT removing them (capability key on the query
+        // string, like /poll). Report-don't-remove: the caller reports/applies, then commits via /answers/ack.
         if (segments.Length == 2 &&
             string.Equals(segments[1], "answers", StringComparison.Ordinal) &&
             string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
         {
-            HandleAnswersDrain(context);
+            HandleAnswersPeek(context);
             return;
         }
 
@@ -486,6 +532,10 @@ public sealed class ReviewServer : IReviewServer
 
         _store.Enqueue(annotation);
 
+        // Persist BEFORE acknowledging so a crash after the 200 cannot lose an annotation the reviewer was
+        // told was accepted (§1.6). A no-op when durability is off.
+        _sidecar?.Persist();
+
         WriteJson(response, JsonSerializer.Serialize(annotation, AnnotationApi.JsonOptions));
     }
 
@@ -516,8 +566,12 @@ public sealed class ReviewServer : IReviewServer
 
         // Drain, then write with requeue-on-failure: if the client disconnected mid-write the drained batch is
         // re-enqueued (at the front) so a subsequent poll re-fetches it rather than losing it (at-least-once).
+        // WriteDrainedJson rethrows on a write failure (after requeueing in-memory), so the durability persist
+        // below runs ONLY on a successful delivery — until then the sidecar still lists the annotations, so a
+        // crash after a failed write rehydrates them (never a loss; at most an at-least-once re-delivery).
         var drained = _store.Drain();
         WriteDrainedJson(response, drained, _store.Requeue);
+        _sidecar?.Persist();
     }
 
     private async Task HandleAnswersPostAsync(HttpListenerContext context, string keyFromPath)
@@ -570,14 +624,18 @@ public sealed class ReviewServer : IReviewServer
 
         _answers.Enqueue(answer);
 
+        // Persist BEFORE acknowledging: an answer the reviewer was told was accepted must survive a crash
+        // before any agent drains it — the core of solo-review durability (§1.6). A no-op when durability off.
+        _sidecar?.Persist();
+
         WriteJson(response, JsonSerializer.Serialize(answer, AnnotationApi.JsonOptions));
     }
 
-    private void HandleAnswersDrain(HttpListenerContext context)
+    private void HandleAnswersPeek(HttpListenerContext context)
     {
         var response = context.Response;
 
-        // Gate — capability key on the query string, like /poll: the drain must not leak queued answers to an
+        // Gate — capability key on the query string, like /poll: the peek must not leak queued answers to an
         // unauthorized reader (a guessed ephemeral port is not enough).
         if (!_session.Key.Matches(context.Request.QueryString["key"]))
         {
@@ -585,11 +643,43 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        // Drain, then write with requeue-on-failure: a client that disconnects mid-write does not lose the
-        // drained answers — they are re-enqueued (at the front) so a subsequent GET /api/answers re-fetches
-        // them (at-least-once), mirroring the /api/poll drain.
-        var drained = _answers.Drain();
-        WriteDrainedJson(response, drained, _answers.Requeue);
+        // PEEK, don't remove (§1.6): report the queued answers but leave them in the store so a plain poll can
+        // never strand one. They are removed only by a subsequent /answers/ack after a durable inline write.
+        // A non-destructive read needs no requeue-on-write-failure — a dropped write loses nothing.
+        WriteJson(response, JsonSerializer.Serialize(_answers.Peek(), AnnotationApi.JsonOptions));
+    }
+
+    private void HandleAnswersAck(HttpListenerContext context, string keyFromPath)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        // Gate — capability key. For this route the key travels in the path (/api/{key}/answers/ack).
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // Gate — CSRF / same-origin. A state-changing commit must not be forgeable from a foreign origin, even
+        // with a valid key (the CLI sends no Origin, which IsAllowedOrigin permits).
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        // The caller commits the front N answers it peeked and durably applied; N rides the query string.
+        // A missing/invalid count commits nothing (a no-op ack is harmless, never a wrong removal).
+        if (!int.TryParse(request.QueryString["count"], out var count) || count <= 0)
+        {
+            WriteJson(response, JsonSerializer.Serialize(new { committed = 0 }, AnnotationApi.JsonOptions));
+            return;
+        }
+
+        var committed = _answers.CommitFront(count);
+        _sidecar?.Persist();
+        WriteJson(response, JsonSerializer.Serialize(new { committed = committed.Count }, AnnotationApi.JsonOptions));
     }
 
     private async Task HandleEventsAsync(HttpListenerContext context)

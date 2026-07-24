@@ -20,4 +20,14 @@ public sealed class ReviewServerOptions
 
     /// <summary>Whether to open the system browser at the served capability URL on start.</summary>
     public bool OpenBrowser { get; set; }
+
+    /// <summary>
+    /// The directory the server writes its durable review sidecar into (§1.6). When set, the server persists
+    /// the queued annotations/answers to a server-owned file under this directory on every change and
+    /// rehydrates from it on start, so a <c>charter review</c> crash before drain loses nothing. When
+    /// <c>null</c> (the default), durability is off and the queues are purely in-memory — the pre-sidecar
+    /// behaviour, kept so unit tests that do not exercise durability neither persist nor touch the state dir.
+    /// Production (<c>charter review</c>) sets this to <see cref="StateDirectory.Sidecars"/>.
+    /// </summary>
+    public string? SidecarDirectory { get; set; }
 }
