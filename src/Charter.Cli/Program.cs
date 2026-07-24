@@ -104,6 +104,19 @@ static int RunVerb(string verb, Func<int> body)
     }
 }
 
+// Emit a NON-FATAL warning when a plan's charter-format-version marker is missing or unsupported, then let the
+// verb continue: a marker-less .charter.md still renders/reviews/exports/hands off, so this never changes an
+// exit code — it only surfaces the format-integrity gap on stderr (Charter #24). The range-enforcement against
+// an installed charter-format skill is the breakdown session's job, not the CLI's.
+static void WarnOnVersionMarker(string verb, string markdown)
+{
+    var result = CharterFormat.ValidateVersionMarker(markdown);
+    if (result.Status != VersionMarkerStatus.Ok)
+    {
+        Console.Error.WriteLine($"charter {verb}: warning: {result.Message}");
+    }
+}
+
 // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
 static RootCommand BuildRenderRoot()
 {
@@ -135,6 +148,7 @@ static RootCommand BuildRenderRoot()
         }
 
         string markdown = File.ReadAllText(inputPath);
+        WarnOnVersionMarker("render", markdown);
         string html = CharterRenderer.Render(markdown);
 
         string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -185,6 +199,7 @@ static RootCommand BuildExportRoot()
         }
 
         string markdown = File.ReadAllText(inputPath);
+        WarnOnVersionMarker("export", markdown);
 
         // The plan's own directory is the confinement root ArtifactExporter uses to resolve and inline the
         // plan's local asset references; reads never escape it.
@@ -268,6 +283,7 @@ static RootCommand BuildHandoffRoot()
         }
 
         string markdown = File.ReadAllText(inputPath);
+        WarnOnVersionMarker("handoff", markdown);
         string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
 
         string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -335,6 +351,8 @@ static RootCommand BuildReviewRoot()
             Console.Error.WriteLine($"charter review: input plan not found: {inputPath}");
             return 1;
         }
+
+        WarnOnVersionMarker("review", File.ReadAllText(inputPath));
 
         // The session confines the served root to the plan's directory and mints a per-session capability
         // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates
