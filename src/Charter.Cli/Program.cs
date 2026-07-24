@@ -57,6 +57,18 @@ if (args.Length >= 1 && args[0] == "handoff")
     return BuildHandoffRoot().Parse(args).Invoke();
 }
 
+// `charter convert <input.md> -o <out.charter.md>`: the mechanical Markdown -> .charter.md SEED transform.
+// Via Charter.Core.MarkdownConvert, pass every existing block through unchanged and promote an allow-listed
+// "open questions" section's list items into open :::question blocks, then stamp the charter-format-version
+// marker via CharterFormat.EnsureVersionMarker so the seed is a valid, round-trippable .charter.md an agent
+// enriches. Deliberately NOT an LLM/rich generator (no :::diagram/:::comparison synthesis). Parsed with
+// System.CommandLine, parallel to `render`; only entered for the `convert` verb so the banner / --version
+// behavior above stays exactly as-is.
+if (args.Length >= 1 && args[0] == "convert")
+{
+    return BuildConvertRoot().Parse(args).Invoke();
+}
+
 // `charter skills install [--project] [--target <dir>] [--force]`: extract the skills bundled inside this
 // binary (skills/charter + skills/charter-format, embedded as resources) into Claude Code's skills directory
 // so `charter-format` becomes discoverable to Guardrails plan-breakdown. Parsed with System.CommandLine,
@@ -95,7 +107,7 @@ if (args.Length >= 1 && args[0] == "resolve")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff, skills, poll, resolve. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, handoff, convert, skills, poll, resolve. Flags: --version, --help.");
     return 1;
 }
 
@@ -103,7 +115,7 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/], [green]poll[/], [green]resolve[/].");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]convert[/], [green]skills[/], [green]poll[/], [green]resolve[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
@@ -321,6 +333,60 @@ static RootCommand BuildHandoffRoot()
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
         handoff,
+    };
+}
+
+// Builds the root command hosting the `convert` subcommand wired to Charter.Core.MarkdownConvert.
+static RootCommand BuildConvertRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the plain Markdown document (.md) to convert into a .charter.md seed.",
+    };
+    var outOption = new Option<string>("--out", "-o")
+    {
+        Description = "Path to write the .charter.md seed.",
+        Required = true,
+    };
+
+    var convert = new Command("convert", "Convert a plain Markdown document into a valid .charter.md seed (best-effort; an agent then enriches it).")
+    {
+        inputArgument,
+        outOption,
+    };
+
+    convert.SetAction(parseResult => RunVerb("convert", () =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+        string outputPath = parseResult.GetValue(outOption)!;
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"charter convert: input document not found: {inputPath}");
+            return 1;
+        }
+
+        // Convert does the block pass-through + open-questions heuristic; EnsureVersionMarker (slice 3, the SSOT
+        // for the frontmatter marker) stamps charter-format-version so the seed is a valid, round-trippable
+        // .charter.md. No version-marker warning here: a plain .md is expected to be marker-less, and convert's
+        // whole job is to add the marker.
+        string markdown = File.ReadAllText(inputPath);
+        string seed = CharterFormat.EnsureVersionMarker(MarkdownConvert.Convert(markdown));
+
+        string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+
+        File.WriteAllText(outputPath, seed);
+        Console.WriteLine($"Converted {inputPath} -> {outputPath}");
+        return 0;
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        convert,
     };
 }
 
