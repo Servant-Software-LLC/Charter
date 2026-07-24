@@ -1,7 +1,17 @@
 # Authoring Charter plans — the block catalog in depth
 
-A Charter plan is a `.mdx` file: **CommonMark prose plus `:::` directive containers** (Markdig custom
-containers), each validated against a C# record. Write the narrative as ordinary markdown; reach for a
+A Charter plan is a `.charter.md` file: **CommonMark prose plus `:::` directive containers** (Markdig custom
+containers), each validated against a C# record. The file **begins with a small plain-YAML frontmatter
+marker** declaring the format version it was authored against — readable without any Charter tooling:
+
+```
+---
+charter-format-version: 1
+---
+```
+
+The marker and the format range are normative in the `charter-format` skill (the format single source of
+truth); keep it a mention here. Write the narrative as ordinary markdown; reach for a
 directive only when a block needs to be *rendered specially*, *annotated as a unit*, or *elicit a
 decision*. The catalog below is single-sourced in
 `docs/plans/01-combine-lavish-and-visual-plan.md` (§ *Format & block catalog*) — invariant 3, *format
@@ -75,7 +85,7 @@ node and comments on it):
 :::diagram
 ```mermaid
 flowchart LR
-    author[Author .mdx] --> render[charter render]
+    author[Author .charter.md] --> render[charter render]
     render --> review[charter review]
     review --> handoff[charter handoff]
 ```
@@ -124,7 +134,7 @@ answer that you drain from `GET /api/answers` (see `review-loop.md`), and that s
 in the `--answers` JSON at handoff (see `handoff.md`). A `:::question` left unanswered becomes an "Open
 question" line in the handoff — a legitimate, common outcome.
 
-## A sample `.mdx` skeleton
+## A sample `.charter.md` skeleton
 
 ```
 # Payments service — reviewable plan
@@ -172,5 +182,5 @@ Whichever we pick, the migration is irreversible once the backfill starts.
 :::
 ```
 
-Render it with `charter render plan.mdx -o plan.html` to sanity-check layout, then take it into the
+Render it with `charter render plan.charter.md -o plan.html` to sanity-check layout, then take it into the
 review loop (`references/review-loop.md`).

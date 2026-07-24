@@ -36,14 +36,14 @@ Charter is a CLI over a single plan file. An AI authors the plan as block-struct
 small, fixed block catalog (diagram, table, comparison, code/diff, question) — and you drive it
 through four verbs:
 
-- `charter render <plan.mdx> -o <out.html>` — renders a plan to one portable HTML artifact.
-- `charter review <plan.mdx> [--no-open]` — serves the plan over the loopback review server
+- `charter render <plan.charter.md> -o <out.html>` — renders a plan to one portable HTML artifact.
+- `charter review <plan.charter.md> [--no-open]` — serves the plan over the loopback review server
   (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you can
   annotate elements, text ranges, and diagram nodes **in place**. `--no-open` serves without
   launching a browser.
-- `charter export <plan.mdx> -o <out.html>` — writes a self-contained, **offline** artifact with
+- `charter export <plan.charter.md> -o <out.html>` — writes a self-contained, **offline** artifact with
   every local asset inlined as a `data:` URI — no server, no runtime, portable anywhere.
-- `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]` — emits plain CommonMark for
+- `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` — emits plain CommonMark for
   Guardrails, resolving each `:::question` against the optional `--answers` JSON file (open
   questions that have no answer are handed off flagged).
 - `charter --version` — prints the version.
@@ -52,13 +52,13 @@ A typical author → review → handoff pass:
 
 ```bash
 # 1. Review the plan: serves it locally and opens the browser to annotate in place
-charter review plan.mdx
+charter review plan.charter.md
 
 # 2. Export a portable, offline copy of the reviewed deliverable
-charter export plan.mdx -o plan.html
+charter export plan.charter.md -o plan.html
 
 # 3. Hand the approved plan off to Guardrails as plain CommonMark
-charter handoff plan.mdx -o plan.md --answers answers.json
+charter handoff plan.charter.md -o plan.md --answers answers.json
 ```
 
 If you're driving Charter from an agent, a bundled usage skill lives at `skills/charter/`.

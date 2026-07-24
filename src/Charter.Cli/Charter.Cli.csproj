@@ -20,7 +20,7 @@
     <RepositoryUrl>https://github.com/Servant-Software-LLC/Charter.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/Servant-Software-LLC/Charter</PackageProjectUrl>
-    <PackageTags>charter;mdx;plan;review;annotation;agentic;llm;cli;guardrails</PackageTags>
+    <PackageTags>charter;plan;review;annotation;agentic;llm;cli;guardrails</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
@@ -36,6 +36,19 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- Bundle the shipped Claude skills (skills/charter/ and skills/charter-format/) INSIDE the binary as
+       embedded resources so they travel with the single self-contained native binary (there is no loose
+       skills/ folder next to the exe to copy) — mirroring how Charter.Core embeds mermaid.min.js and
+       Charter.Server embeds charter-annotate.js. `charter skills install` reads them back by LogicalName
+       and extracts them to Claude Code's skills directory. Each file's LogicalName is
+       charter-skills/<relative path>, separators normalised to '/' so the manifest names are identical on
+       Windows/macOS/Linux (RecursiveDir uses '\' on Windows) and the install rebuilds the tree portably. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\skills\**\*">
+      <LogicalName>charter-skills/$([MSBuild]::ValueOrDefault('%(RecursiveDir)', '').Replace('\', '/'))%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

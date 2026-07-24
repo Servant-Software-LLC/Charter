@@ -7,7 +7,7 @@ that Guardrails `plan-breakdown` consumes (required to feed the pipeline).
 ## `charter export` — a self-contained, offline artifact
 
 ```
-charter export plan.mdx -o plan.html
+charter export plan.charter.md -o plan.html
 ```
 
 `export` writes a **truly offline** HTML artifact:
@@ -25,7 +25,7 @@ directory. Use it when you need a snapshot of the approved plan to hand to a per
 ## `charter handoff` — plain CommonMark for Guardrails
 
 ```
-charter handoff plan.mdx -o plan.md --answers answers.json
+charter handoff plan.charter.md -o plan.md --answers answers.json
 ```
 
 `handoff` reads the reviewed plan and rewrites **every `:::` directive** — `:::note`, `:::warn`,
@@ -78,10 +78,10 @@ Open question: Which datastore should the service use?
 
 ### The end-to-end shape
 
-1. Author `plan.mdx` (`references/authoring-plans.md`).
+1. Author `plan.charter.md` (`references/authoring-plans.md`).
 2. `charter render` to check, `charter review` to get in-browser feedback, draining `GET /api/poll` and
    `GET /api/answers` (`references/review-loop.md`); revise until approved.
 3. Build `answers.json` from the `:::question` answers you drained.
-4. Optionally `charter export plan.mdx -o plan.html` for a shareable offline snapshot.
-5. `charter handoff plan.mdx -o plan.md --answers answers.json` → hand `plan.md` to Guardrails
+4. Optionally `charter export plan.charter.md -o plan.html` for a shareable offline snapshot.
+5. `charter handoff plan.charter.md -o plan.md --answers answers.json` → hand `plan.md` to Guardrails
    `plan-breakdown`.

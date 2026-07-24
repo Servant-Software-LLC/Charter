@@ -3,14 +3,15 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Charter.Cli;
 using Charter.Core;
 using Charter.Server;
 using Spectre.Console;
 
-// Scaffold entry point. The real CLI — `charter <plan.mdx>` opening a local review server that
+// Scaffold entry point. The real CLI — `charter <plan.charter.md>` opening a local review server that
 // renders the block plan in the browser for in-place annotation, plus `export` and a `poll` feedback
 // loop — lands in later milestones (see README.md). Today the surface is a banner + --version, the
-// `render` verb (a Charter plan (.mdx) -> one portable HTML artifact via the Charter.Core renderer),
+// `render` verb (a Charter plan (.charter.md) -> one portable HTML artifact via the Charter.Core renderer),
 // and the `review` verb, which renders the plan and serves it read-only over the loopback review
 // server for in-browser preview.
 
@@ -21,7 +22,7 @@ if (args.Length >= 1 && args[0] is "--version" or "-v")
     return 0;
 }
 
-// `charter render <plan.mdx> -o <out.html>`: read the markdown, render it through Charter.Core, and
+// `charter render <plan.charter.md> -o <out.html>`: read the markdown, render it through Charter.Core, and
 // write the HTML artifact. Parsed with System.CommandLine; only entered for the `render` verb so the
 // banner / --version behavior above stays exactly as-is.
 if (args.Length >= 1 && args[0] == "render")
@@ -29,7 +30,7 @@ if (args.Length >= 1 && args[0] == "render")
     return BuildRenderRoot().Parse(args).Invoke();
 }
 
-// `charter review <plan.mdx> [--no-open]`: render the plan and serve it read-only over the loopback
+// `charter review <plan.charter.md> [--no-open]`: render the plan and serve it read-only over the loopback
 // review server for in-browser preview. Parsed with System.CommandLine, parallel to `render`; only
 // entered for the `review` verb so the banner / --version behavior above stays exactly as-is.
 if (args.Length >= 1 && args[0] == "review")
@@ -37,7 +38,7 @@ if (args.Length >= 1 && args[0] == "review")
     return BuildReviewRoot().Parse(args).Invoke();
 }
 
-// `charter export <plan.mdx> -o <out.html>`: render the plan and, via Charter.Core.ArtifactExporter,
+// `charter export <plan.charter.md> -o <out.html>`: render the plan and, via Charter.Core.ArtifactExporter,
 // inline every local asset as a data: URI and scrub any remaining local path into one TRULY offline,
 // SDK-free HTML artifact, then write it. Parsed with System.CommandLine, parallel to `render`; only
 // entered for the `export` verb so the banner / --version behavior above stays exactly as-is.
@@ -46,7 +47,7 @@ if (args.Length >= 1 && args[0] == "export")
     return BuildExportRoot().Parse(args).Invoke();
 }
 
-// `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]`: read the markdown and, via
+// `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]`: read the markdown and, via
 // Charter.Core.HandoffMarkdown, convert every ::: directive block into plain CommonMark Guardrails can
 // consume — resolving each :::question against the optional --answers file (or flagging it open when no
 // answer is supplied) — then write the handoff markdown. Parsed with System.CommandLine, parallel to
@@ -56,15 +57,24 @@ if (args.Length >= 1 && args[0] == "handoff")
     return BuildHandoffRoot().Parse(args).Invoke();
 }
 
+// `charter skills install [--project] [--target <dir>] [--force]`: extract the skills bundled inside this
+// binary (skills/charter + skills/charter-format, embedded as resources) into Claude Code's skills directory
+// so `charter-format` becomes discoverable to Guardrails plan-breakdown. Parsed with System.CommandLine,
+// parallel to `render`; only entered for the `skills` verb so the banner / --version behavior stays as-is.
+if (args.Length >= 1 && args[0] == "skills")
+{
+    return SkillsCommand.BuildRoot().Parse(args).Invoke();
+}
+
 // Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
 // returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
 // list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
-// fall-through was a footgun: `charter renderr plan.mdx -o out.html && guardrails …` would exit 0 and hand
+// fall-through was a footgun: `charter renderr plan.charter.md -o out.html && guardrails …` would exit 0 and hand
 // Guardrails a stale/missing artifact while every step reported success.
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, handoff, skills. Flags: --version, --help.");
     return 1;
 }
 
@@ -72,8 +82,8 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/].");
-AnsiConsole.MarkupLine("Try:    [green]charter review <plan.mdx>[/]  or  [green]charter --version[/]");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]skills[/].");
+AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
 // Wraps a verb's action body so an expected I/O / listener failure — IOException, UnauthorizedAccessException,
@@ -99,7 +109,7 @@ static RootCommand BuildRenderRoot()
 {
     var inputArgument = new Argument<string>("input")
     {
-        Description = "Path to the Charter plan (.mdx) to render.",
+        Description = "Path to the Charter plan (.charter.md) to render.",
     };
     var outOption = new Option<string>("--out", "-o")
     {
@@ -107,7 +117,7 @@ static RootCommand BuildRenderRoot()
         Required = true,
     };
 
-    var render = new Command("render", "Render a Charter plan (.mdx) to one portable HTML file.")
+    var render = new Command("render", "Render a Charter plan (.charter.md) to one portable HTML file.")
     {
         inputArgument,
         outOption,
@@ -149,7 +159,7 @@ static RootCommand BuildExportRoot()
 {
     var inputArgument = new Argument<string>("input")
     {
-        Description = "Path to the Charter plan (.mdx) to export.",
+        Description = "Path to the Charter plan (.charter.md) to export.",
     };
     var outOption = new Option<string>("--out", "-o")
     {
@@ -157,7 +167,7 @@ static RootCommand BuildExportRoot()
         Required = true,
     };
 
-    var export = new Command("export", "Export a Charter plan (.mdx) to one self-contained, offline HTML file.")
+    var export = new Command("export", "Export a Charter plan (.charter.md) to one self-contained, offline HTML file.")
     {
         inputArgument,
         outOption,
@@ -203,7 +213,7 @@ static RootCommand BuildHandoffRoot()
 {
     var inputArgument = new Argument<string>("input")
     {
-        Description = "Path to the Charter plan (.mdx) to hand off.",
+        Description = "Path to the Charter plan (.charter.md) to hand off.",
     };
     var outOption = new Option<string>("--out", "-o")
     {
@@ -215,7 +225,7 @@ static RootCommand BuildHandoffRoot()
         Description = "Optional path to a JSON file mapping question id -> answer value(s), resolving open questions.",
     };
 
-    var handoff = new Command("handoff", "Convert a reviewed Charter plan (.mdx) to plain-CommonMark handoff markdown for Guardrails.")
+    var handoff = new Command("handoff", "Convert a reviewed Charter plan (.charter.md) to plain-CommonMark handoff markdown for Guardrails.")
     {
         inputArgument,
         outOption,
@@ -302,14 +312,14 @@ static RootCommand BuildReviewRoot()
 {
     var inputArgument = new Argument<string>("input")
     {
-        Description = "Path to the Charter plan (.mdx) to serve for review.",
+        Description = "Path to the Charter plan (.charter.md) to serve for review.",
     };
     var noOpenOption = new Option<bool>("--no-open")
     {
         Description = "Serve the plan but do not open it in the default browser.",
     };
 
-    var review = new Command("review", "Serve a Charter plan (.mdx) read-only over the loopback review server.")
+    var review = new Command("review", "Serve a Charter plan (.charter.md) read-only over the loopback review server.")
     {
         inputArgument,
         noOpenOption,

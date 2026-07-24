@@ -1,6 +1,6 @@
 ---
 name: charter
-description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .mdx, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Covers the author → review → handoff workflow and the block catalog.
+description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Covers the author → review → handoff workflow and the block catalog.
 ---
 
 # Charter — author → review → handoff
@@ -29,10 +29,10 @@ reporting on work already finished.
 
 | Verb | What it does |
 |---|---|
-| `charter render <plan.mdx> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
-| `charter review <plan.mdx> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
-| `charter export <plan.mdx> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
-| `charter handoff <plan.mdx> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for Guardrails `plan-breakdown`. |
+| `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
+| `charter review <plan.charter.md> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
+| `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
+| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for Guardrails `plan-breakdown`. |
 | `charter --version` | Print the version. |
 
 There is **no** CLI verb for reading the human's feedback. The review server exposes it over HTTP, and
@@ -42,11 +42,12 @@ you drain it there — see [The review loop](#the-review-loop) and `references/r
 
 ### 1. AUTHOR — write the plan, then `charter render`
 
-Write the plan as a `.mdx` file using the [block catalog](#block-catalog). Then render it to check the
-artifact:
+Write the plan as a `.charter.md` file using the [block catalog](#block-catalog). Begin the file with a
+plain-YAML frontmatter marker declaring the format version (`---` / `charter-format-version: 1` / `---`) —
+normative in the `charter-format` skill. Then render it to check the artifact:
 
 ```
-charter render plan.mdx -o plan.html
+charter render plan.charter.md -o plan.html
 ```
 
 This produces **one portable HTML file** — it opens standalone in any browser. The annotation SDK is
@@ -57,7 +58,7 @@ it in front of the human.
 ### 2. REVIEW — `charter review`, then drain feedback over HTTP
 
 ```
-charter review plan.mdx
+charter review plan.charter.md
 ```
 
 This renders the plan, injects the SDK, and serves it over the **loopback** review server — bound to
@@ -91,7 +92,7 @@ in `references/review-loop.md`.
 Optionally capture a shareable snapshot of the approved plan:
 
 ```
-charter export plan.mdx -o plan.html
+charter export plan.charter.md -o plan.html
 ```
 
 `export` writes a **truly offline** artifact — local assets inlined as `data:` URIs, local paths
@@ -101,7 +102,7 @@ scrubbed, SDK-free — so it can be attached or archived and still opens with no
 Then convert the approved plan to the shape Guardrails consumes:
 
 ```
-charter handoff plan.mdx -o plan.md --answers answers.json
+charter handoff plan.charter.md -o plan.md --answers answers.json
 ```
 
 `handoff` rewrites every `:::` directive (`:::note`, `:::warn`, `:::comparison`, `:::diagram`,
@@ -135,14 +136,14 @@ drain from `GET /api/answers` and later resolve at handoff. Every block also get
 **stable ID** and a **source-map** back to its markdown line range, which is what lets an annotation on
 the rendered HTML round-trip to the source line you edit.
 
-The full catalog with each block's syntax, the `:::question` schema in depth, and a sample `.mdx`
+The full catalog with each block's syntax, the `:::question` schema in depth, and a sample `.charter.md`
 skeleton are in `references/authoring-plans.md`.
 
 ## References
 
 Keep this file lean; the depth lives in `references/`:
 
-- **`references/authoring-plans.md`** — the block catalog in depth + a short sample `.mdx` skeleton.
+- **`references/authoring-plans.md`** — the block catalog in depth + a short sample `.charter.md` skeleton.
 - **`references/review-loop.md`** — running `charter review`, in-browser annotation, and draining
   feedback via `GET /api/poll` and `GET /api/answers` on the loopback server.
 - **`references/handoff.md`** — `charter export` (offline artifact) and `charter handoff` (→ plain
