@@ -1,10 +1,11 @@
 # Architecture B — the living `.charter.md` and direct Guardrails ingestion
 
-**Status:** proposed design-of-record · **corrected after devil's-advocate review** · **under review**
-(not yet of record) · authored by charter-architect
-**Supersedes on acceptance:** invariant 5 of `docs/plans/01-combine-lavish-and-visual-plan.md` (see
-[SSOT change](#the-ssot-change-invariant-5)) · **Relates to:** Charter #13/#16/#17/#18/#19, Guardrails
-`plan-breakdown`
+**Status:** **DESIGN OF RECORD** — adopted 2026-07-23 · go/no-go spike **#25 PASSED — GO** (direct
+`.charter.md` ingestion breaks down at least as well as the flatten) · David's Q1/Q2 decisions folded ·
+authored by charter-architect
+**Supersedes:** invariant 5 of `docs/plans/01-combine-lavish-and-visual-plan.md` (flipped in the same
+change — see [SSOT change](#the-ssot-change-invariant-5)) · **Relates to:** Charter #13/#16/#17/#18/#19,
+Guardrails `plan-breakdown` + autonomous mode (#361)
 
 ## What changed since v1 of this doc (auditable delta)
 
@@ -34,17 +35,53 @@ in after the devil's-advocate pass and David's decisions:
    go/no-go spike now **gates the invariant-5 flip and the epic filing**; the atomic-write temp lives in
    the plan's directory; and the capability lost by removing the flattener is named, not hand-waved.
 
+**Adoption delta (2026-07-23 — spike passed + David's two decisions):**
+
+8. **Go/no-go spike #25 PASSED — GO.** The riskiest bet (§6) is proven: a human/charter-devils-advocate
+   judged the DAG from direct `.charter.md` ingestion **equivalent-or-better** than the DAG from the same
+   plan's flattened `handoff.md`. The gate is cleared → invariant 5 is flipped and the Guardrails epic is
+   cleared to file (both in this change).
+9. **Q1 — an open `:::question` at run time is DIAL-GOVERNED, not an unconditional halt (Guardrails #361).**
+   *Breakdown time is unchanged:* interactive `/plan-breakdown` **asks (`AskUserQuestion`) or emits a task
+   that writes `{"needsHuman": …}`, never silently defaults.* What changes is the **run-time** framing: when
+   that emitted `needsHuman` fires in an **autonomous run**, it is the agent-emitted needs-human the approved
+   autonomous classifier already governs as a **dial-eligible judgment call** (`12-autonomous-mode.md`
+   §4.1). Below the dial → **proceed with a recorded best-guess** (forensic trail); at/above the dial →
+   **escalate** (honest halt + async firstmate answer file, exit **`EscalationsPending = 4`**). It is **NOT
+   exit 2 and NOT an unconditional halt**, and it needs **no new Guardrails gate type** — the classifier
+   already covers agent-needs-human. Every "run-time `needsHuman`-halting task / exit 2" phrasing below is
+   corrected to this.
+10. **Q2 — the flatten STAYS; the autonomous pipeline is UNAFFECTED (real simplification).** Direct
+    `.charter.md` ingestion is the **INTERACTIVE** breakdown path only. The **headless/autonomous**
+    breakdown (harness-driven, no Skill tool) keeps consuming the **flattened `charter handoff` output** —
+    which the autonomous pipeline already does. So **`HandoffMarkdown` / `charter handoff` STAY
+    PERMANENTLY** as the headless/plain-markdown projection (§3 moves them REMOVE → KEEP). There is **no
+    "slice-6 flatten deletion" and no deletion window** — the flatten just stays. The inline-`answer`
+    fallback in `EmitQuestion` (shipped slice 1) is now a **permanent** feature (the flatten faithfully
+    projects resolved questions), not a throwaway bridge. The "lost CommonMark projection" NIT **dissolves**
+    (handoff stays).
+
 ## Outcome
 
 Architecture B replaces Charter's **flatten-then-hand-off** pipeline with a **living-document** pipeline:
 
 - The plan file — extension now **`.charter.md`** (#16) — is the **single container of review state**.
   Human input (answers to `:::question`, the agent's edits made in response to annotations) is written
-  back **into the `.charter.md` itself**. There is no `answers.json` and no derived `handoff.md`.
-- Guardrails `/plan-breakdown` consumes **`.charter.md` directly** — `:::` blocks and all — guided by a
-  **single Charter-published format skill** (`charter-format`) loaded by the invoking session. A resolved
-  `:::question` carries its `answer` inline; an open one is asked at breakdown (`AskUserQuestion`) or
-  becomes a run-time `needsHuman`-halting task — never a silent default.
+  back **into the `.charter.md` itself**. There is no `answers.json`. The flattened `handoff.md` is **not**
+  the container of review state — but it **is retained permanently** as the headless/plain-markdown
+  projection (Q2, §3): the `.charter.md` carries the truth, and `charter handoff` projects it to plain
+  markdown on demand for the autonomous pipeline.
+- **Two breakdown paths (Q2 — decided).** The **INTERACTIVE** `/plan-breakdown` (a human-driven Claude Code
+  session with the Skill tool) consumes **`.charter.md` directly** — `:::` blocks and all — guided by a
+  **single Charter-published format skill** (`charter-format`) loaded top-level by the invoking session. The
+  **HEADLESS/AUTONOMOUS** breakdown (harness-driven, no Skill tool) consumes the **flattened `charter
+  handoff` output** (plain markdown), exactly as the autonomous pipeline does today — so it needs no
+  `charter-format`, no parser, no Charter dependency, and is **unaffected** by this change.
+- A resolved `:::question` carries its `answer` inline (the flatten faithfully projects it too). An open one
+  is **asked at breakdown** (`AskUserQuestion`) or **emits a task that writes `{"needsHuman": …}`** — never a
+  silent default. At **run time** that `needsHuman` is **dial-governed** in an autonomous run (Guardrails
+  #361): best-guess-with-forensic-trail below the dial, else escalate (exit **`EscalationsPending = 4`**,
+  async answer channel) — not an unconditional halt, not exit 2 (Q1).
 - **One format source of truth** (`charter-format`, bound to the renderer by a drift test) is cited by
   **both** the drafting agent (to WRITE blocks) and the breakdown session (to INTERPRET them). Structured
   `:::` blocks are richer input to a non-deterministic breakdown skill than flattened prose, not poorer.
@@ -67,7 +104,7 @@ serializing all writes through one writer, not by adding a second one.
 | 2 | Comment-in-place round-trip; survives re-render of unrelated blocks | **Preserved.** Resolving question *A* changes *A*'s content-hash id (expected — you edited *A*); annotations on unrelated blocks are untouched. |
 | 3 | Format single-sourced | **Strengthened — and load-bearing.** One `charter-format` skill, bound to `BlockKind`/`QuestionSpec` **and its format version** by a drift test, cited by authoring **and** breakdown. No fork/vendor into Guardrails. |
 | 4 | Loopback + capability | **Preserved.** No change to server binding. The server writes a **sidecar** it owns (durability), never `.charter.md` and never outside the session root. |
-| 5 | Feeds Guardrails via plain markdown (no MDX) | **Overturned — the invariant Architecture B flips.** Rewritten to "feeds Guardrails via the `.charter.md` itself, guided by `charter-format` within a declared format-version range." SSOT edit required in the same change ([below](#the-ssot-change-invariant-5)). |
+| 5 | Feeds Guardrails via plain markdown (no MDX) | **Overturned — the invariant Architecture B flips (to a DUAL path).** Rewritten to "feeds Guardrails via the `.charter.md` itself in the **interactive** path (guided by `charter-format` within a declared format-version range), **and** via the retained flattened `charter handoff` output in the **headless/autonomous** path." No MDX in either. SSOT edit made in the same change ([below](#the-ssot-change-invariant-5)). |
 | 6 | Narrow C#↔JS boundary | **Preserved.** The core change needs no SDK change — answers already POST to `/api/answers`. |
 | 7 | Telemetry: none | **Unaffected.** |
 
@@ -268,12 +305,14 @@ during the bridge window, but it stops custom-html from flattening as a blockquo
 
 ### 2.3 How the breakdown session gets the catalog (no mid-run cross-skill load)
 
-**Decision: the invoking Claude Code session loads `charter-format` as a top-level skill.** `/plan-breakdown`
-is a skill running in a Claude Code session; that session also has `charter-format` available once
-`charter skills install` (#18) has placed it in `~/.claude/skills/` (or `./.claude/skills/`). The
-`plan-breakdown` SKILL.md Step 0 instructs the session: *if the input is a `.charter.md`, load the
-`charter-format` skill; if it is not installed, stop and tell the user to run `charter skills install`.*
-The catalog stays **single-sourced in Charter** (invariant 3) — nothing is forked into Guardrails.
+**Decision: the invoking Claude Code session loads `charter-format` as a top-level skill.** This is the
+**INTERACTIVE** path only (Q2). `/plan-breakdown` is a skill running in a Claude Code session; that session
+also has `charter-format` available once `charter skills install` (#18) has placed it in `~/.claude/skills/`
+(or `./.claude/skills/`). The interactive `plan-breakdown` SKILL.md Step 0 instructs the session: *if the
+input is a `.charter.md`, load the `charter-format` skill; if it is not installed, stop and tell the user to
+run `charter skills install`.* The catalog stays **single-sourced in Charter** (invariant 3) — nothing is
+forked into Guardrails. **The headless/autonomous path never reaches this step** — it consumes the flattened
+`charter handoff` output (plain markdown), so it needs no `charter-format` (G3).
 
 **Rejected alternative — vendor the catalog into `plan-breakdown/references/`.** It removes the load-time
 dependency but **forks the SSOT** into Guardrails, reintroducing the two-copies drift Architecture B
@@ -326,12 +365,12 @@ handoff/export must **skip** the `YamlFrontMatterBlock` (no anchor, not rendered
 
 | Action | Artifact | Detail |
 |---|---|---|
-| **REMOVE** | `src/Charter.Core/HandoffMarkdown.cs` + tests | The `:::`→plain-CommonMark flattener is obsoleted by direct ingestion. **Biggest deletion.** Kept as the migration bridge until Guardrails ships consumption (§6). |
-| **REMOVE** | `charter handoff` verb + `ReadAnswers` | `Program.cs:55-58, 213-309`. See NIT below on the capability this drops. |
-| **REMOVE** | `src/Charter.Server/HandoffAnswersFile.cs` + `poll --answers-out` | `Program.cs:429-432`, `PollCommand.WriteAnswersFile`. The `answers.json` intermediate disappears. **The one genuinely sunk piece of #13.** |
-| **REMOVE** | `answers.json` concept + wave-1 "handoff fixture" | Replaced by a `.charter.md` fixture + the comparative spike (§6). |
+| **KEEP (repurposed role — Q2)** | `src/Charter.Core/HandoffMarkdown.cs` + tests | **The flatten STAYS PERMANENTLY** as the headless/plain-markdown projection. Direct `.charter.md` ingestion is the *interactive* path; the *headless/autonomous* breakdown consumes this flattened `handoff.md` (which the autonomous pipeline already does). Not a bridge with a deletion window — a permanent projection. |
+| **KEEP (repurposed role — Q2)** | `charter handoff` verb + `ReadAnswers` | `Program.cs:55-58, 213-309`. The CLI verb that produces the headless projection above. Stays. (The "lost CommonMark projection" NIT dissolves — this *is* that projection, retained.) |
+| **REMOVE** | `src/Charter.Server/HandoffAnswersFile.cs` + `poll --answers-out` | `Program.cs:429-432`, `PollCommand.WriteAnswersFile`. The `answers.json` **intermediate** disappears — superseded by the inline `answer` field (§1.2); the flatten now reads inline answers directly (`EmitQuestion` fallback below), never a side-car answers file. **The one genuinely sunk piece of #13.** |
+| **REMOVE** | `answers.json` concept + wave-1 "handoff fixture" as the *primary* fixture | The `.charter.md` fixture + the comparative spike (§6) are primary. The flattened `handoff.md` output still exists (the flatten stays) and `HandoffMarkdown`'s own tests still pin its shape; the removed piece is the `answers.json` side-car concept. |
 | **REPURPOSE** | `QuestionSpec.cs` | Add optional `Answer`; `resolved` = non-empty `answer` (§1.2). |
-| **REPURPOSE (bridge, DA blocker 1)** | `HandoffMarkdown.EmitQuestion` (`HandoffMarkdown.cs:249-273`) | Today it resolves a `:::question` only against the external `answers` dict (`:261`), so a resolved `.charter.md` flattens **all-open**. Teach it to **fall back to the inline `spec.Answer`** when the dict lacks the id. Lands in slice 1 (the field exists then), making the bridge faithful. |
+| **REPURPOSE → permanent feature (Q2)** | `HandoffMarkdown.EmitQuestion` (`HandoffMarkdown.cs:249-273`) | Today it resolves a `:::question` only against the external `answers` dict (`:261`), so a resolved `.charter.md` flattens **all-open**. Teach it to **fall back to the inline `spec.Answer`** when the dict lacks the id. Shipped in slice 1. Because the flatten stays permanently, this is now a **permanent** correctness property (the headless projection faithfully carries resolved decisions), not a throwaway bridge fix. |
 | **REPURPOSE** | `charter poll` (#13) | `--answers-out <file>` → **`--apply`** (drain + inline-write, atomic). Answers drain **only** via `--apply`; plain `poll` reports-but-doesn't-remove them (§1.6). Poll's core survives and becomes more central. |
 | **REPURPOSE** | `CharterContainerRenderer.WriteQuestion` (`CharterRenderer.cs:285-328`) | Render a resolved `:::question` with its `answer` reflected (pre-selected control + a "resolved" marker), still annotatable. |
 | **REPURPOSE** | `ClassifyContainer` (`BlockModel.cs:253-291`) | Add the `CustomHtml` route (§2.1); surface an unknown directive as a visible block, not a silent `Note` (Issue B). |
@@ -346,15 +385,16 @@ handoff/export must **skip** the `YamlFrontMatterBlock` (no anchor, not rendered
 | **KEEP** | `AnswerStore`/`/api/answers`; `AnnotationStore`/`/api/poll`; `ReviewServer`; `ReviewClient`; `SessionRegistry`/`SessionDescriptor`/`PollEnvelope`; `render`/`review`/`export`; `BlockModel`/`SourceMap` | Transport + serve + drain unchanged (the sidecar is additive). |
 
 **Sunk-cost note on #13:** the poll/`ReviewClient`/`SessionRegistry` core **survives and is more
-central** (the drain transport). Only its handoff-bridge tail (`--answers-out` → `HandoffAnswersFile` →
-`answers.json` → `handoff`) is sunk — one file deleted, one flag repurposed to `--apply`.
+central** (the drain transport). Only the `answers.json` side-car tail (`--answers-out` →
+`HandoffAnswersFile` → `answers.json`) is sunk — one file deleted, one flag repurposed to `--apply`. **The
+flattener and `charter handoff` are NOT sunk (Q2)** — they are retained as the headless projection.
 
-**NIT (capability dropped by removing the flattener).** `charter handoff` is today the **only** way to get
-a **directive-free, plain-CommonMark projection** of a plan — useful for a non-Charter-aware consumer,
-a tool that only reads CommonMark, or a clean text diff of plan content. Architecture B removes it by
-design (Guardrails no longer needs it). Name it as a **consciously dropped capability**, not dead weight:
-if a non-Charter consumer surfaces, resurrect it as `charter export --flat` behind an issue rather than
-pretending it never had value.
+**Resolved NIT (Q2 — the capability is retained, not dropped).** An earlier draft named the loss of the
+`charter handoff` **directive-free, plain-CommonMark projection** (useful for a non-Charter-aware consumer,
+a CommonMark-only tool, or a clean text diff of plan content) as a consciously dropped capability. With Q2
+that capability **stays**: `charter handoff` is exactly the headless/autonomous breakdown's input, so the
+plain-CommonMark projection is a permanent, load-bearing output — no `charter export --flat` resurrection is
+needed.
 
 ---
 
@@ -364,129 +404,199 @@ Guardrails-side issues lead with a **context/epic** in Guardrails' own terms; Ch
 the producer work. Each body is self-contained with cross-repo deps named. The
 [split table](#41-cross-repo-split-at-a-glance) closes the section.
 
-> **Filing gate:** the Guardrails **EPIC** and the Charter **invariant-5 flip (Issue A)** are filed/adopted
-> **only after the comparative go/no-go spike passes** (§6). The other Charter issues (frontmatter,
-> catalog reconciliation, durability, drift guard) can be filed immediately — they are prerequisites the
-> spike itself needs.
+> **Filing gate — CLEARED (2026-07-23).** The comparative go/no-go spike (§6, Charter **#25**) **PASSED —
+> GO**, so the Guardrails **EPIC** and the Charter **invariant-5 flip (Issue A)** are cleared to file/adopt.
+> The other Charter issues (frontmatter, catalog reconciliation, durability, drift guard) were always
+> file-immediately prerequisites the spike itself needed.
 
 ### Guardrails-side — EPIC (repo: `Servant-Software-LLC/Guardrails`)
 
-**Title:** `Epic: consume Charter "living plans" (.charter.md) directly in plan-breakdown`
+**Title:** `Epic: consume Charter "living plans" (.charter.md) directly in the INTERACTIVE plan-breakdown (autonomous pipeline UNAFFECTED)`
 
-**Body:**
+**Body:** (the filing-ready text is [in the report / §4 of this doc](#the-issues-to-file-final-filing-ready);
+reproduced verbatim below)
 
-> ## The arc
-> Charter — the front door that feeds `/plan-breakdown` — is changing what it hands you. Today Charter
-> flattens its rich plan to plain `.md` (`charter handoff`) and you break down that derived file. Charter
-> is moving to a **living-document** model (Charter `docs/plans/02-architecture-b-living-document.md`,
-> discussion Charter #19): the plan is a **`.charter.md`** that is the single container of its own review
-> state — a settled `:::question` carries its chosen `answer` **inline**, and `:::` blocks
-> (`:::comparison`/`:::diagram`/`:::diff`/`:::note`/`:::warn`/`:::custom-html`) stay intact. Charter
-> **stops emitting a flattened `handoff.md`**, so `/plan-breakdown` should consume the `.charter.md`
-> directly.
+> ## TL;DR for the Guardrails team — your autonomous pipeline is UNAFFECTED
+> Nothing changes for a headless/autonomous `guardrails run`. The between-wave / JIT breakdown your harness
+> drives keeps consuming Charter's **flattened** plain-markdown projection (`charter handoff` output),
+> exactly as today. Charter is **keeping that flatten permanently** as its headless/plain-markdown
+> projection — there is no deletion, no migration window, no half-state.
 >
-> ## What this changes for `plan-breakdown` (input contract)
-> Your input widens from "plain reviewed `.md`" to "**plain `.md` OR a Charter `.charter.md`**":
-> - A plain `.md` with no `:::` blocks breaks down **exactly as today** — zero regression.
-> - A `.charter.md` is interpreted with the Charter-published **`charter-format`** skill (block catalog +
->   `:::question` open/resolved schema). A **resolved** `:::question` is a settled decision you fold in; an
->   **open** one you resolve at breakdown or defer to run time (G2).
+> The single change this epic asks for is additive and lives entirely in the **INTERACTIVE**
+> `/plan-breakdown` (a human-driven Claude Code session with the Skill tool): it gains the ability to
+> consume a Charter **`.charter.md`** directly — richer signal than the flatten — when one is handed to it.
 >
-> ## How you get the catalog (matches your real model — no mid-run cross-skill load)
-> `/plan-breakdown` does not load another skill's `references/` mid-run. Instead, **the invoking Claude
-> Code session loads `charter-format` as a top-level skill** (installed via Charter's `charter skills
-> install`, mirroring `guardrails skills install`). Your Step 0 gains: "if the input is a `.charter.md`,
-> load `charter-format`; if absent, stop and tell the user to run `charter skills install`." The catalog
-> stays single-sourced in Charter — nothing is vendored into Guardrails.
+> ## Why
+> Charter (the front door that feeds `/plan-breakdown`) is moving to a **living-document** model (Charter
+> `docs/plans/02-architecture-b-living-document.md`, of record; go/no-go spike Charter **#25 PASSED**): the
+> plan is a `.charter.md` that is the single container of its own review state — a settled `:::question`
+> carries its chosen `answer` **inline**, and `:::` blocks (`:::note`/`:::warn`/`:::comparison`/`:::diagram`/
+> `:::diff`/`:::custom-html`) stay intact. Flattening that to plain markdown is lossy (structured decisions
+> and options become prose). For an INTERACTIVE breakdown, where a human is present, consuming the
+> `.charter.md` directly preserves that signal.
 >
-> ## Compatibility (a format-version range check, not a binary pin)
-> Each `.charter.md` carries a plain-YAML frontmatter marker `charter-format-version: F` (readable without
+> ## Two paths, decided (this is the de-risk)
+> | Path | Driver | Input | How it reads Charter blocks |
+> |---|---|---|---|
+> | **Interactive** | human runs `/plan-breakdown` (Skill tool present) | the `.charter.md` **directly** | the Charter-published `charter-format` skill, loaded top-level in the session |
+> | **Headless / autonomous** | the harness (no Skill tool) | the **flattened** `charter handoff` output (plain `.md`) | n/a — it is already plain markdown |
+>
+> So the autonomous pipeline (#361) never needs `charter-format`, never parses `:::`, never takes a Charter
+> dependency. It reads plain markdown, as it does now.
+>
+> ## The decoupling (what you are NOT signing up for)
+> - **No parser, no binary dependency.** You never parse Charter's directive syntax and never depend on
+>   Charter's binary. The interactive path interprets blocks via a **skill** (`charter-format`) Charter
+>   publishes and installs — a documentation contract, not a code one.
+> - **One SSOT, no fork.** The block catalog + `:::question` open/resolved schema lives ONCE, in Charter's
+>   `charter-format` skill, bound to Charter's renderer by a drift test. Nothing is vendored into Guardrails
+>   (no `references/` copy to drift).
+> - **No mid-run cross-skill load.** `/plan-breakdown` does not load another skill's `references/` mid-run.
+>   The invoking session loads `charter-format` as a **top-level** skill (installed via Charter's
+>   `charter skills install`, mirroring `guardrails skills install`).
+>
+> ## Compatibility — a format-version range check, not a binary pin
+> Each `.charter.md` carries a plain-YAML frontmatter marker `charter-format-version: F` (readable WITHOUT
 > `charter-format`). The installed `charter-format` skill declares `[format-min, format-version]`; the
-> session checks `format-min ≤ F ≤ format-version` and errors clearly on mismatch ("update charter-format").
-> You take **no** dependency on Charter's binary or parser — only on the named skill + the marker.
+> interactive session checks `format-min ≤ F ≤ format-version` and errors clearly on mismatch ("run
+> `charter skills install` to update `charter-format`"). **Absent marker ⇒ reject with an actionable error**
+> (never silently assume a version). **Min-version pin:** the interactive path requires an installed
+> `charter-format` whose `[format-min, format-version]` range covers the file's `charter-format-version`;
+> Charter publishes **v1** as the first format version and stamps every `.charter.md` at `≥ 1`.
+>
+> ## Open `:::question` at run time — flows through YOUR dial (#361), no new gate type
+> A human may deliberately leave a `:::question` **open**. Two levels, both already in your model:
+> - **At breakdown time** (interactive), an open `:::question` is surfaced, never defaulted — `AskUserQuestion`
+>   if a human is present, else the breakdown emits a task whose action writes `{"needsHuman": "<question>"}`
+>   and stops. This is the greenfield "surface it, never default it" idiom you already ship
+>   (`references/stacks/dotnet.md:416-421`).
+> - **At run time**, that emitted `{"needsHuman": …}` is exactly the agent-emitted needs-human your
+>   autonomous classifier ALREADY governs as a **dial-eligible judgment call** (`docs/plans/12-autonomous-mode.md`
+>   §4.1): criticality < the dial → **proceed with a recorded best-guess** (forensic trail in `decisions[]` +
+>   `autonomy.jsonl`); criticality ≥ the dial → **escalate** (honest halt enriched with the question,
+>   firstmate answers async via an answer file, run exits **`EscalationsPending = 4`**). It is NOT an
+>   unconditional halt and NOT exit 2. **No new gate type is needed** — the classifier already covers
+>   agent-needs-human.
 >
 > ## Sequencing
-> Charter ships the producer side first (the `.charter.md` extension Charter #16, the inline-`answer`
-> schema, the `charter-format` skill, `charter skills install` #18) — the skill your team tests G1–G3
-> against. Charter keeps its old `charter handoff` flatten as a migration bridge until this epic ships, so
-> there is never a window where a `.charter.md` meets an old `/plan-breakdown` with no path. **Gating
-> evidence:** before Charter flips its invariant and files this epic, it runs a comparative spike (break
-> down the `.charter.md` AND the same plan's flattened `handoff.md`, judge the DAGs equivalent-or-better).
-> This epic proceeds on that spike passing.
+> Charter ships the producer side first: the `.charter.md` extension (Charter #16), the inline-`answer`
+> schema, the `charter-format` skill (declaring `[format-min, format-version]`), and `charter skills install`
+> (Charter #18) — what your team tests G1–G3 against. Because the flatten stays, there is never a window
+> where a `.charter.md` meets an interactive `/plan-breakdown` that can't read it — worst case it emits the
+> actionable "install/update `charter-format`" error. Spike Charter #25 (break down the `.charter.md` vs. its
+> flattened `handoff.md`, judge equivalent-or-better) has **PASSED**, so this epic is cleared to proceed.
 >
 > ## Sub-issues
-> - **G1** — accept a `.charter.md`; interpret `:::` blocks via the top-level `charter-format` skill;
->   enforce the format-version range.
-> - **G2** — open-`:::question` handling via your existing idiom (`AskUserQuestion` at breakdown / a
->   run-time `needsHuman`-halting task), not a new gate primitive.
-> - **G3** — Step 0 discovery + the "not installed → run `charter skills install`" stop.
+> - **G1** — interactive `/plan-breakdown` detects a `.charter.md` (or `:::`-bearing input), interprets `:::`
+>   via the top-level `charter-format` skill, enforces the format-version range (absent marker ⇒ reject), a
+>   resolved `:::question`'s `answer` folds in, a plain `.md` is unchanged.
+> - **G2** — open-`:::question`: interactive → `AskUserQuestion`; run time → the dial-governed
+>   agent-needs-human (#361), NOT a new gate primitive. Plus the trust-asymmetry note.
+> - **G3** — `charter-format` discovery for the interactive session (installed via `charter skills install`);
+>   the headless path does not need it.
 >
 > ## Acceptance (epic-level)
-> A fixture `.charter.md` (one resolved + one open `:::question`) breaks down end to end: the resolved
-> decision is applied; the open one is asked (interactive breakdown) or becomes a `needsHuman`-halting
-> task; the folder passes `guardrails validate`. A plain `.md` still breaks down unchanged.
+> A fixture `.charter.md` (one resolved + one open `:::question`) breaks down end to end **interactively**:
+> the resolved decision is applied; the open one is asked via `AskUserQuestion` (or, deferred, becomes an
+> agent-needs-human task the autonomous run then dial-governs per #361); the folder passes `guardrails
+> validate`. A plain `.md` still breaks down unchanged. The flattened `handoff.md` path is untouched.
 
 ### Guardrails-side — G1 (repo: `Servant-Software-LLC/Guardrails`)
 
-**Title:** `plan-breakdown: accept a .charter.md, interpret ::: blocks via the top-level charter-format skill`
+**Title:** `plan-breakdown (INTERACTIVE): accept a .charter.md, interpret ::: via top-level charter-format, enforce the format-version range`
 
 **Body:**
 
-> Under the Charter living-document epic. Widen `/plan-breakdown` Step 0:
-> 1. **Detect Charter input** — input name ends `.charter.md`, or a `.md` contains `:::` directive blocks.
-> 2. **Load `charter-format` as a top-level session skill** (see G3 for discovery). Do **not** attempt to
->    load it as one of plan-breakdown's own `references/` — that is not how the harness loads references.
->    Interpret the catalog from the loaded skill; do not hard-code directive semantics.
-> 3. **Read the frontmatter marker `charter-format-version: F`** (plain YAML, readable without the skill)
->    and enforce `format-min ≤ F ≤ format-version` from the loaded `charter-format`. On mismatch, stop with
->    the actionable message (Charter `§2.4`).
+> Under the Charter living-document epic. Applies to the **interactive** `/plan-breakdown` only (a
+> human-driven session with the Skill tool). The headless/autonomous path is untouched — it consumes the
+> flattened `charter handoff` output (plain markdown) and needs none of this.
+>
+> Widen interactive Step 0:
+> 1. **Detect Charter input** — the input name ends `.charter.md`, or a `.md` contains `:::` directive blocks.
+> 2. **Load `charter-format` as a top-level session skill** (discovery in G3). Do **not** try to load it as
+>    one of plan-breakdown's own `references/` — that is not how the harness loads references. Interpret the
+>    catalog from the loaded skill; do not hard-code directive semantics.
+> 3. **Read the frontmatter marker `charter-format-version: F`** (plain YAML, readable without the skill).
+>    **Absent marker ⇒ reject with an actionable error** and stop (`this plan has no charter-format-version
+>    marker; re-author it with a current charter-format, or hand a plain .md`) — never silently assume a
+>    version. Present ⇒ enforce `format-min ≤ F ≤ format-version` from the loaded `charter-format`; on
+>    mismatch stop with the actionable message (too new ⇒ "run `charter skills install` to update
+>    `charter-format`"; too old ⇒ "re-author against a current format"). (Charter `§2.4`.)
 > 4. **Interpret, don't choke.** Parse-through `:::note`/`:::warn`/`:::comparison`/`:::diagram`/`:::diff`/
->    `:::custom-html` as context. A **resolved** `:::question` (non-empty `answer`) is a settled decision —
->    fold its `answer` into the DAG, keeping the options as rationale. **Note:** Charter's catalog is
->    `:::note/warn/comparison/diagram/diff/question/custom-html` only — `:::file-tree` and
->    `:::annotated-code` do **not** exist (struck as vaporware); treat an unknown directive per
->    `charter-format`, not as a known block.
+>    `:::custom-html` as context. A **resolved** `:::question` (non-empty inline `answer`) is a settled
+>    decision — fold its `answer` into the DAG, keeping the options as rationale. Charter's catalog is
+>    `:::note/warn/comparison/diagram/diff/question/custom-html` only — `:::file-tree` and `:::annotated-code`
+>    do **not** exist (struck as vaporware); treat an unknown directive per `charter-format`, not as a known
+>    block.
 > 5. **No regression.** A `.md` with no `:::` blocks takes the existing path untouched.
 >
 > **Depends on (Charter):** #16, the `charter-format` skill (declares `[format-min, format-version]`), #18.
 > **Depends on (Guardrails):** G3.
-> **Acceptance:** a resolved-`:::question` fixture folds the decision in; a too-new `charter-format-version`
-> errors clearly; a plain `.md` is unchanged; `guardrails validate` passes.
+> **Acceptance:** a resolved-`:::question` fixture folds the decision in; a `.charter.md` with **no marker**
+> is rejected with the actionable error; a too-new `charter-format-version` errors clearly; a plain `.md` is
+> unchanged; `guardrails validate` passes.
 
 ### Guardrails-side — G2 (repo: `Servant-Software-LLC/Guardrails`)
 
-**Title:** `plan-breakdown: resolve open :::question blocks via AskUserQuestion / a run-time needsHuman task (existing idiom)`
+**Title:** `plan-breakdown: open :::question → AskUserQuestion (interactive) / dial-governed agent-needs-human at run time (#361) — no new gate type`
 
 **Body:**
 
-> Under the Charter living-document epic. A human may deliberately leave a `:::question` **open**. Handle
-> it with the idiom `plan-breakdown` **already uses** for an undecided choice — the greenfield-framework
-> pattern (`references/stacks/dotnet.md:416-421`): *surface it, never default it.* There is **no** new
-> authoring-time gate primitive and **no** interactive/headless mode split in the skill.
-> - **When the breakdown session can ask** (a human is present), use **`AskUserQuestion`** with the
->   question `title`/`mode`/`options`; fold the answer in exactly like a resolved `:::question`.
-> - **When the decision must defer to run time,** emit a **task whose action prompt writes
->   `{"needsHuman": "<title + options>"}` to the state-out path and stops** (the runtime escape hatch,
->   `SKILL.md:1138-1139`). The run harness then halts on that task — and in a non-interactive run the
->   harness's autonomy path stops (exit 2) rather than guessing.
+> Under the Charter living-document epic. A human may deliberately leave a `:::question` **open**. Handle it
+> with the idiom `plan-breakdown` **already** uses for an undecided choice — the greenfield "surface it,
+> never default it" pattern (`references/stacks/dotnet.md:416-421`). There is **no new gate primitive** and
+> no interactive/headless split inside the skill's authoring logic; the split is only which resolution fires.
+>
+> **At breakdown time:**
+> - **Interactive (a human is present):** use **`AskUserQuestion`** with the question `title`/`mode`/
+>   `options`; fold the answer in exactly like a resolved `:::question`.
+> - **Deferred to run time:** emit a task whose action prompt writes `{"needsHuman": "<title + options>"}`
+>   to the state-out path and stops — the shipped runtime escape hatch.
 > - **Never** synthesize a default answer for an open `:::question`.
 >
+> **At run time — the #361 alignment (this is the correction).** When that emitted `{"needsHuman": …}`
+> reaches an **autonomous run**, it is an **agent-emitted needs-human** — which the autonomous classifier
+> ALREADY treats as a **dial-eligible judgment call** (`docs/plans/12-autonomous-mode.md` §4.1, class (a)).
+> It is therefore **dial-governed**, NOT an unconditional halt:
+> - criticality **<** the dial (`escalationThreshold`) → **proceed with a recorded best-guess**, full
+>   forensic trail (`decisions[]` `proceeded-best-guess` + `autonomy.jsonl`);
+> - criticality **≥** the dial → **escalate**: honest halt enriched with the question, firstmate answers
+>   asynchronously via an answer file, run exits **`EscalationsPending = 4`** (NOT `2`).
+>
+> **Explicitly: no new gate type is needed.** The agent-needs-human classifier + the dial cover this end to
+> end. The old framing ("run-time needsHuman-halting task, exit 2") is superseded by the approved autonomous
+> model (#361).
+>
+> **Trust-asymmetry note (load-bearing).** A `:::question` resolved **at breakdown time** — whether via
+> `AskUserQuestion` or already-inline in the `.charter.md` — is **trusted authoring input**: it shapes the
+> DAG the human then reviews. A `:::question` answered **at run time** via the escalation answer channel is
+> **untrusted, delimited data** in the autonomous model (`12-autonomous-mode.md` §7.4, Finding 4): the
+> injected `needsHuman` answer text is wrapped as delimited human-answer data, can **never reach the verdict
+> surface**, and only composes the next attempt's prompt (whose deterministic guardrails still gate the
+> result). Keep the two kinds of "answer" distinct — never treat a run-time answer as authoring-trust.
+>
 > **Depends on:** G1. **Acceptance:** an open-`:::question` fixture is either asked via `AskUserQuestion`
-> (interactive breakdown) or produces a `needsHuman`-writing task (deferred), never a silent default.
+> (interactive) or produces an agent-needs-human task; under an autonomous run that task is dial-governed
+> (best-guess below threshold / escalate to `EscalationsPending = 4` at or above it), never silently
+> defaulted, and no new gate type is introduced.
 
 ### Guardrails-side — G3 (repo: `Servant-Software-LLC/Guardrails`)
 
-**Title:** `plan-breakdown: discover the charter-format skill; instruct 'charter skills install' when absent`
+**Title:** `plan-breakdown (INTERACTIVE): discover the charter-format skill; instruct 'charter skills install' when absent (headless path exempt)`
 
 **Body:**
 
-> Under the Charter living-document epic. In Step 0, when Charter input is detected (G1) and the session
-> does not have `charter-format` available, **stop** with `run 'charter skills install' so plan-breakdown
-> can interpret Charter blocks` — do not guess directive semantics. `charter skills install` (Charter #18)
-> mirrors `guardrails skills install` and places `charter-format` in `~/.claude/skills/` (or
+> Under the Charter living-document epic. In the **interactive** Step 0, when Charter input is detected (G1)
+> and the session does not have `charter-format` available, **stop** with `run 'charter skills install' so
+> plan-breakdown can interpret Charter blocks` — do not guess directive semantics. `charter skills install`
+> (Charter #18) mirrors `guardrails skills install` and places `charter-format` in `~/.claude/skills/` (or
 > `./.claude/skills/`), where the invoking session loads it top-level.
 >
-> **Staleness (grounded on the file marker, not CLI drift).** Do **not** model this as
+> **The headless / autonomous path does NOT need `charter-format`.** It consumes the flattened `charter
+> handoff` output (plain markdown), so it never detects Charter input, never loads the skill, and this stop
+> never fires there. `charter-format` discovery is an interactive-session concern only.
+>
+> **Staleness is grounded on the file marker, not CLI drift.** Do **not** model this as
 > `guardrails --version` drift (that compares an installed skill to the running Guardrails CLI — a category
 > error here). The freshness signal is the **format-version range check** (G1): if the file's
 > `charter-format-version` exceeds the installed skill's `format-version`, the installed `charter-format`
@@ -494,16 +604,18 @@ the producer work. Each body is self-contained with cross-repo deps named. The
 > matters for interpretation.
 >
 > **Depends on (Charter):** #18 + the `charter-format` skill. **Acceptance:** with `charter-format`
-> installed, a `.charter.md` interprets; without it, `plan-breakdown` emits the install instruction and
-> does not guess.
+> installed, an interactive `.charter.md` interprets; without it, interactive `plan-breakdown` emits the
+> install instruction and does not guess; the headless flatten path is unaffected.
 
 ### Charter-side issues (repo: `Servant-Software-LLC/Charter`)
 
 **Issue A — umbrella / SSOT flip.**
-`Architecture B: living .charter.md + direct Guardrails ingestion (flip invariant 5)` — Adopt
-`docs/plans/02-architecture-b-living-document.md`; apply the invariant-5 rewrite to `01-…md`. Tracks the
-sub-work below. Closes #19. **Filing/adoption gated on the comparative spike (Issue G) passing.** Depends
-on #16, #18.
+`Architecture B: living .charter.md + direct Guardrails ingestion (flip invariant 5, DUAL path)` — Adopt
+`docs/plans/02-architecture-b-living-document.md`; apply the invariant-5 rewrite to `01-…md` (the **dual
+path**: interactive consumes `.charter.md`, headless/autonomous consumes the retained flattened `charter
+handoff`). Tracks the sub-work below. Closes #19. **Spike (Issue G / #25) PASSED — adoption cleared.**
+Depends on #16, #18. **Note (Q2):** the flatten is **retained permanently** — this issue does NOT delete
+`HandoffMarkdown`/`charter handoff`.
 
 **Issue B — drift guard on the reconciled catalog + unique-id lint.**
 `Renderer↔charter-format drift guard (reconciled catalog + format version); document-unique-question-id lint`
@@ -550,7 +662,8 @@ prototype `charter-format` loaded) **and** its flattened `handoff.md`, and have 
 charter-devils-advocate judge the resulting DAGs **equivalent-or-better** — not merely that `guardrails
 validate` passes (which only checks DAG structure, not quality). **Passing this spike gates the
 invariant-5 flip (Issue A) and the Guardrails epic filing.** Depends on the `answer` field + a prototype
-`charter-format`.
+`charter-format`. **STATUS: #25 PASSED — GO (2026-07-23)** — the gate is cleared; Issue A adoption + the
+Guardrails EPIC are unblocked.
 
 **Issue H — v2: in-browser WYSIWYG block edit.** (deferred) Reverse source-map + single-writer-safe write
 (§1.3/§1.4).
@@ -576,10 +689,10 @@ invariant-5 flip (Issue A) and the Guardrails epic filing.** Depends on the `ans
 | **Guardrails** | G3 (new) | Discover the skill; install instruction | Charter #18 + skill | — |
 
 **Ordering across repos:** Charter #16 → Charter C/F/D + the `answer` field + a prototype `charter-format`
-→ **Charter G (comparative spike) PASSES** → Charter A (adopt/flip) + file the Guardrails EPIC → Charter B
-+ E + #18 finalize the producer side → Guardrails G3 → G1 → G2 ship consumption → **Charter removes the
-flatten** (bridge retired once a consuming Guardrails exists). Neither team deletes a bridge the other
-still needs.
+→ **Charter G (comparative spike #25) PASSED** → Charter A (adopt/flip) + file the Guardrails EPIC → Charter
+B + E + #18 finalize the producer side → Guardrails G3 → G1 → G2 ship the **interactive** consumption.
+**No flatten-removal step (Q2):** `HandoffMarkdown`/`charter handoff` stay permanently as the
+headless/autonomous projection — there is no bridge to retire and no deletion window.
 
 ---
 
@@ -588,10 +701,11 @@ still needs.
 ### Determinism vs. richer signal
 Flattening was deterministic; direct ingestion routes block interpretation through the LLM breakdown.
 Breakdown is *already* non-deterministic, so the marginal loss is small and the signal gain (explicit
-decisions/options) real. **Mitigations:** the resolved `answer` is a deterministic datum the LLM reads
-(not re-derived); `charter-format` fixes the catalog; and the **comparative spike (Issue G) gates
-adoption** — we do not flip invariant 5 on faith that direct breakdown is as good, we measure it against
-the flattened baseline first.
+decisions/options) real — and it applies only to the **interactive** path (the headless path keeps the
+deterministic flatten). **Mitigations:** the resolved `answer` is a deterministic datum the LLM reads
+(not re-derived); `charter-format` fixes the catalog; and the **comparative spike (Issue G / #25) gated
+adoption and PASSED** — we did not flip invariant 5 on faith that direct breakdown is as good, we measured
+it against the flattened baseline first (equivalent-or-better).
 
 ### Loose Charter↔Guardrails coupling via a skill
 The contract is "the session's `charter-format` agrees with Charter's renderer." **Mitigations, layered:**
@@ -600,11 +714,12 @@ Charter-side; (2) the **format-version range check** (§2.4) turns a too-old ski
 charter-format", not a misparse; (3) single-sourcing (no Guardrails-side vendor) means there is one
 catalog to keep honest, not two.
 
-### Migration-bridge faithfulness (DA blocker 1 — fixed)
-During the bridge window a resolved `.charter.md` must flatten faithfully. `HandoffMarkdown.EmitQuestion`
-today reads only the external answers dict (`HandoffMarkdown.cs:261`) → would flatten resolved questions
-as **all-open**. The fix (inline-`answer` fallback, landed in slice 1) makes the bridge faithful; without
-it the bridge silently loses every human decision.
+### Flatten faithfulness (DA blocker 1 — fixed; now a permanent property under Q2)
+The flatten must project a resolved `.charter.md` faithfully — **permanently**, since it is the
+headless/autonomous path's input (Q2), not just a temporary bridge. `HandoffMarkdown.EmitQuestion` today
+reads only the external answers dict (`HandoffMarkdown.cs:261`) → would flatten resolved questions as
+**all-open**. The fix (inline-`answer` fallback, landed in slice 1) makes the projection faithful; without
+it the headless path silently loses every human decision.
 
 ### Concurrency of live file mutation
 The only unsound reading (server-writes-plan) is designed out (§1.4). The server writes only its **own
@@ -617,10 +732,15 @@ A plain `poll` that drained answers destructively could strand them (removed fro
 file). Fixed: **`--apply` is the only answer-drain path**; plain `poll` reports-but-does-not-remove; the
 sidecar is a second durable copy.
 
-### Open-`:::question` in an unattended run
+### Open-`:::question` in an unattended run (Q1 — dial-governed, not a hard halt)
 `plan-breakdown` never silently defaults an open question. Interactive breakdown asks (`AskUserQuestion`);
-otherwise it emits a task that writes `needsHuman` and halts — and the run harness stops (exit 2) in a
-non-interactive context. This is Guardrails' existing greenfield-framework idiom, not new machinery.
+otherwise it emits a task that writes `{"needsHuman": …}`. At **run time**, an autonomous run does **not**
+unconditionally halt on that `needsHuman`: it is the agent-emitted needs-human the approved autonomous
+classifier governs as a **dial-eligible judgment call** (`12-autonomous-mode.md` §4.1). Below the dial →
+**proceed with a recorded best-guess** (forensic trail in `decisions[]` + `autonomy.jsonl`); at/above the
+dial → **escalate** (honest halt + async firstmate answer file, exit **`EscalationsPending = 4`**, not
+`2`). No new gate type — the classifier already covers agent-needs-human. This is Guardrails' existing
+greenfield idiom plus its shipped autonomy dial, not new machinery.
 
 ### Pressure on the invariants
 - **Invariant 3** is now load-bearing for *correctness of ingestion*, held honest by the drift test +
@@ -638,18 +758,20 @@ The rejected over-build is server-side write-back of the plan for "instant" muta
 
 ## 6. Sequencing and migration
 
-Prove the risky bet first. The riskiest assumption is **"direct breakdown of a `:::`-bearing `.charter.md`
-is at least as good as the flattened `handoff.md`."** It is proven by a **comparative spike that gates
-everything downstream** — including the invariant-5 flip and the epic filing.
+Prove the risky bet first. The riskiest assumption was **"direct breakdown of a `:::`-bearing `.charter.md`
+is at least as good as the flattened `handoff.md`."** It was proven by a **comparative spike that gated
+the invariant-5 flip and the epic filing — spike #25 PASSED — GO (2026-07-23).**
 
-**Prerequisite / gating slice (before any adoption):**
+**Prerequisite / gating slice (was before adoption — now cleared):**
 1. **`QuestionSpec.answer`** + **`QuestionResolution.Apply`** (surgical `JsonObject`) + the inline-answer
-   fallback in `EmitQuestion` (bridge faithfulness). Deterministic, unit-testable.
+   fallback in `EmitQuestion` (now a permanent flatten-faithfulness property — Q2). Deterministic,
+   unit-testable.
 2. **Frontmatter support** (Issue C) — must precede the marker.
 3. **A prototype `charter-format` skill** + a fixture `.charter.md` (resolved + open `:::question`).
-4. **Issue G — the comparative spike:** break down the `.charter.md` (direct) AND its flattened
-   `handoff.md`; judge the DAGs equivalent-or-better. **PASS gates the invariant-5 flip and the epic
-   filing.** FAIL sends the design back, cheaply, before any deletion.
+4. **Issue G — the comparative spike (#25): PASSED.** Broke down the `.charter.md` (direct) AND its
+   flattened `handoff.md`; judged the DAGs equivalent-or-better. The gate is cleared → the invariant-5 flip
+   and the epic filing are unblocked. (Had it FAILED it would have sent the design back cheaply, before any
+   change.)
 
 **On PASS — producer side:**
 5. Flip invariant 5 (adopt Issue A); file the Guardrails epic. Land `charter-format` (final) + the drift
@@ -657,10 +779,12 @@ everything downstream** — including the invariant-5 flip and the epic filing.
    `charter skills install` (#18), the durability sidecar + `charter resolve` + `--apply`-only-drain (D),
    resolved-question rendering.
 
-**Consumer side, then the clean break:**
-6. Guardrails ships G3 → G1 → G2.
-7. **Charter removes** `HandoffMarkdown` / `handoff` / `HandoffAnswersFile` — **after** a consuming
-   Guardrails exists, so the bridge is retired only when a compatible consumer is available.
+**Consumer side (interactive) — no clean break (Q2):**
+6. Guardrails ships G3 → G1 → G2 for the **interactive** `/plan-breakdown`.
+7. **No flatten removal.** `HandoffMarkdown` / `charter handoff` **stay permanently** as the
+   headless/autonomous projection. The only handoff-adjacent deletion is the `answers.json` side-car
+   (`HandoffAnswersFile` / `--answers-out`), which is superseded by the inline `answer` field and lands
+   with slice 1 — it is **not** gated on Guardrails.
 
 **Interaction with the pending queue and the held release:**
 
@@ -671,35 +795,45 @@ everything downstream** — including the invariant-5 flip and the epic filing.
 | **#13 `poll`** | Keep the poll core; repurpose `--answers-out`→`--apply`; delete `HandoffAnswersFile`; make `--apply` the only answer-drain path. |
 | **#17 `convert`** | Orthogonal but synergistic — plain `.md` → `.charter.md` is a living-doc producer that targets `charter-format`. After the core; not on the critical path. |
 | **#19 discussion** | Resolved by adopting Issue A. |
-| **Release** | **HELD for Architecture B.** No release until the living-document pipeline **and** the Guardrails consumption ship (i.e. through step 7). Do not ship a half-state (flatten deleted with no consuming Guardrails; or living-doc mode with no durability). The prior "cut now" option is withdrawn. |
+| **Release** | **HELD for Architecture B.** No release until the living-document producer pipeline ships with durability. Do not ship a half-state (living-doc mode with no durability). **Q2 removes the old flatten-deletion hazard entirely** — the flatten stays permanently, so there is no "flatten deleted with no consuming Guardrails" failure mode. The interactive Guardrails consumption (G1–G3) can land after Charter's producer side without blocking a release, because the headless flatten path always works. The prior "cut now" option remains withdrawn. |
 
-**Migration bridge (explicit):** from slice 1 until step 7, `charter handoff` **stays** — now faithful to
-inline answers (blocker-1 fix) — and is removed only once a Guardrails with G1–G3 is released.
+**Migration story (simplified — Q2):** there is **no deletion window**. `charter handoff` **stays
+permanently** — faithful to inline answers (the `EmitQuestion` fallback shipped in slice 1) — as the
+headless/autonomous projection. It is never removed; the "bridge retired once Guardrails consumes"
+sequencing dissolves.
 
 ---
 
 ## The SSOT change (invariant 5)
 
-On acceptance (after Issue G passes), replace invariant 5 in
+Adopted (Issue G / spike **#25 PASSED**): replace invariant 5 in
 `docs/plans/01-combine-lavish-and-visual-plan.md:92`:
 
 **From:**
 > 5. **Feeds Guardrails via plain markdown** — the handoff is canonical reviewed markdown, no MDX.
 
-**To:**
-> 5. **Feeds Guardrails via the living `.charter.md`** — `/plan-breakdown` consumes the `.charter.md`
->    directly (`:::` blocks and all), guided by the single `charter-format` skill the invoking session
->    loads. A resolved `:::question` carries its `answer` inline; an open one is asked at breakdown or
->    becomes a run-time `needsHuman` task — never a silent default. No flattened handoff and no
->    `answers.json`: the `.charter.md` is the single container of review state. Compatibility is a
->    **format-version range check** (`charter-format-version` frontmatter marker vs. the skill's
->    `[format-min, format-version]`), never Charter's parser/binary or a Guardrails-binary pin; a too-old
->    skill fails with a clear "update charter-format" error, and plain-markdown plans that never touched
->    Charter still break down unchanged.
+**To (the DUAL path — Q2 — with Q1's dial governance):**
+> 5. **Feeds Guardrails via a dual path (no MDX in either).** In the **interactive** path, `/plan-breakdown`
+>    consumes the `.charter.md` **directly** (`:::` blocks and all), guided by the single `charter-format`
+>    skill the invoking session loads, within a declared format-version range. In the **headless/autonomous**
+>    path, the breakdown consumes the **retained flattened `charter handoff` output** (plain markdown) — so
+>    plain-markdown plans **and the autonomous pipeline break down unchanged**. The `.charter.md` is the
+>    single container of review state (no `answers.json`); the flatten **stays permanently** as the
+>    plain-markdown projection. A resolved `:::question` carries its `answer` inline; an open one is **asked
+>    at breakdown** (`AskUserQuestion`) or **emits a `{"needsHuman": …}` task** — never a silent default —
+>    and at **run time** that `needsHuman` is **dial-governed** in an autonomous run (Guardrails #361:
+>    best-guess-with-forensic-trail below the dial, else escalate with exit **`EscalationsPending = 4`**),
+>    not an unconditional halt. Compatibility is a **format-version range check** (`charter-format-version`
+>    frontmatter marker vs. the skill's `[format-min, format-version]`), never Charter's parser/binary or a
+>    Guardrails-binary pin; an absent marker is rejected and a too-old skill fails with a clear "update
+>    charter-format" error.
 
-The "Architecture", "Format & block catalog", "Milestones (wave 5)", and "Open items" sections of `01-…md`
-that reference `charter handoff` / the handoff fixture / "plain markdown" / `:::file-tree` /
-`:::annotated-code` also update on acceptance; this doc is the authority for those edits.
+The "Architecture", "Milestones (wave 5)", and "Open items" sections of `01-…md` that reference
+`charter handoff` / the handoff fixture / "plain markdown" are updated **in the same change** to the
+dual-path reality (the handoff references are **kept** — the flatten stays — not deleted). The
+"Format & block catalog" reconciliation (`:::file-tree` / `:::annotated-code` strike, `:::custom-html`
+promotion) is carried by **Issue F**, bound by the drift test, and is not folded into the invariant-5 flip.
+This doc is the authority for those edits.
 
 ## Open questions for David (decided-with-default; confirm or override)
 

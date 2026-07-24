@@ -56,7 +56,8 @@ plan.mdx ─▶ Charter.Core (Markdig + block catalog + stable IDs + source-map)
    agent ◀─ charter poll (long-poll) ◀─ Charter.Server (IReviewServer, 127.0.0.1) ─▶ browser (annotate in place)
               │ annotation carries anchor → markdown line range (source-map)
               ▼
-        emit canonical reviewed markdown ─▶ Guardrails plan-breakdown ─▶ task DAG
+   reviewed .charter.md ─┬─▶ /plan-breakdown (INTERACTIVE: reads .charter.md directly via charter-format) ─▶ task DAG
+                         └─▶ charter handoff ─▶ plain .md ─▶ plan-breakdown (HEADLESS/AUTONOMOUS) ─▶ task DAG
 ```
 
 Projects: `Charter.Core` (renderer, block catalog, **anchor source-map**, session model),
@@ -89,7 +90,21 @@ ID → markdown line range)** so a human's annotation on the *rendered HTML* rou
 3. **Format single-sourced** — the block schema lives in one place; renderer, SDK, skill cite it.
 4. **Loopback + capability** — server binds `127.0.0.1`; each session carries a capability key; file
    serving is path-confined. Exposure beyond loopback is explicit and documented.
-5. **Feeds Guardrails via plain markdown** — the handoff is canonical reviewed markdown, no MDX.
+5. **Feeds Guardrails via a dual path (no MDX in either)** — *flipped by Architecture B
+   (`docs/plans/02-architecture-b-living-document.md`, of record; go/no-go spike #25 passed).* In the
+   **interactive** path, `/plan-breakdown` consumes the `.charter.md` **directly** (`:::` blocks and all),
+   guided by the single `charter-format` skill the invoking session loads, within a declared format-version
+   range. In the **headless/autonomous** path, the breakdown consumes the **retained flattened `charter
+   handoff` output** (plain markdown) — so plain-markdown plans **and the autonomous pipeline break down
+   unchanged**. The `.charter.md` is the single container of review state (no `answers.json`); the flatten
+   **stays permanently** as the plain-markdown projection. A resolved `:::question` carries its `answer`
+   inline; an open one is **asked at breakdown** (`AskUserQuestion`) or **emits a `{"needsHuman": …}` task**
+   — never a silent default — and at **run time** that `needsHuman` is **dial-governed** in an autonomous
+   run (Guardrails #361: best-guess-with-forensic-trail below the dial, else escalate with exit
+   **`EscalationsPending = 4`**), not an unconditional halt. Compatibility is a **format-version range
+   check** (`charter-format-version` frontmatter marker vs. the skill's `[format-min, format-version]`),
+   never Charter's parser/binary or a Guardrails-binary pin; an absent marker is rejected and a too-old
+   skill fails with a clear "update charter-format" error.
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`, over a defined postMessage/HTTP
    contract.
 7. **Telemetry off / opt-in** — a deliberate departure from Lavish's default-on model.
@@ -119,9 +134,12 @@ front-loaded as far as it deterministically can be.
   in wave 1).
 - **Wave 4 (M4) — rich + interactive blocks.** Mermaid (theme-aware, node-anchored annotation via node
   identity), `:::comparison`, `:::question` controls that submit structured answers, `:::diff`.
-- **Wave 5 (M5) — export + Guardrails handoff.** Minimal self-contained HTML export (inline local
-  assets, `file://` redaction, size caps) + emit canonical reviewed markdown; the **wave-1 handoff
-  fixture** is the acceptance gate.
+- **Wave 5 (M5) — export + Guardrails handoff (dual path, per Architecture B).** Minimal self-contained
+  HTML export (inline local assets, `file://` redaction, size caps). The reviewed **`.charter.md` itself**
+  is the interactive-breakdown input (consumed directly via `charter-format`); the **retained `charter
+  handoff` flatten** projects it to plain markdown for the headless/autonomous path. The **wave-1 handoff
+  fixture** remains the acceptance gate for the flatten projection. *(The flatten is permanent — Q2 — not a
+  bridge to be deleted.)*
 - **Wave 6 (M6) — agent skill + polish.** Bundled `charter` `SKILL.md` + playbooks; distribution polish.
 
 ## Guardrails execution mapping (waves + JIT)
@@ -193,7 +211,10 @@ switch. Tracked in [#6](https://github.com/Servant-Software-LLC/Charter/issues/6
 
 ## Open items to pin early
 
-- The exact **reviewed-markdown handoff shape** — defined + fixtured in wave 1 (M1).
+- The exact **Guardrails ingestion contracts (dual path, per Architecture B)** — (a) the reviewed
+  **`.charter.md`** consumed directly by the interactive `/plan-breakdown` (guided by `charter-format`
+  within a format-version range), and (b) the **retained flattened `charter handoff` shape** for the
+  headless/autonomous path, defined + fixtured in wave 1 (M1). Both are pinned; the flatten stays permanent.
 - **Store concurrency** — single-writer or locking for the session JSON (Lavish does whole-file
   read-modify-write; a concurrent `poll` + `prompts` can race).
 - The **JS vendor → bundle → test pipeline** (a small node toolchain in CI) + the vendored-SDK
