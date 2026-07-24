@@ -4,6 +4,7 @@ using System.Text;
 using Markdig;
 using Markdig.Extensions.CustomContainers;
 using Markdig.Extensions.Tables;
+using Markdig.Extensions.Yaml;
 using Markdig.Syntax;
 using MarkdigBlock = Markdig.Syntax.Block;
 
@@ -47,6 +48,9 @@ public enum BlockKind
 
     /// <summary>A <c>:::diff</c> container.</summary>
     Diff,
+
+    /// <summary>A <c>:::custom-html</c> container — the sanctioned raw-HTML escape hatch.</summary>
+    CustomHtml,
 }
 
 /// <summary>
@@ -213,14 +217,36 @@ internal static class CharterMarkdown
     /// markdown HTML), so escaping raw markdown HTML never touches them.
     /// </summary>
     internal static MarkdownPipeline Pipeline { get; } = new MarkdownPipelineBuilder()
+        .UseYamlFrontMatter()
         .UsePipeTables()
         .UseCustomContainers()
         .DisableHtml()
         .Build();
 
-    /// <summary>Parse <paramref name="markdown"/> into a Markdig document using the shared pipeline.</summary>
+    /// <summary>
+    /// Parse <paramref name="markdown"/> into a Markdig document using the shared pipeline, then STRIP any YAML
+    /// front matter. Front matter is metadata (the <c>charter-format-version</c> marker), not a content block:
+    /// removing the <see cref="YamlFrontMatterBlock"/> here makes every seam that traverses the document —
+    /// render, <see cref="AnchorAssignment"/>/<see cref="SourceMap"/>, <see cref="BlockDocument"/> and thus the
+    /// handoff/export — skip it uniformly (no anchor, never rendered as prose). Removing the node does not shift
+    /// any other block's absolute <see cref="MarkdownObject.Span"/>/line, so anchors stay correct.
+    /// <see cref="QuestionResolution"/>.<c>Apply</c> splices on the original source string, so the front matter
+    /// is preserved there untouched.
+    /// </summary>
     internal static MarkdownDocument ParseDocument(string markdown)
-        => Markdown.Parse(markdown, Pipeline);
+    {
+        var document = Markdown.Parse(markdown, Pipeline);
+
+        for (var i = document.Count - 1; i >= 0; i--)
+        {
+            if (document[i] is YamlFrontMatterBlock)
+            {
+                document.RemoveAt(i);
+            }
+        }
+
+        return document;
+    }
 
     /// <summary>Classify a top-level Markdig block and capture the raw source text it spans.</summary>
     internal static (BlockKind Kind, string RawContent) Describe(MarkdigBlock node, string markdown)
@@ -272,6 +298,11 @@ internal static class CharterMarkdown
             return BlockKind.Question;
         }
 
+        if (IsCustomHtml(container))
+        {
+            return BlockKind.CustomHtml;
+        }
+
         return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
     }
 
@@ -286,6 +317,9 @@ internal static class CharterMarkdown
 
     private static bool IsQuestion(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "question", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCustomHtml(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "custom-html", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);
