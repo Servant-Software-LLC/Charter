@@ -20,7 +20,7 @@
     <RepositoryUrl>https://github.com/Servant-Software-LLC/Charter.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/Servant-Software-LLC/Charter</PackageProjectUrl>
-    <PackageTags>charter;mdx;plan;review;annotation;agentic;llm;cli;guardrails</PackageTags>
+    <PackageTags>charter;plan;review;annotation;agentic;llm;cli;guardrails</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
