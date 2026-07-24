@@ -3,14 +3,15 @@
 **Visual, reviewable plans your agent drafts — and you annotate in place.**
 
 Charter is the front door to an agentic delivery pipeline. An AI authors a rich, block-structured
-plan (diagrams, tables, comparisons, annotated code — not a wall of prose); you review it in the
-browser and **comment right on the deliverable**, so every note carries the context of exactly what
-it points at. The approved plan is then handed to **[Guardrails]** to be broken down into an
-executable, verified task DAG.
+plan (diagrams, tables, comparisons, code — not a wall of prose); you review it in the browser and
+**comment right on the deliverable**, so every note carries the context of exactly what it points at.
+Your answers fold back **into the plan file itself**, and the approved plan is then handed to
+**[Guardrails]** to be broken down into an executable, verified task DAG.
 
-> **Status:** the MDX renderer, loopback review server, in-place annotation loop, offline export, and
-> Guardrails handoff are all implemented and shipping in the binary. Charter builds, its tests are
-> green, and it packs as a `dotnet` tool / native binary.
+> **Status:** shipping on all channels. The renderer, loopback review server, in-place annotation loop
+> with answers folded back into the plan, offline export, the `charter convert` seed, and Guardrails
+> handoff are all implemented in the binary — released via Homebrew, NuGet (`dotnet` tool), and native
+> binaries.
 
 ## Why
 
@@ -33,14 +34,24 @@ Charter  →  Guardrails  →  firstmate / gnhf
 ## Usage
 
 Charter is a CLI over a single plan file. An AI authors the plan as block-structured markdown — a
-small, fixed block catalog (diagram, table, comparison, code/diff, question) — and you drive it
-through four verbs:
+small, fixed block catalog (diagram, table, comparison, code/diff, question) — and drives it through
+these verbs. In practice you don't type most of them: you ask your agent to *"turn this doc / PDF /
+link into a plan"* and it authors the `.charter.md` for you (guided by the bundled skill), then you
+review it in the browser.
 
+- `charter convert <doc.md> -o <plan.charter.md>` — seeds a plan from a plain Markdown doc: passes
+  every block through, promotes an obvious "Open Questions" / "Risks" list into question blocks, and
+  stamps the format marker. The mechanical floor an agent then enriches (diagrams, comparisons, more
+  questions) — the rich "any source → plan" authoring is agent-driven, not a deterministic command.
 - `charter render <plan.charter.md> -o <out.html>` — renders a plan to one portable HTML artifact.
 - `charter review <plan.charter.md> [--no-open]` — serves the plan over the loopback review server
   (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you can
   annotate elements, text ranges, and diagram nodes **in place**. `--no-open` serves without
   launching a browser.
+- `charter poll [<plan.charter.md>] [--apply]` / `charter resolve <plan.charter.md>` — drain the
+  running review session's annotations and `:::question` answers, folding each answer **inline into the
+  `.charter.md`** (agent-in-the-loop `poll --apply`, or `resolve` for a solo human review). The plan is
+  a living document that accumulates your decisions before handoff.
 - `charter export <plan.charter.md> -o <out.html>` — writes a self-contained, **offline** artifact with
   every local asset inlined as a `data:` URI — no server, no runtime, portable anywhere.
 - `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` — emits plain CommonMark for

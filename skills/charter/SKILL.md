@@ -23,6 +23,13 @@ executes** — anything of the form "draft a plan I can look over," "write this 
 "put this in front of me before you build it," or "get this ready for Guardrails." Reach for it whenever
 the deliverable is a *plan a human approves in the browser*, not code you write directly.
 
+This also covers **"convert this into a plan"** — the human hands you a document, a PDF, a link, a
+Confluence page, or pasted prose and asks you to turn it into a reviewable Charter plan. That is an
+**agent** task (choosing what becomes a diagram, a comparison, or an open question is judgment, and the
+LLM lives in *you*, never in the binary) — `references/authoring-from-source.md` is the on-ramp, and the
+`charter convert` verb below is the mechanical seed it builds on. The human won't type a file path at a
+shell; they ask *you*, and you drive the skill.
+
 Do **not** use it for work that should just be done, for prose with no decisions to elicit, or for
 reporting on work already finished.
 
@@ -30,6 +37,7 @@ reporting on work already finished.
 
 | Verb | What it does |
 |---|---|
+| `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: pass every block through unchanged, promote an obvious "Open Questions" / "Risks" list to `:::question` blocks, and stamp the format marker. The deterministic floor — you then **enrich** it (diagrams, comparisons, more questions). |
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
 | `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. |
@@ -53,7 +61,11 @@ Write the plan as a `.charter.md` file using the [block catalog](#block-catalog)
 plain-YAML frontmatter marker declaring the format version (`---` / `charter-format-version: 1` / `---`) —
 normative in the `charter-format` skill. Starting from a prompt, an existing doc, a PDF, or a Confluence
 page? `references/authoring-from-source.md` is the on-ramp: how to ingest each source and choose the right
-block for its content. Then render it to check the artifact:
+block for its content. If that source is **already Markdown**, don't start from a blank file — run
+`charter convert <source.md> -o plan.charter.md` first: it passes every block through, promotes an obvious
+Open-Questions/Risks list to `:::question`, and stamps the marker, giving you a valid seed to **enrich**
+(add diagrams, comparisons, more questions) rather than author from scratch. Then render it to check the
+artifact:
 
 ```
 charter render plan.charter.md -o plan.html

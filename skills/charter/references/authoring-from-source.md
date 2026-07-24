@@ -12,7 +12,7 @@ Get the source's content in front of you before you write a line of plan. How de
 | Source | How to ingest |
 |---|---|
 | A prompt / free-form ask | Nothing to read — author the plan from scratch, inventing the structure the ask implies. |
-| A markdown file | Read it. Keep its intent; you're enriching it into blocks, not rewriting its meaning. |
+| A markdown file | **Seed it first: `charter convert <file>.md -o plan.charter.md`** — that passes every block through unchanged, promotes an obvious "Open Questions"/"Risks" list to open `:::question` blocks, and stamps the format marker. Then Read the seed and **enrich** it (Step 2). Keep the source's intent; you're enriching into blocks, not rewriting its meaning. |
 | A PDF | Read it with your file tools (the `Read` tool takes a `pages` range). Pull out its headings, tables, and diagrams-in-prose. |
 | A link / public web page | Fetch it (`WebFetch`, or a configured MCP connector). |
 | A **private** Confluence page | An auth wall, not a content problem — a plain fetch hits a login page. Use an **Atlassian MCP connector** if one is configured, or ask the human for a **manual export** (Confluence → Export → Markdown or PDF) and treat it as the markdown/PDF case above. This is an environment step; you can't bypass the auth. |
@@ -49,7 +49,10 @@ catalog-in-depth walkthrough with copy-ready snippets is in [`authoring-plans.md
 
 A source that ends with a bulleted "Open Questions" list is the clearest signal you have real decisions to
 elicit. Turn each into a `:::question` and **leave it open** — omit `answer`, and the reviewer resolves it in
-the browser.
+the browser. If you **seeded from Markdown with `charter convert`**, this promotion already happened
+mechanically — each list item is now an open `free-text` `:::question`. Your job there is to *refine* them:
+give a genuine either/or a `single`/`bool` `mode` with real `options`, drop any that aren't real decisions.
+For a PDF, a link, or a from-scratch plan, you author these by hand as shown here.
 
 Before (as found in the source):
 
@@ -102,7 +105,9 @@ flowchart LR
 
 ## Step 3 — Stamp the format marker
 
-Begin the file with the plain-YAML frontmatter marker declaring the format version it was authored against:
+If you seeded from Markdown with `charter convert`, the marker is **already stamped** — skip to Step 4.
+Otherwise (a from-scratch, PDF, or link plan you authored by hand), begin the file with the plain-YAML
+frontmatter marker declaring the format version it was authored against:
 
 ```
 ---
