@@ -1,6 +1,5 @@
 using System.CommandLine;
 using System.Diagnostics;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Charter.Cli;
@@ -17,8 +16,11 @@ using Spectre.Console;
 
 if (args.Length >= 1 && args[0] is "--version" or "-v")
 {
-    Version? v = Assembly.GetExecutingAssembly().GetName().Version;
-    Console.WriteLine($"charter {v?.ToString(3) ?? "0.0.0"}");
+    // Route through CharterVersion (the single source of truth), NOT Assembly.GetName().Version — the
+    // latter is the numeric AssemblyVersion, which cannot carry a prerelease suffix, so a `-preview.1`
+    // build would misreport as its bare `0.2.0`. CharterVersion reads the InformationalVersion, the same
+    // value `charter skills install` stamps, keeping the two in agreement.
+    Console.WriteLine($"charter {CharterVersion.Current}");
     return 0;
 }
 
