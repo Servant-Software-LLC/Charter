@@ -123,8 +123,6 @@ single-sourced*) — this table cites it; the renderer owns it. Do not fork or i
 | callout | `:::note` / `:::warn` |
 | table / comparison | pipe tables · `:::comparison` |
 | code / diff | fenced ` ```lang ` · `:::diff` |
-| annotated code | `:::annotated-code {#id}` |
-| file tree | `:::file-tree` |
 | diagram | `:::diagram` (Mermaid body) — annotatable per node, pan/zoom |
 | wireframe / escape hatch | `:::custom-html` (sanitized inline HTML) |
 | **question (elicitation)** | **`:::question`** |

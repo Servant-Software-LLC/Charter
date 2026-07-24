@@ -66,36 +66,6 @@ to show a change (annotatable per line):
 :::
 ````
 
-### Annotated code — `:::annotated-code {#id}`
-
-Code you want to walk the reviewer through line by line, with a stable `{#id}` so annotations anchor
-predictably:
-
-````
-:::annotated-code {#retry-policy}
-```csharp
-for (var attempt = 0; attempt < MaxAttempts; attempt++)
-{
-    // ...
-}
-```
-:::
-````
-
-### File tree — `:::file-tree`
-
-Show the shape of a change to the repo layout:
-
-```
-:::file-tree
-src/
-  Charter.Core/
-    CharterRenderer.cs
-  Charter.Cli/
-    Program.cs
-:::
-```
-
 ### Diagram — `:::diagram` (Mermaid body)
 
 A Mermaid diagram. Rendered theme-aware, **pan/zoom**, and annotatable **per node** (the human clicks a

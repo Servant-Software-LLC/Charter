@@ -29,7 +29,7 @@ charter handoff plan.mdx -o plan.md --answers answers.json
 ```
 
 `handoff` reads the reviewed plan and rewrites **every `:::` directive** — `:::note`, `:::warn`,
-`:::comparison`, `:::diagram`, `:::annotated-code`, `:::file-tree`, `:::custom-html`, `:::question`, … —
+`:::comparison`, `:::diagram`, `:::custom-html`, `:::question`, … —
 into **plain CommonMark**. This is deliberate (invariant 5, *feeds Guardrails via plain markdown*):
 Guardrails does **not** parse Charter's directives, so coupling the two independently-versioned formats
 would buy nothing. The output `plan.md` is what you pass to Guardrails `plan-breakdown`.
