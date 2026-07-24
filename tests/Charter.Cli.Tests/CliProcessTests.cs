@@ -93,6 +93,32 @@ public class CliProcessTests
         Assert.Contains("charter ", result.StdOut);
     }
 
+    [Fact]
+    public void Render_MarkerlessPlan_EmitsNonFatalVersionWarning_AndStillSucceeds()
+    {
+        string workDir = NewTempDirectory();
+        try
+        {
+            string inputPlan = Path.Combine(workDir, "plan.charter.md");
+            File.WriteAllText(inputPlan, "# A Plan With No Version Marker\n\nSome prose the renderer will render.\n");
+            string outputPath = Path.Combine(workDir, "out.html");
+
+            var result = RunCharter("render", inputPlan, "-o", outputPath);
+
+            // Non-fatal: the missing-marker warning goes to stderr, but the render still succeeds with its usual
+            // exit 0 + stdout success line and actually writes the artifact (Charter #24).
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Rendered", result.StdOut);
+            Assert.Contains("charter render: warning:", result.StdErr);
+            Assert.Contains("charter-format-version", result.StdErr);
+            Assert.True(File.Exists(outputPath));
+        }
+        finally
+        {
+            TryDeleteDirectory(workDir);
+        }
+    }
+
     /// <summary>
     /// Runs the built CLI as a child process via <c>dotnet exec &lt;Charter.Cli.dll&gt;</c> and returns its exit
     /// code and captured streams. The DLL path is the Charter.Cli build output resolved by MSBuild at compile

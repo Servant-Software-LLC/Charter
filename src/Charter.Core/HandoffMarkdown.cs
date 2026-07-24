@@ -29,6 +29,10 @@ public static class HandoffMarkdown
     // The closing directive fence — a line that is nothing but ":::" and optional trailing whitespace.
     private static readonly Regex CloseFence = new(@"^:::\s*$", RegexOptions.Compiled);
 
+    // The opening fence's directive name — the first non-whitespace token after the ":::". Used only to name
+    // an unrecognized directive in its flagged handoff line.
+    private static readonly Regex OpenFenceName = new(@"^:::\s*(\S+)", RegexOptions.Compiled);
+
     /// <summary>
     /// Emit the plain-markdown handoff for <paramref name="markdown"/>, resolving each <c>:::question</c>
     /// against <paramref name="answers"/> (question id → the selected/submitted answer value(s), the same
@@ -88,6 +92,11 @@ public static class HandoffMarkdown
             // valid CommonMark, so it survives the bridge to Guardrails as authored rather than being flattened
             // to a callout (which is what it wrongly did while it misclassified as a note).
             BlockKind.CustomHtml => string.Join("\n", InnerLines(block.RawContent)),
+
+            // An unrecognized :::foo directive is flagged, NOT flattened as a note and NOT passed through as a
+            // raw ::: fence (which would re-open a directive line in the plain-markdown handoff, breaking the
+            // invariant-5 self-parse). It surfaces as a single blockquote line naming the directive (Charter #22).
+            BlockKind.Unknown => EmitUnknown(block.RawContent),
 
             // Any future kind falls back to verbatim source rather than silently dropping content.
             _ => PassThrough(source, block.RawContent),
@@ -244,6 +253,41 @@ public static class HandoffMarkdown
         }
 
         return Math.Max(3, longest + 1);
+    }
+
+    /// <summary>
+    /// Flag an unrecognized <c>:::foo</c> directive as a single blockquote line naming the directive, so a typo
+    /// or unlisted container is VISIBLE in the handoff rather than flattened to a note (Charter #22). The line is
+    /// a blockquote and carries the directive name inside inline code, so it never starts a line with
+    /// <c>:::</c> — the invariant-5 self-parse still holds.
+    /// </summary>
+    private static string EmitUnknown(string rawContent)
+    {
+        var directive = UnknownDirectiveName(rawContent);
+        return $"> **Unknown Charter directive `:::{directive}` — not in the format catalog.**";
+    }
+
+    /// <summary>The directive name of an unknown container — the first token after the opening <c>:::</c> fence,
+    /// or the first non-blank line's text when no fence token can be read.</summary>
+    private static string UnknownDirectiveName(string rawContent)
+    {
+        var normalized = (rawContent ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+        foreach (var line in normalized.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            var match = OpenFenceName.Match(trimmed);
+            return match.Success ? match.Groups[1].Value : trimmed;
+        }
+
+        return string.Empty;
     }
 
     /// <summary>

@@ -162,27 +162,55 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
     {
-        var info = obj.Info?.Trim();
-        if (string.Equals(info, "diagram", StringComparison.OrdinalIgnoreCase))
+        // Dispatch on the SAME classification the block model uses (CharterMarkdown.ClassifyContainer), so the
+        // renderer and the catalog can never disagree on what a :::directive is. The containers whose markup
+        // diverges from the default callout get a bespoke writer; :::note / :::warn / :::comparison fall through
+        // to the default; and an unrecognized :::foo (BlockKind.Unknown) renders as a visible unknown-directive
+        // element rather than silently masquerading as a note (Charter #22).
+        switch (CharterMarkdown.ClassifyContainer(obj))
         {
-            WriteDiagram(renderer, obj);
+            case BlockKind.Diagram:
+                WriteDiagram(renderer, obj);
+                break;
+            case BlockKind.Diff:
+                WriteDiff(renderer, obj);
+                break;
+            case BlockKind.Question:
+                WriteQuestion(renderer, obj);
+                break;
+            case BlockKind.CustomHtml:
+                WriteCustomHtml(renderer, obj);
+                break;
+            case BlockKind.Unknown:
+                WriteUnknown(renderer, obj);
+                break;
+            default:
+                base.Write(renderer, obj);
+                break;
         }
-        else if (string.Equals(info, "diff", StringComparison.OrdinalIgnoreCase))
+    }
+
+    /// <summary>
+    /// Render an unrecognized <c>:::foo</c> container as a VISIBLE, clearly-marked "unknown directive" element
+    /// that names the offending directive, rather than letting a typo/unlisted container flatten into a silent
+    /// note (Charter #22). The block's stable id rides the wrapping <c>&lt;div&gt;</c> so the unknown block is
+    /// still annotatable in the review loop.
+    /// </summary>
+    private void WriteUnknown(HtmlRenderer renderer, CustomContainer obj)
+    {
+        renderer.EnsureLine();
+        if (!renderer.EnableHtmlForBlock)
         {
-            WriteDiff(renderer, obj);
+            return;
         }
-        else if (string.Equals(info, "question", StringComparison.OrdinalIgnoreCase))
-        {
-            WriteQuestion(renderer, obj);
-        }
-        else if (string.Equals(info, "custom-html", StringComparison.OrdinalIgnoreCase))
-        {
-            WriteCustomHtml(renderer, obj);
-        }
-        else
-        {
-            base.Write(renderer, obj);
-        }
+
+        var directive = obj.Info?.Trim() ?? string.Empty;
+
+        renderer.Write("<div class=\"unknown-directive\"");
+        WriteId(renderer, obj.TryGetAttributes()?.Id);
+        renderer.Write("><strong>Unknown directive:</strong> <code>:::");
+        renderer.WriteEscape(directive);
+        renderer.WriteLine("</code></div>");
     }
 
     /// <summary>

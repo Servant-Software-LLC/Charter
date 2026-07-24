@@ -51,6 +51,15 @@ public enum BlockKind
 
     /// <summary>A <c>:::custom-html</c> container — the sanctioned raw-HTML escape hatch.</summary>
     CustomHtml,
+
+    /// <summary>
+    /// An unrecognized <c>:::foo</c> directive — a typo or an unlisted container that matches NO catalog
+    /// block. It is the deliberate else-branch fallback of <see cref="CharterMarkdown"/>'s container
+    /// classification, NOT a catalog member: it exists so an unknown directive surfaces VISIBLY (a
+    /// rendered "unknown directive" element, a flagged handoff line) instead of silently masquerading as a
+    /// <see cref="Note"/>. The drift test binds the real catalog and excludes this fallback.
+    /// </summary>
+    Unknown,
 }
 
 /// <summary>
@@ -268,15 +277,16 @@ internal static class CharterMarkdown
     internal static int StartLine(MarkdigBlock node) => node.Line + 1;
 
     /// <summary>
-    /// Classify a <c>:::</c> custom container by its info string: <c>diagram</c> → a Mermaid
-    /// <see cref="BlockKind.Diagram"/>, <c>comparison</c> → a per-row-annotatable
-    /// <see cref="BlockKind.Comparison"/>, <c>diff</c> → a per-line-annotatable
-    /// <see cref="BlockKind.Diff"/>, <c>question</c> → a native-form <see cref="BlockKind.Question"/>,
-    /// <c>warn</c> → a <see cref="BlockKind.Warn"/> callout, and everything else (including <c>note</c>) → a
-    /// <see cref="BlockKind.Note"/> callout. Adds the M4 diagram, comparison, diff and question kinds while
-    /// leaving the existing note/warn behavior untouched.
+    /// Classify a <c>:::</c> custom container by its info string against the reconciled catalog:
+    /// <c>diagram</c> → <see cref="BlockKind.Diagram"/>, <c>comparison</c> → <see cref="BlockKind.Comparison"/>,
+    /// <c>diff</c> → <see cref="BlockKind.Diff"/>, <c>question</c> → <see cref="BlockKind.Question"/>,
+    /// <c>custom-html</c> → <see cref="BlockKind.CustomHtml"/>, <c>warn</c> → <see cref="BlockKind.Warn"/>, and
+    /// <c>note</c> → <see cref="BlockKind.Note"/>. Every OTHER info string — a typo or an unlisted directive —
+    /// falls to <see cref="BlockKind.Unknown"/> so an unrecognized <c>:::foo</c> surfaces visibly rather than
+    /// silently masquerading as a note (Charter #22). <c>note</c> is now matched explicitly because the
+    /// else-branch is no longer a note fallback.
     /// </summary>
-    private static BlockKind ClassifyContainer(CustomContainer container)
+    internal static BlockKind ClassifyContainer(CustomContainer container)
     {
         if (IsDiagram(container))
         {
@@ -303,7 +313,17 @@ internal static class CharterMarkdown
             return BlockKind.CustomHtml;
         }
 
-        return IsWarn(container) ? BlockKind.Warn : BlockKind.Note;
+        if (IsWarn(container))
+        {
+            return BlockKind.Warn;
+        }
+
+        if (IsNote(container))
+        {
+            return BlockKind.Note;
+        }
+
+        return BlockKind.Unknown;
     }
 
     private static bool IsDiagram(CustomContainer container)
@@ -323,6 +343,9 @@ internal static class CharterMarkdown
 
     private static bool IsWarn(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "warn", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNote(CustomContainer container)
+        => string.Equals(container.Info?.Trim(), "note", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The reusable sub-anchor descent — the foundation of the sub-block anchor model. For a container that

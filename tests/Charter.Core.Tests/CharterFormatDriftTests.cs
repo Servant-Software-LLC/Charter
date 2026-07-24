@@ -22,9 +22,12 @@ namespace Charter.Core.Tests;
 [Trait("Category", "CharterFormatDrift")]
 public class CharterFormatDriftTests
 {
-    /// <summary>The charter-format version this slice ships. Bump BOTH this and the skill frontmatter together
-    /// whenever the catalog changes (that lockstep is the drift guard).</summary>
-    private const int ExpectedFormatVersion = 1;
+    /// <summary>The charter-format version this slice ships — now single-sourced from
+    /// <see cref="CharterFormat.Version"/> in Charter.Core (this test references it rather than re-pinning a
+    /// literal, so the skill frontmatter, the code constant, and this assertion can never drift). Bump the code
+    /// constant and the skill frontmatter together whenever the catalog changes — that lockstep is the drift
+    /// guard.</summary>
+    private const int ExpectedFormatVersion = CharterFormat.Version;
 
     // The reconciled catalog: every BlockKind that is NOT a plain-CommonMark primitive maps to its :::directive
     // token. This is the test-side SSOT the skill is bound against; a new directive kind in code with no entry
@@ -45,6 +48,12 @@ public class CharterFormatDriftTests
         BlockKind.Prose, BlockKind.Heading, BlockKind.List, BlockKind.Table, BlockKind.Code,
     };
 
+    // Kinds that are NOT catalog directives and therefore carry no catalog binding: the CommonMark primitives
+    // plus BlockKind.Unknown — the else-branch fallback an unrecognized :::foo routes to (Charter #22). Unknown
+    // is deliberately excluded from the catalog surface: it has no directive token and appears in no catalog row.
+    private static readonly IReadOnlySet<BlockKind> NonCatalogKinds =
+        new HashSet<BlockKind>(PrimitiveKinds) { BlockKind.Unknown };
+
     // Directives struck as vaporware — they have no renderer and must not appear as catalog entries.
     private static readonly string[] StruckDirectives = { "file-tree", "annotated-code" };
 
@@ -56,16 +65,24 @@ public class CharterFormatDriftTests
         {
             "Prose", "Heading", "List", "Table", "Code",
             "Note", "Warn", "Diagram", "Comparison", "Question", "Diff", "CustomHtml",
+            // Unknown is the else-branch fallback for an unrecognized :::foo (Charter #22) — part of the enum,
+            // but NOT a catalog directive (asserted below).
+            "Unknown",
         }.OrderBy(n => n, StringComparer.Ordinal);
 
         // Any BlockKind added or removed fails here — forcing an edit to this test AND (per the lockstep rule)
-        // a bump of both the skill frontmatter and ExpectedFormatVersion.
+        // a bump of both the skill frontmatter and ExpectedFormatVersion whenever the change is a CATALOG change.
         Assert.Equal(expected, actual);
 
         // The promotion and the strike, stated explicitly.
         Assert.Contains(BlockKind.CustomHtml, Enum.GetValues<BlockKind>());
         Assert.DoesNotContain("FileTree", Enum.GetNames<BlockKind>());
         Assert.DoesNotContain("AnnotatedCode", Enum.GetNames<BlockKind>());
+
+        // Unknown exists in the enum but is NOT a catalog member: it carries no directive-token binding, so the
+        // catalog surface the skill is bound to stays exactly the reconciled directive set.
+        Assert.Contains(BlockKind.Unknown, Enum.GetValues<BlockKind>());
+        Assert.DoesNotContain(BlockKind.Unknown, DirectiveTokens.Keys);
     }
 
     [Fact]
@@ -75,7 +92,7 @@ public class CharterFormatDriftTests
         // catalog must list that :::token. A directive kind with no binding here is an unbound catalog surface.
         foreach (var kind in Enum.GetValues<BlockKind>())
         {
-            if (PrimitiveKinds.Contains(kind))
+            if (NonCatalogKinds.Contains(kind))
             {
                 continue;
             }
@@ -144,8 +161,11 @@ public class CharterFormatDriftTests
         var version = FrontMatterInt(frontMatter, "format-version");
         var min = FrontMatterInt(frontMatter, "format-min");
 
-        // The version is part of the bound surface — pinned here so a catalog change without a bump fails.
+        // The version is part of the bound surface — pinned to the single code source so a catalog change
+        // without a bump of CharterFormat.Version (and the skill frontmatter) fails.
         Assert.Equal(ExpectedFormatVersion, version);
+        // format-min is likewise bound to the single code source (CharterFormat.MinVersion).
+        Assert.Equal(CharterFormat.MinVersion, min);
         // A coherent [format-min, format-version] range.
         Assert.True(min <= version, $"format-min ({min}) must be <= format-version ({version}).");
         Assert.True(min >= 1, "format-min must be a positive integer.");
