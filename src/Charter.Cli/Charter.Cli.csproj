@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>charter</ToolCommandName>
     <PackageId>ServantSoftware.Charter</PackageId>
-    <Version>0.1.0-preview.1</Version>
+    <Version>0.2.0</Version>
 
     <Authors>Servant Software LLC</Authors>
     <Company>Servant Software LLC</Company>
