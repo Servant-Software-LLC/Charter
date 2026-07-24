@@ -35,6 +35,12 @@ charter handoff plan.charter.md -o plan.md --answers answers.json
 `/plan-breakdown` doesn't need it — it reads the `.charter.md` directly, interpreting the `:::` blocks via
 the `charter-format` skill. Reach for `handoff` when you're feeding the headless path.
 
+> **Guardrails compatibility.** Direct `.charter.md` ingestion (the interactive path) requires
+> **Guardrails ≥ `1.0.0-preview.48`** — the release that implements it (Guardrails #390–393). Against **any
+> earlier Guardrails**, run `charter handoff` and feed the flattened `plan.md` instead: the flatten path has
+> **no version floor** and is supported permanently. When unsure which the target Guardrails supports,
+> `handoff` always works.
+
 `--answers` is **optional**. A `:::question` already resolved **inline** — its `answer` filled in by
 `charter poll --apply` / `charter resolve` during review — hands off as **Answered** on its own, because
 `handoff` reads the inline answer. `--answers` is for questions **not** already answered inline: supply it

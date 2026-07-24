@@ -342,6 +342,13 @@ Guardrails-binary version pin.
 - **Any catalog change bumps `format-version`,** enforced by the drift test's bound surface (§2.2).
 - **The pin is a skill-version range, derived file-format-floor → installed `charter-format` version** —
   a check the session/breakdown does, not "file requires Guardrails binary ≥ N".
+- **Doc compat note (distinct from the gate above).** The correctness *gate* is the format-version range —
+  Charter never invokes Guardrails and there is no binary pin. Separately, as a **documentation** fact for
+  users wiring the two tools: the *interactive direct-ingestion capability* first lands in **Guardrails
+  `1.0.0-preview.48`** (the release implementing #390–393). Against any earlier Guardrails, the flatten path
+  (`charter handoff` → plain `.md`) is the route — it has **no version floor** and is retained permanently.
+  This is a one-line compatibility note in the README/handoff skill, not a code check. (Update if the
+  Guardrails release number shifts.)
 
 **Mismatch handling — clear, actionable, never silent:**
 

@@ -93,7 +93,11 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 5. **Dual handoff to Guardrails** — the interactive `/plan-breakdown` reads the `.charter.md` directly
    (interpreting `:::` blocks via the `charter-format` skill); the headless/autonomous path consumes the
    retained flattened `charter handoff` plain-CommonMark output. (Architecture B — flipped from the earlier
-   "plain-markdown-only handoff"; see `docs/plans/02-architecture-b-living-document.md`.)
+   "plain-markdown-only handoff"; see `docs/plans/02-architecture-b-living-document.md`.) **Guardrails
+   compatibility:** the direct path requires **Guardrails ≥ `1.0.0-preview.48`** (the release implementing
+   #390–393); against any earlier Guardrails, use `charter handoff` → flattened `plan.md` (no version floor,
+   supported permanently). This is a **documentation** compat note, not a code pin — Charter never invokes
+   Guardrails; the actual gate is the `charter-format` format-version range checked on the Guardrails side.
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`.
 7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag
    does not prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a
@@ -112,7 +116,6 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 
 ## Status (update as milestones complete)
 
-- **Released** — v0.1.0 GA on all channels (Homebrew, NuGet `dotnet` tool, native binaries): the renderer, source-map, loopback review server, in-place annotation loop, offline export, and `charter handoff` all ship.
-- **Architecture B (living `.charter.md`)** — of record (`docs/plans/02-architecture-b-living-document.md`) and built on master: the `.charter.md` format + `charter-format` skill + the `charter-format-version` frontmatter marker; `charter skills install`; the full review→apply→handoff loop — `charter poll --apply` / `charter resolve` fold reviewer answers back into the `.charter.md` (durable sidecar + peek→apply→commit, so nothing is lost); and **`charter convert`** (#17), the mechanical Markdown→`.charter.md` seed the agent-driven `authoring-from-source` on-ramp enriches (the rich "any source → plan" path is a **skill**, not a CLI — the LLM stays out of the binary).
-- **Pending** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393, their team); macOS signing (#9); v2 features (#1–#6).
+- **Released — v0.2.0 GA** on all channels (Homebrew, NuGet `dotnet` tool, native binaries): the Architecture B living-document release. Ships the renderer + source-map, loopback review server, in-place annotation loop, offline export, and the full **living-document loop** — `.charter.md` format + `charter-format` skill + `charter-format-version` marker; `charter skills install`; `charter poll --apply` / `charter resolve` fold reviewer answers back **into the `.charter.md`** (durable sidecar + peek→apply→commit, nothing lost); `charter handoff` (flatten); and **`charter convert`** (#17), the mechanical Markdown→`.charter.md` seed the agent-driven `authoring-from-source` on-ramp enriches (the rich "any source → plan" path is a **skill**, not a CLI — the LLM stays out of the binary). (v0.1.0 was the prior GA, pre-Architecture-B.)
+- **Pending** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393, their team; targeted for Guardrails `1.0.0-preview.48` — Charter's producer side is complete, so this is unblocked on their schedule); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

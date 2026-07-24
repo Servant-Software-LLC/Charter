@@ -31,6 +31,10 @@ Charter  →  Guardrails  →  firstmate / gnhf
   deterministic acceptance checks ("guardrails"), then runs the DAG to green.
 - **[firstmate]** / **[gnhf]** — agent orchestrators that do the actual work under those guardrails.
 
+> **Feeding Guardrails.** `charter handoff` flattens the approved plan to plain CommonMark that **any**
+> Guardrails version breaks down — that's the supported path today. Consuming the `.charter.md` **directly**
+> (blocks intact, richer signal) arrives in **Guardrails ≥ `1.0.0-preview.48`**.
+
 ## Usage
 
 Charter is a CLI over a single plan file. An AI authors the plan as block-structured markdown — a
