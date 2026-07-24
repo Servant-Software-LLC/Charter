@@ -8,8 +8,9 @@ namespace Charter.Core;
 /// (invariant 5 — no MDX crosses the handoff). Every <c>:::</c> directive FENCE LINE is rewritten to plain
 /// markdown Guardrails can parse — a <c>:::note</c>/<c>:::warn</c> to a labeled blockquote, a
 /// <c>:::diagram</c> to a fenced <c>mermaid</c> code block, a <c>:::diff</c> to a fenced <c>diff</c> code
-/// block, a <c>:::comparison</c> to its already-plain inner list, and a <c>:::question</c> to a resolved
-/// (answered) or clearly-flagged open (unanswered) block. Prose, headings, lists, tables, and fenced code
+/// block, a <c>:::comparison</c> to its already-plain inner list, a <c>:::custom-html</c> to its inner HTML
+/// passed through verbatim, and a <c>:::question</c> to a resolved (answered — from the external answers dict
+/// or the inline <c>answer</c>) or clearly-flagged open (unanswered) block. Prose, headings, lists, tables, and fenced code
 /// blocks pass through VERBATIM — a mid-sentence mention of directive syntax (e.g. talking <em>about</em>
 /// <c>:::note</c> in prose) is not a directive and is never rewritten.
 /// </summary>
@@ -82,6 +83,11 @@ public static class HandoffMarkdown
 
             // A question resolves to answered prose or a flagged open question — never its raw JSON body.
             BlockKind.Question => EmitQuestion(block.RawContent, answers),
+
+            // The raw-HTML escape hatch passes its inner HTML through VERBATIM (fence stripped) — raw HTML is
+            // valid CommonMark, so it survives the bridge to Guardrails as authored rather than being flattened
+            // to a callout (which is what it wrongly did while it misclassified as a note).
+            BlockKind.CustomHtml => string.Join("\n", InnerLines(block.RawContent)),
 
             // Any future kind falls back to verbatim source rather than silently dropping content.
             _ => PassThrough(source, block.RawContent),
@@ -261,6 +267,15 @@ public static class HandoffMarkdown
         if (answers is not null && answers.TryGetValue(spec.Id, out var values))
         {
             return $"**Q: {spec.Title}** — Answered: {string.Join(", ", values)}";
+        }
+
+        // Migration-bridge faithfulness (DA blocker 1): when the external answers dict lacks this id, fall back
+        // to the answer carried INLINE in the resolved :::question (spec.Answer). Without this, a resolved
+        // .charter.md flattens as all-questions-open and every human decision is silently lost during the
+        // bridge window.
+        if (spec.Answer.Count > 0)
+        {
+            return $"**Q: {spec.Title}** — Answered: {string.Join(", ", spec.Answer)}";
         }
 
         var open = $"> **Open question (unresolved):** {spec.Title}";
