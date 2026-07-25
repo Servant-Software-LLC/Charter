@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 
@@ -18,15 +19,19 @@ namespace Charter.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The single heuristic: promote an "open questions"-style section to <c>:::question</c> blocks. When a
-/// heading's trimmed, case-insensitive text is one of a tight allow-list
-/// (<see cref="OpenQuestionHeadings"/>) and it is immediately followed by a list, each <em>simple</em>
-/// top-level list item (a single paragraph, no nested list) becomes one OPEN <c>:::question</c> block — a
-/// <c>charter-format</c>-valid JSON body with a generated stable <c>id</c>, the item text as <c>title</c>,
-/// <c>mode: free-text</c> (the safest default for a prose question — options are never invented),
-/// <c>target: human</c>, and no <c>answer</c> (open). A complex list item (a nested sub-list, multiple
-/// blocks, or empty text) is left VERBATIM rather than forced into a question. Everything outside such a
-/// section — prose, headings, tables, fenced code, ordinary lists, blockquotes, front matter — is preserved.
+/// The single heuristic: promote an "open questions"-style section to <c>:::question</c> blocks. A heading
+/// fires when — after normalization (see <see cref="IsOpenQuestionsHeading"/>) — it contains a trigger word
+/// (<c>open issue(s)</c>, <c>question(s)</c>, <c>risk(s)</c>, or <c>decision(s)</c>) as a WHOLE word, so a
+/// numbered/prefixed heading like <c>9. Open questions / risks</c> fires just as <c>Open Questions</c> or
+/// <c>Risks</c> does, while a heading with no trigger word (<c>Architecture</c>, <c>Summary</c>) never does.
+/// When such a heading is immediately followed by a list — <em>bullet OR ordered/numbered</em> — each
+/// <em>simple</em> top-level list item (a single paragraph, no nested list) becomes one OPEN
+/// <c>:::question</c> block — a <c>charter-format</c>-valid JSON body with a generated stable <c>id</c>, the
+/// item text (inline markup stripped, whitespace collapsed) as <c>title</c>, <c>mode: free-text</c> (the
+/// safest default for a prose question — options are never invented), <c>target: human</c>, and no
+/// <c>answer</c> (open). A complex list item (a nested sub-list, multiple blocks, or empty text) is left
+/// VERBATIM rather than forced into a question. Everything outside such a section — prose, headings, tables,
+/// fenced code, ordinary lists, blockquotes, front matter — is preserved.
 /// </para>
 /// <para>
 /// This transform does NOT stamp the <c>charter-format-version</c> marker; that is
@@ -38,18 +43,22 @@ namespace Charter.Core;
 /// </remarks>
 public static class MarkdownConvert
 {
-    /// <summary>The tight allow-list of section headings whose list items are promoted to open questions.
-    /// Matched against a heading's trimmed text, case-insensitively. Deliberately small and conservative —
-    /// a mechanical seed should promote only the sections that unambiguously carry open decisions.</summary>
-    private static readonly HashSet<string> OpenQuestionHeadings = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Open Questions",
-        "Open Question",
-        "Questions",
-        "Risks",
-        "Decisions",
-        "Open Issues",
-    };
+    /// <summary>A leading list enumerator (<c>9. </c>, <c>10) </c>) stripped from a heading before matching,
+    /// so a numbered/prefixed heading like <c>9. Open questions / risks</c> normalizes to the same text a bare
+    /// <c>Open questions / risks</c> heading would.</summary>
+    private static readonly Regex LeadingEnumerator = new(
+        @"^\s*\d+[.)]\s+", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>The section-heading trigger words, matched as WHOLE words (<c>\b…\b</c>) anywhere in a
+    /// normalized heading. Whole-word (not substring) matching is deliberate: <c>Brisketry</c> must NOT match
+    /// <c>risk</c>. <c>open issue(s)</c> requires the <c>open</c> prefix (a bare <c>Issues</c> heading is not a
+    /// trigger, preserving the original allow-list's intent), while <c>question(s)</c>, <c>risk(s)</c>, and
+    /// <c>decision(s)</c> each fire on their own — so <c>9. Open questions / risks</c>, <c>Open Questions</c>,
+    /// <c>Risks</c>, <c>Open questions and risks</c>, and <c>Decisions</c> all fire, and <c>Architecture</c> /
+    /// <c>Summary</c> do not.</summary>
+    private static readonly Regex TriggerWords = new(
+        @"\b(open\s+issues?|questions?|risks?|decisions?)\b",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>Upper bound on the slug portion of a generated question id, so a long title yields a sane id.
     /// Uniqueness is guaranteed by <see cref="UniqueId"/>'s numeric discriminator, not by the slug alone.</summary>
@@ -112,9 +121,21 @@ public static class MarkdownConvert
         return Splice(source, replacements);
     }
 
-    /// <summary>True when a heading's trimmed, whitespace-collapsed text is in the allow-list.</summary>
+    /// <summary>
+    /// True when the heading names an "open questions"-style section. The exact rule: take the heading's plain
+    /// inline text (<see cref="InlineText"/> already collapses whitespace and trims), strip a leading list
+    /// enumerator (<see cref="LeadingEnumerator"/>, e.g. <c>9. </c>), lowercase it, then fire iff a
+    /// <see cref="TriggerWords"/> trigger — <c>open issue(s)</c>, <c>question(s)</c>, <c>risk(s)</c>, or
+    /// <c>decision(s)</c> — appears as a WHOLE word. Whole-word matching guards against over-firing
+    /// (<c>Brisketry</c> ≠ <c>risk</c>); a heading with no trigger word (<c>Architecture</c>) never fires.
+    /// </summary>
     private static bool IsOpenQuestionsHeading(HeadingBlock heading)
-        => OpenQuestionHeadings.Contains(InlineText(heading.Inline));
+    {
+        string normalized = LeadingEnumerator
+            .Replace(InlineText(heading.Inline), string.Empty)
+            .ToLowerInvariant();
+        return TriggerWords.IsMatch(normalized);
+    }
 
     /// <summary>
     /// Convert one list into interleaved <c>:::question</c> blocks (for simple items) and verbatim source

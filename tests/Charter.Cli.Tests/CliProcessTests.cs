@@ -163,6 +163,40 @@ public class CliProcessTests
     }
 
     [Fact]
+    public void Convert_NumberedOpenQuestionsRisksHeading_WithOrderedList_PromotesThreeQuestions()
+    {
+        string workDir = NewTempDirectory();
+        try
+        {
+            // Charter #31 end-to-end: a numbered/prefixed heading combining two triggers over an ORDERED list.
+            string input = Path.Combine(workDir, "plan.md");
+            File.WriteAllText(
+                input,
+                "# Install Plan\n\nSome prose.\n\n## 9. Open questions / risks\n\n"
+                    + "1. **Per-machine vs per-user install.** Which scope?\n"
+                    + "2. **Version pinning.** Floor or exact?\n"
+                    + "3. **Rollback.** How does it revert?\n");
+            string seedPath = Path.Combine(workDir, "plan.charter.md");
+
+            var result = RunCharter("convert", input, "-o", seedPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Converted", result.StdOut);
+            Assert.True(File.Exists(seedPath));
+
+            string seed = File.ReadAllText(seedPath);
+            // Three :::question openers were promoted from the ordered list under the numbered heading.
+            int questionCount = System.Text.RegularExpressions.Regex.Matches(seed, "(?m)^:::question$").Count;
+            Assert.Equal(3, questionCount);
+            Assert.Contains("Per-machine vs per-user install. Which scope?", seed); // bold markup stripped
+        }
+        finally
+        {
+            TryDeleteDirectory(workDir);
+        }
+    }
+
+    [Fact]
     public void Convert_MissingInput_Exits1_WithCleanError()
     {
         string missingInput = Path.Combine(Path.GetTempPath(), "charter-missing-" + Guid.NewGuid().ToString("N") + ".md");

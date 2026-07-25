@@ -222,11 +222,98 @@ public class MarkdownConvertTests
     [Fact]
     public void RisksSection_IsAlsoPromoted()
     {
-        // "Risks" is on the allow-list — its bullets are decisions the reviewer must weigh.
+        // "Risks" is a trigger word — its bullets are decisions the reviewer must weigh.
         string doc =
             "## Risks\n\n" +
             "- Data loss during migration.\n" +
             "- Downtime exceeds the window.\n";
+
+        var questions = BlockDocument.Parse(Seed(doc)).Blocks.Where(b => b.Kind == BlockKind.Question).ToList();
+        Assert.Equal(2, questions.Count);
+    }
+
+    [Fact]
+    public void NumberedHeading_CombiningTriggers_WithOrderedList_BecomesThreeOpenQuestions()
+    {
+        // Charter #31: the real-world dogfood shape — a NUMBERED/prefixed heading combining two triggers
+        // ("9. Open questions / risks") over an ORDERED (numbered) list whose items carry bold lead-ins. Both
+        // the exact-allow-list miss and the ordered-list handling are exercised at once.
+        string doc =
+            "## 9. Open questions / risks\n\n" +
+            "1. **Per-machine vs per-user install.** Which scope should the installer default to?\n" +
+            "2. **Version pinning.** Do we pin a floor or an exact version?\n" +
+            "3. **Rollback.** How does a failed rollout revert cleanly?\n";
+
+        string seed = Seed(doc);
+        var questions = BlockDocument.Parse(seed).Blocks.Where(b => b.Kind == BlockKind.Question).ToList();
+        Assert.Equal(3, questions.Count);
+
+        var titles = questions.Select(q => ParseBody(q).Title).ToList();
+        Assert.Equal(
+            new[]
+            {
+                "Per-machine vs per-user install. Which scope should the installer default to?",
+                "Version pinning. Do we pin a floor or an exact version?",
+                "Rollback. How does a failed rollout revert cleanly?",
+            },
+            titles);
+
+        foreach (var question in questions)
+        {
+            var spec = ParseBody(question);
+            Assert.Equal(QuestionMode.FreeText, spec.Mode); // safest default — no options invented
+            Assert.Equal(QuestionTarget.Human, spec.Target);
+            Assert.Empty(spec.Answer); // OPEN
+            Assert.False(string.IsNullOrWhiteSpace(spec.Id));
+        }
+    }
+
+    [Fact]
+    public void OrderedList_UnderBareQuestionsHeading_IsPromoted()
+    {
+        // An ordered list under a bare "Questions" heading promotes just as a bullet list would.
+        string doc =
+            "## Questions\n\n" +
+            "1. Which datastore should the read path use?\n" +
+            "2. Do we need multi-region on day one?\n";
+
+        var questions = BlockDocument.Parse(Seed(doc)).Blocks.Where(b => b.Kind == BlockKind.Question).ToList();
+        Assert.Equal(2, questions.Count);
+    }
+
+    [Fact]
+    public void ArchitectureHeading_WithList_IsNotPromoted()
+    {
+        // Over-fire guard: a heading carrying NO trigger word must never be promoted, even directly over a list.
+        string doc =
+            "## Architecture\n\n" +
+            "- The read path is stateless.\n" +
+            "- The write path is append-only.\n";
+
+        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+    }
+
+    [Fact]
+    public void HeadingWithTriggerOnlyAsSubstring_IsNotPromoted()
+    {
+        // Whole-word guard: "Brisketry" contains the letters of "risk" but not the WHOLE word, so it must not
+        // fire — a naive substring match would wrongly promote this list.
+        string doc =
+            "## Brisketry\n\n" +
+            "- Smoke low and slow.\n" +
+            "- Rest before slicing.\n";
+
+        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+    }
+
+    [Fact]
+    public void DecisionsAndOpenIssuesHeading_Fires_OnEitherTrigger()
+    {
+        // A heading combining "decisions" and "open issues" fires; both are triggers.
+        string doc =
+            "## Decisions and open issues\n\n" +
+            "- Adopt the new format?\n" +
+            "- Deprecate the legacy path?\n";
 
         var questions = BlockDocument.Parse(Seed(doc)).Blocks.Where(b => b.Kind == BlockKind.Question).ToList();
         Assert.Equal(2, questions.Count);
