@@ -102,6 +102,13 @@ pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --wit
   so `WaitUntil = NetworkIdle` never settles — use `WaitUntilState.Load` + `WaitForSelector`/`WaitForFunction`.
   The test SKIPS cleanly (Xunit.SkippableFact) when Chromium is unavailable; the deterministic served-doc-shell
   guards (Core + Server tests) cover the same symptoms on every OS.
+- **`page.WaitForFunctionAsync` is unusable on the served page once it has to POLL.** Playwright's polling
+  loop `eval`s its predicate inside the page, and the served-page CSP is `script-src 'unsafe-inline'` with no
+  `'unsafe-eval'` — so the browser refuses it (`EvalError: Refused to evaluate a string as JavaScript`). It
+  *appears* to work whenever the condition is already true on the first check (which is why the `ready` wait
+  survived), then fails the moment a test genuinely waits. Use `WaitForSelectorAsync` (the selector engine is
+  CSP-safe) or a bounded C# poll over `EvaluateAsync` (`ReviewLoopBrowserTests.WaitForEventAsync`). `evaluate`
+  itself is fine — it goes over CDP, not `eval`.
 
 ## Status pointers
 

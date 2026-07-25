@@ -69,6 +69,17 @@ anchor) to the agent, and `poll --apply` / `charter resolve` fold answers **inli
 blocks → agent edits the markdown → live reload re-renders. Loop until the human approves. The saved
 artifact never contains the SDK, so it opens standalone.
 
+**In-page annotation UI (the reviewer's surface).** Notes are written in a styled, near-target composer
+(never a native `window.prompt`), and the SDK renders a **review panel** listing the notes plus an on-block
+marker + count badge, so the reviewer can see and manage what they have already said. The panel is the
+**pre-drain queue**: an annotation it lists is by definition *not yet handed off*. It is backed by three
+loopback routes over the same pending buffer — `GET /api/annotations` (non-destructive list, key on the
+query string), `POST /api/{key}/annotations/{id}` (edit the note) and
+`POST /api/{key}/annotations/{id}/delete` (retract it), both writes key-in-path + CSRF-gated. Once
+`charter poll` drains a note it belongs to the agent: edit/delete then answer **404**, which the UI reports
+as "already handed off", not as an error. The drain contract (`/api/poll`, `charter poll`, `PollEnvelope`)
+is unchanged, and the panel/markers/composer are runtime-only DOM — invariant 1 still holds.
+
 ## The workflow
 
 **AUTHOR → REVIEW → HANDOFF.** The handoff to Guardrails is **dual** (Architecture B, of record): the
