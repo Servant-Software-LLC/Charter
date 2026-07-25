@@ -20,7 +20,7 @@ namespace Charter.Core.Tests;
 ///     (<c>data-question-id</c>, so a submitted answer correlates back to its question);</description></item>
 ///   <item><description>each answer mode maps to its native control — <c>single</c>&#8594;radio,
 ///     <c>multi</c>&#8594;checkbox, <c>free-text</c>&#8594;<c>&lt;textarea&gt;</c>, <c>number</c>&#8594;number
-///     input, <c>bool</c>&#8594;a checkbox — and every option label appears;</description></item>
+///     input, <c>bool</c>&#8594;two Yes/No radios — and every option label appears;</description></item>
 ///   <item><description>the rendered form is plain native HTML (it needs no Charter JS to DISPLAY): native
 ///     inputs, not a script-built widget. The submit WIRING is added serve-time by the SDK (task 15) and is
 ///     not part of this rendered artifact.</description></item>
@@ -111,14 +111,34 @@ public class QuestionFormTests
     [Theory]
     [InlineData("free-text", "<textarea")]
     [InlineData("number", "type=\"number\"")]
-    [InlineData("bool", "type=\"checkbox\"")]
+    [InlineData("bool", "type=\"radio\"")]
     public void Render_NonSelectMode_EmitsItsNativeControl(string mode, string expectedControl)
     {
-        // The three modes that carry no options each map to a single native control. RED today: a :::question
-        // renders as a note callout, so none of these control tokens are present.
+        // The three option-free modes each map to a native control (bool now to Yes/No radios — Charter #43).
+        // RED before the form renderer: a :::question rendered as a note callout, so none of these tokens showed.
         var html = CharterRenderer.Render(QuestionDocForMode(mode));
 
         Assert.Contains(expectedControl, html);
+    }
+
+    [Fact]
+    public void Render_BoolQuestion_EmitsTwoUncheckedYesNoRadios()
+    {
+        // Charter #43: bool renders as TWO mutually-exclusive radios (Yes=true, No=false), name="answer",
+        // NEITHER pre-selected — so Yes / No / unanswered are all distinguishable. A lone "Yes" checkbox left
+        // an unchecked box ambiguous between "answered No" and "never answered".
+        var html = CharterRenderer.Render(QuestionDocForMode("bool"));
+
+        // Exactly two radios — the Yes and the No — and no stray checkbox from the old single-control shape.
+        Assert.Equal(2, CountOccurrences(html, "type=\"radio\""));
+        Assert.DoesNotContain("type=\"checkbox\"", html);
+
+        // Both boolean values are present as radio values, and both labels appear.
+        Assert.Contains("<input type=\"radio\" name=\"answer\" value=\"true\" /> Yes", html);
+        Assert.Contains("<input type=\"radio\" name=\"answer\" value=\"false\" /> No", html);
+
+        // Neither radio is pre-selected, so "unanswered" stays distinct from an explicit Yes or No.
+        Assert.DoesNotContain("checked", html);
     }
 
     [Fact]

@@ -29,6 +29,31 @@ public class DiagramBlockTests
     /// <summary>A diagram-free document, used to prove the Mermaid runtime is inlined only when needed.</summary>
     private const string ProseMarkdown = "Just a plain paragraph, no diagram anywhere.";
 
+    /// <summary>
+    /// The DOCUMENTED authoring form (Charter #40): a <c>:::diagram</c> container wrapping a fenced
+    /// <c>```mermaid</c> code block. The renderer must emit ONLY the Mermaid source — the fenced block's ```
+    /// markers and its <c>mermaid</c> info string are Markdig syntax, not diagram source, and Mermaid chokes on
+    /// a leading "```mermaid" line ("No diagram type detected").
+    /// </summary>
+    private const string FencedDiagramMarkdown =
+        ":::diagram\n" +
+        "```mermaid\n" +
+        "flowchart TD\n" +
+        "    A[\"x\"] --> B\n" +
+        "```\n" +
+        ":::";
+
+    /// <summary>A fenced diagram whose source uses only HTML-inert characters, so the emitted element text is an
+    /// exact (escape-free) match against the authored Mermaid source.</summary>
+    private const string FencedPlainDiagramMarkdown =
+        ":::diagram\n" +
+        "```mermaid\n" +
+        "flowchart TD\n" +
+        "    Alpha\n" +
+        "    Beta\n" +
+        "```\n" +
+        ":::";
+
     [Fact]
     public void Parse_DiagramContainer_ClassifiesAsDiagram()
     {
@@ -60,6 +85,56 @@ public class DiagramBlockTests
         Assert.True(
             html.Contains("A-->B") || html.Contains("A--&gt;B"),
             "Mermaid arrow source (A-->B) must survive into the mermaid element, raw or HTML-escaped.");
+    }
+
+    [Fact]
+    public void Render_FencedMermaidDiagram_EmitsSourceWithoutFenceMarkersOrInfoString()
+    {
+        // Charter #40: the documented ```mermaid form must render its SOURCE into the mermaid element — never
+        // the ``` fence markers nor the `mermaid` info-string line, which broke Mermaid ("Syntax error").
+        var block = BlockDocument.Parse(FencedDiagramMarkdown).Blocks[0];
+        var html = CharterRenderer.Render(FencedDiagramMarkdown);
+
+        Assert.Equal(BlockKind.Diagram, block.Kind);
+
+        // The stable id (the diagram-node annotation anchor) still rides the <pre class="mermaid"> root.
+        Assert.Contains($"<pre class=\"mermaid\" id=\"{block.Id}\">", html);
+
+        var inner = MermaidPreInner(html);
+
+        // No fence markers and no `mermaid` info-string line survive into the element text — the exact bug.
+        Assert.DoesNotContain("```", inner);
+        Assert.DoesNotContain("mermaid", inner);
+
+        // The actual Mermaid source IS present (the arrow survives raw or HTML-escaped, as Mermaid reads textContent).
+        Assert.Contains("flowchart TD", inner);
+        Assert.True(
+            inner.Contains("A[\"x\"] --> B") || inner.Contains("A[&quot;x&quot;] --&gt; B"),
+            "the fenced Mermaid source must survive into the element, raw or HTML-escaped.");
+    }
+
+    [Fact]
+    public void Render_FencedMermaidDiagram_InnerTextIsExactlyTheAuthoredSource()
+    {
+        // The stronger form: with HTML-inert source, the mermaid element's text equals the authored Mermaid
+        // source EXACTLY — no ``` opener, no info string, no ``` closer.
+        var html = CharterRenderer.Render(FencedPlainDiagramMarkdown);
+
+        var inner = MermaidPreInner(html).Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
+
+        Assert.Equal("flowchart TD\n    Alpha\n    Beta", inner);
+    }
+
+    [Fact]
+    public void Render_RawFenceLessDiagram_StillEmitsItsSource()
+    {
+        // The fence-less form (raw Mermaid as the container body) is STILL accepted — the renderer emits its
+        // source verbatim, so both authoring forms work.
+        var html = CharterRenderer.Render(DiagramMarkdown);
+
+        var inner = MermaidPreInner(html);
+        Assert.Contains("graph TD", inner);
+        Assert.DoesNotContain("```", inner);
     }
 
     [Fact]
@@ -100,5 +175,26 @@ public class DiagramBlockTests
         // The content-derived diagram anchor round-trips back to its 1-based markdown start line: the
         // :::diagram fence is line 1 of the document.
         Assert.Equal(1, map.LineForAnchor(block.Id));
+    }
+
+    /// <summary>
+    /// The text INSIDE the rendered <c>&lt;pre class="mermaid" …&gt;…&lt;/pre&gt;</c> element — what Mermaid
+    /// reads as the diagram source. Extracted between the open tag's <c>&gt;</c> and the closing
+    /// <c>&lt;/pre&gt;</c> so assertions target the Mermaid source alone, not the whole (Mermaid-library-laden)
+    /// document.
+    /// </summary>
+    private static string MermaidPreInner(string html)
+    {
+        const string open = "<pre class=\"mermaid\"";
+        var start = html.IndexOf(open, StringComparison.Ordinal);
+        Assert.True(start >= 0, "no <pre class=\"mermaid\"> element was rendered.");
+
+        var gt = html.IndexOf('>', start);
+        Assert.True(gt >= 0, "the <pre class=\"mermaid\"> open tag was not terminated.");
+
+        var end = html.IndexOf("</pre>", gt, StringComparison.Ordinal);
+        Assert.True(end >= 0, "the <pre class=\"mermaid\"> element was not closed.");
+
+        return html.Substring(gt + 1, end - (gt + 1));
     }
 }
