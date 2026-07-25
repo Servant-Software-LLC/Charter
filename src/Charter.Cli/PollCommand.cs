@@ -47,7 +47,9 @@ internal static class PollCommand
         using var client = resolution.Client;
         using var drainCts = new CancellationTokenSource(wait ? WaitDrainDeadline : ImmediateDrainDeadline);
 
-        // Annotations drain destructively (ephemeral notes the agent acts on by editing). Answers are PEEKED —
+        // Annotations drain destructively (ephemeral notes the agent acts on by editing) — the drain is the
+        // hand-off, and the reviewer's in-page panel manages them only BEFORE it (edit/retract a still-pending
+        // note; once drained they are the agent's). Answers are PEEKED —
         // reported but NOT removed — so a plain poll can never strand an answer with no durable home; they are
         // removed server-side only after a successful --apply commit (§1.6). A drain that could not complete
         // reports an Error (never a silent empty), so a transient failure is not mistaken for "nothing queued".

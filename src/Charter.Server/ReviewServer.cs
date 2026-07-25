@@ -12,7 +12,11 @@ namespace Charter.Server;
 /// <see cref="PathConfinement"/> so no request can escape the session's root. On top of the wave-2 read-only
 /// serve it routes the annotation HTTP API — <c>/api/sessions</c>, <c>/api/{key}/prompts</c>,
 /// <c>/api/poll</c>, and the <c>/events</c> reload stream — the server counterpart of the browser SDK's
-/// comment-in-place loop.
+/// comment-in-place loop. The in-page review panel (Charter #42) adds pre-drain management over the same
+/// queue: <c>GET /api/annotations</c> (non-destructive list), <c>POST /api/{key}/annotations/{id}</c> (edit a
+/// pending note) and <c>POST /api/{key}/annotations/{id}/delete</c> (retract one). Those act on the pending
+/// buffer only — an id the agent has already drained answers 404 ("already handed off") — so the
+/// <c>/api/poll</c> drain contract is untouched.
 /// </summary>
 /// <remarks>
 /// Transport is <see cref="HttpListener"/> — a BCL primitive, so Charter stays a lean, AOT-friendly binary
@@ -413,6 +417,40 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/annotations/{id}/delete — RETRACT a still-pending annotation (state-changing:
+        // capability key in the path + CSRF gated). FIVE segments, so it must be matched BEFORE the
+        // four-segment update route below, which would otherwise never see the trailing /delete.
+        if (segments.Length == 5 &&
+            string.Equals(segments[2], "annotations", StringComparison.Ordinal) &&
+            string.Equals(segments[4], "delete", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnnotationDelete(context, segments[1], segments[3]);
+            return;
+        }
+
+        // POST /api/{key}/annotations/{id} — EDIT a still-pending annotation's note (state-changing:
+        // capability key in the path + CSRF gated). A command-POST with the id as the trailing segment, the
+        // same write idiom as /answers/ack — no second HTTP verb vocabulary for a single new operation.
+        if (segments.Length == 4 &&
+            string.Equals(segments[2], "annotations", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleAnnotationUpdateAsync(context, segments[1], segments[3]).ConfigureAwait(false);
+            return;
+        }
+
+        // GET /api/annotations — LIST the pending annotations without removing any (capability key on the
+        // query string, like /api/answers). This is the in-page review panel's read: everything it returns is
+        // still awaiting handoff, so listing can never consume what `charter poll` has yet to drain.
+        if (segments.Length == 2 &&
+            string.Equals(segments[1], "annotations", StringComparison.Ordinal) &&
+            string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnnotationsList(context);
+            return;
+        }
+
         // GET /api/sessions — the current session descriptor.
         if (segments.Length == 2 &&
             string.Equals(segments[1], "sessions", StringComparison.Ordinal) &&
@@ -572,6 +610,112 @@ public sealed class ReviewServer : IReviewServer
         var drained = _store.Drain();
         WriteDrainedJson(response, drained, _store.Requeue);
         _sidecar?.Persist();
+    }
+
+    private void HandleAnnotationsList(HttpListenerContext context)
+    {
+        var response = context.Response;
+
+        // Gate — capability key on the query string, like /api/answers and /api/poll: the pre-drain queue must
+        // not leak the reviewer's notes to an unauthorized reader (a guessed ephemeral port is not enough).
+        if (!_session.Key.Matches(context.Request.QueryString["key"]))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // LIST, don't drain: Snapshot() is non-destructive, so the panel showing the queue never competes with
+        // the agent's poll for it. A non-destructive read needs no requeue-on-write-failure — a dropped write
+        // loses nothing.
+        WriteJson(response, JsonSerializer.Serialize(_store.Snapshot(), AnnotationApi.JsonOptions));
+    }
+
+    private async Task HandleAnnotationUpdateAsync(
+        HttpListenerContext context, string keyFromPath, string annotationId)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // Gate — CSRF / same-origin, exactly as the prompts and answers writes: a state-changing POST must not
+        // be forgeable from a foreign origin even with a valid key.
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+        {
+            body = await reader.ReadToEndAsync().ConfigureAwait(false);
+        }
+
+        AnnotationApi.NoteUpdate? submission;
+        try
+        {
+            submission = JsonSerializer.Deserialize<AnnotationApi.NoteUpdate>(body, AnnotationApi.JsonOptions);
+        }
+        catch (JsonException)
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        if (submission?.Note is null)
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        // 404 means "not in the pending queue" — almost always because the agent already drained it. That is a
+        // normal outcome the reviewer's panel reports as "already handed off", not a fault.
+        if (!_store.Update(annotationId, submission.Note))
+        {
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            return;
+        }
+
+        // Persist BEFORE acknowledging, exactly as the create path does: an edit the reviewer was told was
+        // accepted must survive a crash before the agent drains it.
+        _sidecar?.Persist();
+
+        WriteJson(response, JsonSerializer.Serialize(new { updated = true }, AnnotationApi.JsonOptions));
+    }
+
+    private void HandleAnnotationDelete(HttpListenerContext context, string keyFromPath, string annotationId)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        // Removing a PENDING annotation is a true retraction: the _gate lock serializes delete-vs-drain, so the
+        // note either reaches the agent or is retracted, never both. A 404 means the agent already has it.
+        if (!_store.Remove(annotationId))
+        {
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            return;
+        }
+
+        _sidecar?.Persist();
+
+        WriteJson(response, JsonSerializer.Serialize(new { deleted = true }, AnnotationApi.JsonOptions));
     }
 
     private async Task HandleAnswersPostAsync(HttpListenerContext context, string keyFromPath)

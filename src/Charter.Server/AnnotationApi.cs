@@ -52,6 +52,15 @@ internal static class AnnotationApi
         string? NodeId = null);
 
     /// <summary>
+    /// The JSON body a reviewer POSTs to <c>/api/{key}/annotations/{id}</c> to EDIT a still-pending
+    /// annotation's note (Charter #42's in-page panel). Only the note is editable — the anchor, kind and
+    /// resolved source line are the submission's identity and stay immutable, so the edit cannot re-point a
+    /// note at a different block.
+    /// </summary>
+    /// <param name="Note">The reviewer's replacement note text.</param>
+    public sealed record NoteUpdate(string? Note);
+
+    /// <summary>
     /// Parse a submitted kind string to an <see cref="AnnotationKind"/> using the SAME map that serializes it
     /// back out (<see cref="AnnotationKindConverter"/>), so inbound and outbound share one source of truth: the
     /// SDK's hyphenated tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>, case-insensitive) map
