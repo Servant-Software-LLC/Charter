@@ -21,5 +21,12 @@ jobs:
           dotnet-version: "8.0.x"
       - name: Build
         run: dotnet build Charter.sln -c Release
+      - name: Install Playwright browser (Chromium)
+        # The generated playwright.ps1 (present after Build) installs the Chromium the headless-browser
+        # acceptance test in Charter.Browser.Tests drives. `--with-deps` also pulls the OS libraries on Linux;
+        # it is a no-op on Windows/macOS. If a browser cannot be installed on some host, the browser test SKIPS
+        # cleanly (Skip.If) while the deterministic server-side guards still run on every OS.
+        shell: pwsh
+        run: ./tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
       - name: Test
         run: dotnet test Charter.sln -c Release --no-build

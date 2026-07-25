@@ -394,5 +394,22 @@ window.CharterAnnotate = (function () {
     answer: postAnswer, // submit a :::question answer programmatically
     dispose: dispose
   };
+
+  // ---- serve-time auto-init ------------------------------------------------------------
+  // The SDK is injected ONLY into the served review page (never the saved artifact — invariant 1), so wiring the
+  // review loop up automatically here is safe and is what makes the in-place-annotation UI live on load. Guarded
+  // to run once the DOM is ready and idempotent (init() no-ops if already started), so a host that prefers to
+  // drive init() itself still can. Kept in the SDK (invariant 6: browser logic lives here, not in C#).
+  function autoInit() {
+    try { api.init(); } catch (e) { /* non-fatal — a host can still drive init() manually */ }
+  }
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    if (document.readyState === 'loading' && window.addEventListener) {
+      document.addEventListener('DOMContentLoaded', autoInit, { once: true });
+    } else {
+      autoInit();
+    }
+  }
+
   return api;
 })();

@@ -25,6 +25,15 @@
     <EmbeddedResource Include="assets\mermaid.min.js">
       <LogicalName>Charter.Core.mermaid.min.js</LogicalName>
     </EmbeddedResource>
+
+    <!-- Vendor the bundled stylesheet (assets/charter.css) into the assembly so the shared document shell
+         (CharterDocument) inlines it into every rendered/exported artifact as a single <style> — one CSS
+         source of truth for render/review/export, shipped INSIDE the HTML so the artifact stays portable and
+         offline (invariant 1). NEVER an external <link>. The LogicalName is the stable manifest key
+         CharterStyles reads it back by. -->
+    <EmbeddedResource Include="assets\charter.css">
+      <LogicalName>Charter.Core.charter.css</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

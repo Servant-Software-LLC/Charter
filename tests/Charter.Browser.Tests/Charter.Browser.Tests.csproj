@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- The headless-browser acceptance test (Charter #8) is the browser HALF of the review loop: it starts a
+         real ReviewServer on loopback and drives the served capability URL in Chromium. It runs where a browser
+         is available (CI installs Chromium; see .github/workflows/ci.yml) and SKIPS cleanly elsewhere via
+         Xunit.SkippableFact — the deterministic server-side guards in Charter.Server.Tests cover the same
+         symptoms on every OS. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Charter.Server\Charter.Server.csproj" />
+  </ItemGroup>
+
+</Project>
