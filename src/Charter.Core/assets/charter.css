@@ -1,0 +1,217 @@
+/*
+ * charter.css — Charter's bundled, offline, CSP-safe stylesheet.
+ *
+ * ONE source of truth for how a rendered plan looks, embedded into Charter.Core and inlined verbatim into
+ * the <head> by CharterDocument.Wrap — so `render`, `review`, and `export` share the exact same look. It is
+ * deliberately self-contained: no @import, no url() to any external host, no @font-face — only a system font
+ * stack — so it stays portable/offline (invariant 1) and passes the strict CSP under `style-src 'unsafe-inline'`
+ * without any network fetch. Light + dark are driven by prefers-color-scheme, matching the Mermaid theme the
+ * renderer selects the same way.
+ *
+ * Selectors match the renderer's structural markers (CharterRenderer / CharterContainerRenderer): .note / .warn
+ * callouts, .comparison cards, form.question, the .diff / .diff-add / .diff-del / .diff-context lines, and
+ * pre.mermaid diagrams.
+ */
+
+:root {
+  color-scheme: light dark;
+  --charter-bg: #ffffff;
+  --charter-fg: #1f2328;
+  --charter-muted: #57606a;
+  --charter-border: #d0d7de;
+  --charter-code-bg: #f6f8fa;
+  --charter-accent: #0969da;
+
+  --charter-note-bg: #ddf4ff;
+  --charter-note-border: #54aeff;
+  --charter-warn-bg: #fff8c5;
+  --charter-warn-border: #d4a72c;
+
+  --charter-diff-add-bg: #e6ffec;
+  --charter-diff-add-fg: #1a7f37;
+  --charter-diff-del-bg: #ffebe9;
+  --charter-diff-del-fg: #cf222e;
+
+  --charter-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --charter-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --charter-bg: #0d1117;
+    --charter-fg: #e6edf3;
+    --charter-muted: #9198a1;
+    --charter-border: #30363d;
+    --charter-code-bg: #161b22;
+    --charter-accent: #4493f8;
+
+    --charter-note-bg: #0b2942;
+    --charter-note-border: #1f6feb;
+    --charter-warn-bg: #34290a;
+    --charter-warn-border: #9e6a03;
+
+    --charter-diff-add-bg: #12261e;
+    --charter-diff-add-fg: #3fb950;
+    --charter-diff-del-bg: #25171c;
+    --charter-diff-del-fg: #f85149;
+  }
+}
+
+body {
+  margin: 0 auto;
+  max-width: 52rem;
+  padding: 2.5rem 1.5rem 5rem;
+  background: var(--charter-bg);
+  color: var(--charter-fg);
+  font-family: var(--charter-font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  line-height: 1.25;
+  margin: 1.6em 0 0.6em;
+  font-weight: 600;
+}
+h1 { font-size: 1.9rem; padding-bottom: 0.3em; border-bottom: 1px solid var(--charter-border); }
+h2 { font-size: 1.45rem; padding-bottom: 0.3em; border-bottom: 1px solid var(--charter-border); }
+h3 { font-size: 1.2rem; }
+
+p { margin: 0 0 1rem; }
+
+a { color: var(--charter-accent); }
+
+ul, ol { margin: 0 0 1rem; padding-left: 1.6rem; }
+li { margin: 0.2rem 0; }
+
+/* Callouts: a note and a warning must be visually distinct from prose AND from each other. */
+.note, .warn {
+  margin: 1.2rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid var(--charter-note-border);
+  border-radius: 6px;
+  background: var(--charter-note-bg);
+}
+.note > :first-child, .warn > :first-child { margin-top: 0; }
+.note > :last-child, .warn > :last-child { margin-bottom: 0; }
+.warn {
+  border-left-color: var(--charter-warn-border);
+  background: var(--charter-warn-bg);
+}
+
+/* Comparison: rendered as a card wrapping a table/list. */
+.comparison {
+  margin: 1.2rem 0;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--charter-border);
+  border-radius: 8px;
+  background: var(--charter-code-bg);
+}
+
+/* Tables. */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+  overflow: auto;
+  display: block;
+}
+th, td {
+  border: 1px solid var(--charter-border);
+  padding: 0.4rem 0.75rem;
+  text-align: left;
+}
+th { background: var(--charter-code-bg); font-weight: 600; }
+
+/* Code. */
+pre {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  overflow: auto;
+  background: var(--charter-code-bg);
+  border: 1px solid var(--charter-border);
+  border-radius: 6px;
+  font-family: var(--charter-mono);
+  font-size: 0.875em;
+  line-height: 1.45;
+}
+code {
+  font-family: var(--charter-mono);
+  font-size: 0.875em;
+}
+:not(pre) > code {
+  padding: 0.15em 0.35em;
+  background: var(--charter-code-bg);
+  border-radius: 4px;
+}
+pre > code { padding: 0; background: none; border: 0; }
+
+/* Diff blocks: added vs removed vs context must be distinguishable at a glance. */
+.diff {
+  margin: 1rem 0;
+  border: 1px solid var(--charter-border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: var(--charter-mono);
+  font-size: 0.875em;
+}
+.diff-line { padding: 0.05rem 0.75rem; white-space: pre-wrap; }
+.diff-add { background: var(--charter-diff-add-bg); color: var(--charter-diff-add-fg); }
+.diff-del { background: var(--charter-diff-del-bg); color: var(--charter-diff-del-fg); }
+.diff-context { color: var(--charter-muted); }
+
+/* Diagrams: the Mermaid host renders inline SVG; center it and drop the code-block chrome. */
+.mermaid {
+  margin: 1.2rem 0;
+  padding: 0.5rem;
+  background: none;
+  border: 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.mermaid svg { max-width: 100%; height: auto; }
+
+/* Question forms: the elicitation surface, distinct from prose. */
+form.question {
+  margin: 1.4rem 0;
+  padding: 0.25rem 0.25rem 0.5rem;
+}
+form.question fieldset {
+  margin: 0;
+  padding: 0.75rem 1rem 1rem;
+  border: 1px solid var(--charter-accent);
+  border-radius: 8px;
+  background: var(--charter-code-bg);
+}
+form.question legend {
+  padding: 0 0.5rem;
+  font-weight: 600;
+}
+form.question label {
+  display: block;
+  margin: 0.35rem 0;
+  cursor: pointer;
+}
+form.question textarea,
+form.question input[type="number"],
+form.question input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  color: inherit;
+  background: var(--charter-bg);
+  border: 1px solid var(--charter-border);
+  border-radius: 4px;
+}
+form.question textarea { min-height: 5rem; }
+
+/* Degraded / diagnostic blocks stay visible and clearly marked. */
+.question-error, .unknown-directive, .charter-parse-error {
+  margin: 1rem 0;
+  padding: 0.6rem 0.9rem;
+  border-left: 4px solid var(--charter-warn-border);
+  border-radius: 6px;
+  background: var(--charter-warn-bg);
+}

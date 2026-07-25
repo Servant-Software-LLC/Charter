@@ -231,9 +231,11 @@ public class ArtifactExporterTests
         });
 
     /// <summary>
-    /// 11. A document with no local references round-trips unchanged in substance: the exact HTML
-    /// <see cref="CharterRenderer.Render(string)"/> alone produces survives inside the export output (export
-    /// must not corrupt ordinary content when there is nothing to inline or redact).
+    /// 11. A document with no local references round-trips unchanged in substance: <c>render</c> and
+    /// <c>export</c> now share the same document shell + bundled stylesheet (export only adds its CSP meta to the
+    /// head and inlines/redacts LOCAL assets in the body), so with NO local references the rendered BLOCK BODY
+    /// must survive verbatim into the export (export must not corrupt ordinary content when there is nothing to
+    /// inline or redact).
     /// </summary>
     [Fact]
     public void Export_DocumentWithNoLocalReferences_PreservesRenderedContent()
@@ -244,10 +246,11 @@ public class ArtifactExporterTests
                 "A plain prose paragraph.\n\n" +
                 "![Remote](https://example.com/pic.png)";
 
-            var rendered = CharterRenderer.Render(markdown);
+            var renderedBody = BodyOf(CharterRenderer.Render(markdown));
             var html = ArtifactExporter.Export(markdown, planDirectory);
 
-            Assert.Contains(rendered, html);
+            Assert.NotEqual(string.Empty, renderedBody);
+            Assert.Contains(renderedBody, html);
         });
 
     /// <summary>
@@ -446,6 +449,21 @@ public class ArtifactExporterTests
 
     /// <summary>The absolute <c>file:///…</c> URI for a local path (e.g. <c>file:///C:/…/clip.mp4</c>).</summary>
     private static string FileUri(string absolutePath) => new System.Uri(absolutePath).AbsoluteUri;
+
+    /// <summary>
+    /// The block-body region of a document produced by the shared <c>CharterDocument</c> shell — the content
+    /// between <c>&lt;body&gt;</c> and <c>&lt;/body&gt;</c> — or the empty string when absent.
+    /// </summary>
+    private static string BodyOf(string document)
+    {
+        const string open = "<body>\n";
+        const string close = "\n</body>";
+        var start = document.IndexOf(open, System.StringComparison.Ordinal);
+        var end = document.IndexOf(close, System.StringComparison.Ordinal);
+        return start < 0 || end < 0 || end < start
+            ? string.Empty
+            : document.Substring(start + open.Length, end - (start + open.Length));
+    }
 
     /// <summary>A byte array of <paramref name="count"/> copies of <paramref name="value"/>.</summary>
     private static byte[] Filled(byte value, int count)

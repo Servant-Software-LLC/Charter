@@ -36,6 +36,12 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
 - **Deliverable = block-structured markdown** (`.charter.md`), rendered to one portable HTML artifact.
   Blocks are CommonMark prose plus `:::` directive containers (Markdig `CustomContainer`), each validated
   against a C# record.
+- **The renderer emits a COMPLETE, STYLED document, shared by render/review/export.** `CharterRenderer.Render`
+  wraps the block body in the single shared shell (`CharterDocument.Wrap`: doctype/html/head/body + one inline
+  `<style>` from the bundled `assets/charter.css`); `render`, `review`, and `export` all go through it, so all
+  three are complete and styled — never a bare fragment. Only `export` stamps a CSP meta (its strict offline
+  policy); the review server supplies the served-page CSP as an HTTP header. Mermaid is inlined parse-safe and
+  inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe). (Was Charter #37/#38.)
 - **Block catalog:** prose/heading/list, `:::note`/`:::warn`, tables + `:::comparison`, fenced code +
   `:::diff`, `:::diagram` (Mermaid), `:::custom-html` (escape hatch), and **`:::question`** (the
   elicitation block). The normative catalog — including the fact that there is **no** `:::annotated-code`

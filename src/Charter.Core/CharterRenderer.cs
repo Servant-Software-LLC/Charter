@@ -14,12 +14,27 @@ namespace Charter.Core;
 public static class CharterRenderer
 {
     /// <summary>
-    /// Render <paramref name="markdown"/> to portable HTML. Each top-level block's root element carries an
-    /// <c>id</c> attribute equal to that block's stable <see cref="Block.Id"/> — derived from the same raw
-    /// content the block model uses, so the rendered id and <see cref="BlockDocument"/> always agree.
-    /// Note/warn containers additionally carry a matching CSS class.
+    /// Render <paramref name="markdown"/> to a COMPLETE, STYLED, portable HTML document. Each top-level block's
+    /// root element carries an <c>id</c> attribute equal to that block's stable <see cref="Block.Id"/> — derived
+    /// from the same raw content the block model uses, so the rendered id and <see cref="BlockDocument"/> always
+    /// agree. Note/warn containers additionally carry a matching CSS class. The rendered block body is wrapped in
+    /// the shared <see cref="CharterDocument"/> shell (doctype/html/head/body + the bundled stylesheet), the same
+    /// shell <c>review</c> and <c>export</c> use — so all three surfaces are complete and styled, never a bare
+    /// fragment (Charter #38). No CSP meta is emitted here: a plain <c>render</c> file is a local trusted
+    /// artifact, and the review server supplies the served-page CSP as an HTTP header; only <c>export</c> stamps
+    /// a CSP (its strict offline policy) into the shell.
     /// </summary>
-    public static string Render(string markdown)
+    public static string Render(string markdown) => CharterDocument.Wrap(RenderBody(markdown), cspMeta: null);
+
+    /// <summary>
+    /// Render <paramref name="markdown"/> to the block-body HTML only — the rendered blocks plus, when a
+    /// <c>:::diagram</c> is present, the inlined offline Mermaid runtime — WITHOUT the document shell. This is
+    /// the shared core of <see cref="Render(string)"/> (which wraps it in the styled shell) and of
+    /// <see cref="ArtifactExporter"/> (which runs its offline asset transforms over this body before wrapping it
+    /// in the shell with the export CSP). Splitting body from shell keeps the shell a single source of truth
+    /// while letting each surface choose its CSP.
+    /// </summary>
+    internal static string RenderBody(string markdown)
     {
         markdown ??= string.Empty;
 
@@ -126,8 +141,27 @@ public static class CharterRenderer
         // module marker the artifact needs — is inlined verbatim.
         var library = MermaidResource.Library.Replace("class=\"note\"", "class = \"note\"", StringComparison.Ordinal);
 
+        // Make the inlined library SAFE to sit inside <script>…</script>. The browser's HTML tokenizer leaves
+        // the raw "script data" state on `<!--`, `<script`, or `</script` — EVEN when those appear inside a JS
+        // string/regex literal (this build has `<!--` inside a regex and inside strings). Left un-escaped, that
+        // tore the minified library apart at parse time: its tail dumped into the page as visible text, its
+        // sandbox-<iframe> template literal (`<iframe … sandbox="${…}">`) materialized as a real element the
+        // strict CSP then blocked, and the truncated script threw so `mermaid` never defined (Charter #37). The
+        // WHATWG-recommended escape of these three sequences is semantics-neutral here: each occurs only inside a
+        // string/regex literal in this vendored build, where `<\!--` / `<\/script` / `<\script` denote the
+        // identical characters. (The browser acceptance test proves Mermaid still defines and renders to <svg>.)
+        library = library
+            .Replace("<!--", "<\\!--", StringComparison.Ordinal)
+            .Replace("</script", "<\\/script", StringComparison.OrdinalIgnoreCase)
+            .Replace("<script", "<\\script", StringComparison.OrdinalIgnoreCase);
+
+        // Render diagrams as INLINE SVG under the strict CSP: securityLevel 'antiscript' keeps Mermaid on its
+        // inline-<svg> render path (never the sandboxed-<iframe>/data: path that `default-src 'none'` blocks and
+        // that needs a `frame-src` we deliberately do not grant) WHILE still stripping <script> from diagram
+        // labels — so no CSP relaxation is required and the security posture is not weakened. The theme tracks
+        // prefers-color-scheme, the same signal the bundled stylesheet uses.
         const string bootstrap =
-            "mermaid.initialize({ startOnLoad: true, " +
+            "mermaid.initialize({ startOnLoad: true, securityLevel: 'antiscript', " +
             "theme: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default' });\n" +
             "mermaid.run();";
 
