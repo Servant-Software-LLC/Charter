@@ -409,7 +409,8 @@ static RootCommand BuildConvertRoot()
         // .charter.md. No version-marker warning here: a plain .md is expected to be marker-less, and convert's
         // whole job is to add the marker.
         string markdown = File.ReadAllText(inputPath);
-        string seed = CharterFormat.EnsureVersionMarker(MarkdownConvert.Convert(markdown));
+        ConvertResult conversion = MarkdownConvert.Convert(markdown);
+        string seed = CharterFormat.EnsureVersionMarker(conversion.Markdown);
 
         string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
         if (!string.IsNullOrEmpty(outputDir))
@@ -419,6 +420,11 @@ static RootCommand BuildConvertRoot()
 
         File.WriteAllText(outputPath, seed);
         Console.WriteLine($"Converted {inputPath} -> {outputPath}");
+
+        // Surface the promotion report on stderr (never stdout, never the exit code): one summary per promoted
+        // section, plus a warning naming any complex/nested item left as prose so it is never silently dropped
+        // (Charter #34).
+        ReportConversion(conversion);
         return 0;
     }));
 
@@ -426,6 +432,37 @@ static RootCommand BuildConvertRoot()
     {
         convert,
     };
+}
+
+// Print `charter convert`'s promotion report to STDERR (stdout keeps its single `Converted ...` line, exit
+// stays 0). For each section that promoted anything: one summary line, then — when any items were left as prose
+// (a complex/nested item convert emits verbatim rather than forcing into a :::question) — a warning naming each
+// skipped item by its 1-based ordinal + a lead snippet, and the remedy. This is the whole point of Charter #34:
+// convert never silently drops the item, it tells you exactly what it left for hand/agent enrichment. ASCII
+// only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+static void ReportConversion(ConvertResult conversion)
+{
+    foreach (ConvertedSection section in conversion.Sections)
+    {
+        int total = section.Promoted + section.Skipped.Count;
+        Console.Error.WriteLine(
+            $"charter convert: '{section.Heading}' -- promoted {section.Promoted} of {total} item(s).");
+
+        if (section.Skipped.Count == 0)
+        {
+            continue;
+        }
+
+        Console.Error.WriteLine(
+            $"charter convert: warning: left {section.Skipped.Count} item(s) as prose (complex/nested structure), not promoted to :::question:");
+        foreach (SkippedItem skipped in section.Skipped)
+        {
+            Console.Error.WriteLine($"  - item {skipped.Ordinal}: \"{skipped.LeadSnippet}\"");
+        }
+
+        Console.Error.WriteLine(
+            "  Promote these by hand, or let your authoring agent enrich them (see the charter skill).");
+    }
 }
 
 // Parses a --answers JSON file — a flat object mapping question id -> an array of answer value strings, e.g.

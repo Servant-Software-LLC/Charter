@@ -64,6 +64,10 @@ public static class MarkdownConvert
     /// Uniqueness is guaranteed by <see cref="UniqueId"/>'s numeric discriminator, not by the slug alone.</summary>
     private const int MaxSlugLength = 60;
 
+    /// <summary>Upper bound on a <see cref="SkippedItem.LeadSnippet"/> — enough lead text to identify the item
+    /// in a report line without spilling a whole paragraph onto the console.</summary>
+    private const int MaxSnippetLength = 60;
+
     // Relaxed JSON escaping keeps generated question titles readable in the .charter.md source (apostrophes,
     // angle brackets, and non-ASCII pass through as themselves rather than \uXXXX). It is safe here because the
     // body is JSON DATA in a markdown file, not HTML — the renderer HTML-escapes spec.Title at render time.
@@ -75,10 +79,14 @@ public static class MarkdownConvert
     /// <summary>
     /// Convert a plain Markdown document into a <c>.charter.md</c> seed body: pass every block through
     /// unchanged and promote the list under any allow-listed "open questions" heading into open
-    /// <c>:::question</c> blocks. Deterministic and pure; returns LF-normalized markdown. Does not stamp the
-    /// format-version marker (the CLI applies <see cref="CharterFormat.EnsureVersionMarker(string)"/> after).
+    /// <c>:::question</c> blocks. Deterministic and pure; the returned <see cref="ConvertResult.Markdown"/> is
+    /// LF-normalized. Does not stamp the format-version marker (the CLI applies
+    /// <see cref="CharterFormat.EnsureVersionMarker(string)"/> after). The returned
+    /// <see cref="ConvertResult.Sections"/> report — one entry per section that promoted anything — makes the
+    /// transform transparent: it names every item left as prose (a complex/nested item that is emitted verbatim
+    /// rather than forced into a question) so the operation never silently drops content (Charter #34).
     /// </summary>
-    public static string Convert(string markdown)
+    public static ConvertResult Convert(string markdown)
     {
         var source = (markdown ?? string.Empty)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
@@ -86,12 +94,13 @@ public static class MarkdownConvert
 
         if (source.Length == 0)
         {
-            return source;
+            return new ConvertResult(source, Array.Empty<ConvertedSection>());
         }
 
         var document = CharterMarkdown.ParseDocument(source);
         var usedIds = new HashSet<string>(StringComparer.Ordinal);
         var replacements = new List<(int Start, int Length, string Text)>();
+        var sections = new List<ConvertedSection>();
 
         for (var i = 0; i < document.Count; i++)
         {
@@ -106,8 +115,8 @@ public static class MarkdownConvert
                 continue;
             }
 
-            var (converted, promotedAny) = ConvertList(list, source, usedIds);
-            if (!promotedAny)
+            var (converted, promoted, skipped) = ConvertList(list, source, usedIds);
+            if (promoted == 0)
             {
                 continue;
             }
@@ -116,9 +125,10 @@ public static class MarkdownConvert
             var end = list.Span.End;
             var text = BlankLineBefore(source, start) + converted + BlankLineAfter(source, end + 1);
             replacements.Add((start, end - start + 1, text));
+            sections.Add(new ConvertedSection(InlineText(heading.Inline), promoted, skipped));
         }
 
-        return Splice(source, replacements);
+        return new ConvertResult(Splice(source, replacements), sections);
     }
 
     /// <summary>
@@ -139,13 +149,18 @@ public static class MarkdownConvert
 
     /// <summary>
     /// Convert one list into interleaved <c>:::question</c> blocks (for simple items) and verbatim source
-    /// (for complex items), returning the joined replacement text and whether at least one item was promoted.
-    /// When nothing is promoted the caller leaves the list untouched.
+    /// (for complex items), returning the joined replacement text, the number of items promoted, and — for
+    /// each complex item left verbatim — a <see cref="SkippedItem"/> naming its 1-based position in the list and
+    /// a short lead snippet, so the caller can report exactly what it did not promote. When nothing is promoted
+    /// the caller leaves the list untouched.
     /// </summary>
-    private static (string Text, bool PromotedAny) ConvertList(ListBlock list, string source, HashSet<string> usedIds)
+    private static (string Text, int Promoted, IReadOnlyList<SkippedItem> Skipped) ConvertList(
+        ListBlock list, string source, HashSet<string> usedIds)
     {
         var parts = new List<string>();
-        var promotedAny = false;
+        var promoted = 0;
+        var skipped = new List<SkippedItem>();
+        var ordinal = 0;
 
         foreach (var child in list)
         {
@@ -154,18 +169,50 @@ public static class MarkdownConvert
                 continue;
             }
 
+            ordinal++;
+
             if (TrySimpleItemText(item, out var title))
             {
                 parts.Add(BuildQuestionBlock(UniqueId(title, usedIds), title));
-                promotedAny = true;
+                promoted++;
             }
             else
             {
                 parts.Add(Verbatim(source, item.Span));
+                skipped.Add(new SkippedItem(ordinal, LeadSnippet(item)));
             }
         }
 
-        return (string.Join("\n\n", parts), promotedAny);
+        return (string.Join("\n\n", parts), promoted, skipped);
+    }
+
+    /// <summary>
+    /// A short, human-readable lead snippet for a complex item left verbatim: the plain text of its first
+    /// paragraph (inline markup stripped, whitespace collapsed), capped at <see cref="MaxSnippetLength"/> with a
+    /// trailing ellipsis when truncated, or <c>(empty item)</c> when the item has no leading paragraph text.
+    /// Used only in the report, never in the produced markdown.
+    /// </summary>
+    private static string LeadSnippet(ListItemBlock item)
+    {
+        foreach (var child in item)
+        {
+            if (child is not ParagraphBlock paragraph)
+            {
+                continue;
+            }
+
+            var text = InlineText(paragraph.Inline);
+            if (text.Length == 0)
+            {
+                break;
+            }
+
+            return text.Length <= MaxSnippetLength
+                ? text
+                : text[..MaxSnippetLength].TrimEnd() + "...";
+        }
+
+        return "(empty item)";
     }
 
     /// <summary>
@@ -388,3 +435,31 @@ public static class MarkdownConvert
         return builder.ToString();
     }
 }
+
+/// <summary>
+/// The result of <see cref="MarkdownConvert.Convert(string)"/>: the produced seed <paramref name="Markdown"/>
+/// plus a per-section <paramref name="Sections"/> report so the transform is transparent rather than silent —
+/// callers (the CLI) surface what was promoted and what was left as prose (Charter #34).
+/// </summary>
+/// <param name="Markdown">The LF-normalized seed markdown (not yet marker-stamped).</param>
+/// <param name="Sections">One entry per section that promoted at least one item; empty when nothing promoted.</param>
+public sealed record ConvertResult(string Markdown, IReadOnlyList<ConvertedSection> Sections);
+
+/// <summary>
+/// A section that <c>charter convert</c> promoted: its <paramref name="Heading"/> text, how many list items it
+/// <paramref name="Promoted"/> to <c>:::question</c> blocks, and the items it <paramref name="Skipped"/> (left
+/// verbatim as prose). The list's total item count is <c>Promoted + Skipped.Count</c>.
+/// </summary>
+/// <param name="Heading">The section heading's plain text (leading enumerator preserved, e.g. <c>9. Open questions / risks</c>).</param>
+/// <param name="Promoted">The number of simple items promoted to open <c>:::question</c> blocks.</param>
+/// <param name="Skipped">The complex/nested items left verbatim, each named by ordinal and lead snippet.</param>
+public sealed record ConvertedSection(string Heading, int Promoted, IReadOnlyList<SkippedItem> Skipped);
+
+/// <summary>
+/// A single list item <c>charter convert</c> left as prose rather than promoting to a <c>:::question</c>:
+/// its 1-based <paramref name="Ordinal"/> within the list and a short <paramref name="LeadSnippet"/> of its
+/// lead text, enough for a human to find and hand-promote (or hand to an authoring agent to enrich).
+/// </summary>
+/// <param name="Ordinal">1-based position of the item within its list.</param>
+/// <param name="LeadSnippet">A short, inline-markup-stripped snippet of the item's lead text, or <c>(empty item)</c>.</param>
+public sealed record SkippedItem(int Ordinal, string LeadSnippet);

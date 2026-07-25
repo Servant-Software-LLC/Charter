@@ -197,6 +197,58 @@ public class CliProcessTests
     }
 
     [Fact]
+    public void Convert_SectionWithComplexItem_ReportsPromotedSummaryAndSkipWarning_ToStderr()
+    {
+        string workDir = NewTempDirectory();
+        try
+        {
+            // Charter #34: a numbered open-questions section whose MIDDLE item is complex (nested sub-bullets +
+            // a trailing "Decision:" paragraph). Two flat items promote; the complex one is left as prose. The
+            // operation must be transparent, not silent.
+            string input = Path.Combine(workDir, "plan.md");
+            File.WriteAllText(
+                input,
+                "# Install Plan\n\nSome prose.\n\n## 9. Open questions / risks\n\n"
+                    + "1. **Per-machine vs per-user install.** Which scope should the installer default to?\n"
+                    + "2. **Forced `MinimumVersion` when `SelfUpdateEnabled=0`.** This intentionally lets the app self-update for security even when the admin disabled self-update, but it has two independent limitations, not one:\n"
+                    + "   - **Permission coupling (see #1):** the update needs elevated rights.\n"
+                    + "   - **Same-major ceiling:** it will not cross a major boundary.\n"
+                    + "   Decision: treat the **Intune required assignment** as the security floor. Confirm this split with the customer's security team.\n"
+                    + "3. **Rollback.** How does a failed rollout revert cleanly?\n");
+            string seedPath = Path.Combine(workDir, "plan.charter.md");
+
+            var result = RunCharter("convert", input, "-o", seedPath);
+
+            // stdout keeps its single success line; exit stays 0.
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Converted", result.StdOut);
+
+            // stderr carries the promoted-of-total summary AND the skip warning naming the skipped item's ordinal.
+            Assert.Contains("promoted 2 of 3 item(s)", result.StdErr);
+            Assert.Contains("warning:", result.StdErr);
+            Assert.Contains("item 2", result.StdErr);
+
+            // The seed still round-trips: exactly two questions promoted, the complex item preserved verbatim,
+            // and no leaked bare directive fence.
+            string seed = File.ReadAllText(seedPath);
+            int questionCount = System.Text.RegularExpressions.Regex.Matches(seed, "(?m)^:::question$").Count;
+            Assert.Equal(2, questionCount);
+            Assert.Contains("Same-major ceiling", seed); // the complex item survives intact
+
+            string outputHtml = Path.Combine(workDir, "out.html");
+            var renderResult = RunCharter("render", seedPath, "-o", outputHtml);
+            Assert.Equal(0, renderResult.ExitCode);
+            Assert.Contains("Rendered", renderResult.StdOut);
+            Assert.DoesNotContain("charter render: warning:", renderResult.StdErr);
+            Assert.True(File.Exists(outputHtml));
+        }
+        finally
+        {
+            TryDeleteDirectory(workDir);
+        }
+    }
+
+    [Fact]
     public void Convert_MissingInput_Exits1_WithCleanError()
     {
         string missingInput = Path.Combine(Path.GetTempPath(), "charter-missing-" + Guid.NewGuid().ToString("N") + ".md");

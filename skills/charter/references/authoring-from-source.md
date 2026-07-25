@@ -12,7 +12,7 @@ Get the source's content in front of you before you write a line of plan. How de
 | Source | How to ingest |
 |---|---|
 | A prompt / free-form ask | Nothing to read — author the plan from scratch, inventing the structure the ask implies. |
-| A markdown file | **Seed it first: `charter convert <file>.md -o plan.charter.md`** — that passes every block through unchanged, promotes an obvious "Open Questions"/"Risks" list to open `:::question` blocks, and stamps the format marker. Then Read the seed and **enrich** it (Step 2). Keep the source's intent; you're enriching into blocks, not rewriting its meaning. |
+| A markdown file | **Seed it first: `charter convert <file>.md -o plan.charter.md`** — that passes every block through unchanged, promotes the **simple** items of an obvious "Open Questions"/"Risks" list to open `:::question` blocks, and stamps the format marker. A **complex/nested** item is left **verbatim as prose** and **reported on convert's stderr** (`promoted X of Y`, plus a warning naming each item left) — read that stderr and hand-promote/enrich anything it left. Then Read the seed and **enrich** it (Step 2). Keep the source's intent; you're enriching into blocks, not rewriting its meaning. |
 | A PDF | Read it with your file tools (the `Read` tool takes a `pages` range). Pull out its headings, tables, and diagrams-in-prose. |
 | A link / public web page | Fetch it (`WebFetch`, or a configured MCP connector). |
 | A **private** Confluence page | An auth wall, not a content problem — a plain fetch hits a login page. Use an **Atlassian MCP connector** if one is configured, or ask the human for a **manual export** (Confluence → Export → Markdown or PDF) and treat it as the markdown/PDF case above. This is an environment step; you can't bypass the auth. |
@@ -52,8 +52,10 @@ clearest signal you have real decisions to elicit. Turn each into a `:::question
 `answer`, and the reviewer resolves it in the browser. If you **seeded from Markdown with `charter convert`**,
 this promotion already happened mechanically — the convert heuristic fires on any heading naming open
 questions / risks / decisions (a numbered heading like `9. Open questions / risks` included) over a bullet or
-numbered list, and each simple list item is now an open `free-text` `:::question`. Your job there is to
-*refine* them:
+numbered list, and each **simple** list item is now an open `free-text` `:::question`. A **complex/nested**
+item (sub-bullets, a trailing decision paragraph) is deliberately left **verbatim as prose** and **reported on
+convert's stderr** (`promoted X of Y`, plus a warning naming each item left) — so check that stderr and, for
+any item it left, hand-author it into the right block here. Your job for the promoted ones is to *refine* them:
 give a genuine either/or a `single`/`bool` `mode` with real `options`, drop any that aren't real decisions.
 For a PDF, a link, or a from-scratch plan, you author these by hand as shown here.
 
