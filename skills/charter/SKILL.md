@@ -37,7 +37,7 @@ reporting on work already finished.
 
 | Verb | What it does |
 |---|---|
-| `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: pass every block through unchanged, promote a section whose heading names open questions / risks / decisions (including a numbered heading like `9. Open questions / risks`) over a bullet **or numbered** list into `:::question` blocks, and stamp the format marker. The deterministic floor — you then **enrich** it (diagrams, comparisons, more questions). |
+| `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: pass every block through unchanged, promote a section whose heading names open questions / risks / decisions (including a numbered heading like `9. Open questions / risks`) over a bullet **or numbered** list into `:::question` blocks, and stamp the format marker. Only **simple** items (one paragraph, no nested structure) promote; a **complex/nested** item (sub-bullets, a trailing decision paragraph) is left **verbatim as prose** and **reported on stderr** (`promoted X of Y`, plus a warning naming each item left) — never silently dropped. The deterministic floor — you then **enrich** it (diagrams, comparisons, more questions), including hand-promoting or enriching any item convert reported it left as prose. |
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
 | `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. |
@@ -62,10 +62,12 @@ plain-YAML frontmatter marker declaring the format version (`---` / `charter-for
 normative in the `charter-format` skill. Starting from a prompt, an existing doc, a PDF, or a Confluence
 page? `references/authoring-from-source.md` is the on-ramp: how to ingest each source and choose the right
 block for its content. If that source is **already Markdown**, don't start from a blank file — run
-`charter convert <source.md> -o plan.charter.md` first: it passes every block through, promotes a section
-whose heading names open questions / risks / decisions (numbered headings and numbered lists included) to
-`:::question`, and stamps the marker, giving you a valid seed to **enrich**
-(add diagrams, comparisons, more questions) rather than author from scratch. Then render it to check the
+`charter convert <source.md> -o plan.charter.md` first: it passes every block through, promotes the **simple**
+items of a section whose heading names open questions / risks / decisions (numbered headings and numbered lists
+included) to `:::question`, and stamps the marker, giving you a valid seed to **enrich**
+(add diagrams, comparisons, more questions) rather than author from scratch. A **complex/nested** item is left
+**verbatim as prose** and reported on **stderr** (`promoted X of Y`, plus a warning naming each item left) — so
+read convert's stderr and hand-promote or enrich anything it reported it left. Then render it to check the
 artifact:
 
 ```

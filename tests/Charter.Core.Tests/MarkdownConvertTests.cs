@@ -46,14 +46,14 @@ public class MarkdownConvertTests
         "## Next Steps\n\n" +
         "Wrap up.\n";
 
-    private static string Seed(string markdown) => CharterFormat.EnsureVersionMarker(MarkdownConvert.Convert(markdown));
+    private static string Seed(string markdown) => CharterFormat.EnsureVersionMarker(MarkdownConvert.Convert(markdown).Markdown);
 
     [Fact]
     public void PassThrough_NoOpenQuestions_LeavesTheBodyByteForByteUnchanged()
     {
         // The pure transform is a no-op on a doc with no promotable section — prose, table, code, and an
         // ordinary list are all already valid Charter blocks.
-        Assert.Equal(PassThroughDoc, MarkdownConvert.Convert(PassThroughDoc));
+        Assert.Equal(PassThroughDoc, MarkdownConvert.Convert(PassThroughDoc).Markdown);
     }
 
     [Fact]
@@ -186,7 +186,7 @@ public class MarkdownConvertTests
             "## Open Questions\n\n" +
             "There are no bullet points here, just a paragraph.\n";
 
-        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+        Assert.Equal(doc, MarkdownConvert.Convert(doc).Markdown);
     }
 
     [Fact]
@@ -198,7 +198,7 @@ public class MarkdownConvertTests
             "- not a question\n" +
             "- also not a question\n";
 
-        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+        Assert.Equal(doc, MarkdownConvert.Convert(doc).Markdown);
     }
 
     [Fact]
@@ -212,11 +212,57 @@ public class MarkdownConvertTests
             "- A complex item\n" +
             "  - with a nested detail\n";
 
-        string converted = MarkdownConvert.Convert(doc);
+        string converted = MarkdownConvert.Convert(doc).Markdown;
 
         var blocks = BlockDocument.Parse(converted).Blocks;
         Assert.Single(blocks, b => b.Kind == BlockKind.Question); // exactly the simple item promoted
         Assert.Contains("with a nested detail", converted); // the complex item survives verbatim
+    }
+
+    [Fact]
+    public void ComplexItemInNumberedSection_IsLeftVerbatim_AndReportedAsSkipped()
+    {
+        // Charter #34: the item-5 repro reduced to (flat, nested, flat). The MIDDLE item carries nested
+        // sub-bullets PLUS a trailing "Decision:" paragraph — three children — so it is complex and must be
+        // emitted verbatim rather than crammed into one giant :::question (which would only make later
+        // enrichment harder). The two flat siblings promote; the report names the one item left as prose, so
+        // the operation is transparent, not silent — the whole point of the fix.
+        string doc =
+            "## 9. Open questions / risks\n\n" +
+            "1. **Per-machine vs per-user install.** Which scope should the installer default to?\n" +
+            "2. **Forced `MinimumVersion` when `SelfUpdateEnabled=0`.** This intentionally lets the app self-update for security even when the admin disabled self-update, but it has two independent limitations, not one:\n" +
+            "   - **Permission coupling (see #1):** the update needs elevated rights.\n" +
+            "   - **Same-major ceiling:** it will not cross a major boundary.\n" +
+            "   Decision: treat the **Intune required assignment** as the security floor. Confirm this split with the customer's security team.\n" +
+            "3. **Rollback.** How does a failed rollout revert cleanly?\n";
+
+        ConvertResult result = MarkdownConvert.Convert(doc);
+
+        // The two flat items became :::question blocks; the nested middle item did not.
+        var questions = BlockDocument.Parse(Seed(doc)).Blocks.Where(b => b.Kind == BlockKind.Question).ToList();
+        Assert.Equal(2, questions.Count);
+        var titles = questions.Select(q => ParseBody(q).Title).ToList();
+        Assert.Equal(
+            new[]
+            {
+                "Per-machine vs per-user install. Which scope should the installer default to?",
+                "Rollback. How does a failed rollout revert cleanly?",
+            },
+            titles);
+
+        // The complex item survives verbatim in the produced markdown — its content is preserved intact, not
+        // dropped and not forced into a question.
+        Assert.Contains("Same-major ceiling", result.Markdown);
+        Assert.DoesNotContain("Same-major ceiling", string.Join("\n", titles));
+
+        // The report is transparent about exactly what it left behind: 2 promoted, 1 skipped at ordinal 2.
+        ConvertedSection section = Assert.Single(result.Sections);
+        Assert.Contains("9. Open questions / risks", section.Heading);
+        Assert.Equal(2, section.Promoted);
+        SkippedItem skipped = Assert.Single(section.Skipped);
+        Assert.Equal(2, skipped.Ordinal); // 1-based position within the list — the MIDDLE item
+        Assert.False(string.IsNullOrWhiteSpace(skipped.LeadSnippet));
+        Assert.Contains("Forced MinimumVersion", skipped.LeadSnippet); // the item's lead text, markup-stripped
     }
 
     [Fact]
@@ -290,7 +336,7 @@ public class MarkdownConvertTests
             "- The read path is stateless.\n" +
             "- The write path is append-only.\n";
 
-        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+        Assert.Equal(doc, MarkdownConvert.Convert(doc).Markdown);
     }
 
     [Fact]
@@ -303,7 +349,7 @@ public class MarkdownConvertTests
             "- Smoke low and slow.\n" +
             "- Rest before slicing.\n";
 
-        Assert.Equal(doc, MarkdownConvert.Convert(doc));
+        Assert.Equal(doc, MarkdownConvert.Convert(doc).Markdown);
     }
 
     [Fact]
@@ -322,7 +368,7 @@ public class MarkdownConvertTests
     [Fact]
     public void Convert_IsDeterministic()
     {
-        Assert.Equal(MarkdownConvert.Convert(OpenQuestionsDoc), MarkdownConvert.Convert(OpenQuestionsDoc));
+        Assert.Equal(MarkdownConvert.Convert(OpenQuestionsDoc).Markdown, MarkdownConvert.Convert(OpenQuestionsDoc).Markdown);
     }
 
     // Parse a promoted question block's JSON body into its validated spec.
