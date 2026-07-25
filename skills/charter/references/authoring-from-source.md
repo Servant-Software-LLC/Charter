@@ -129,8 +129,13 @@ assume. `1` is the current value at time of writing; confirm against `charter-fo
 Authoring is the start of the loop, not the end. Once the plan is written:
 
 1. **Check it** — `charter render plan.charter.md -o plan.html` and open the artifact to sanity-check layout.
-2. **Put it in front of the human** — `charter review plan.charter.md`. They annotate blocks in place and
-   answer the `:::question` forms in the browser.
+   This is *your* private check — not a substitute for the human's review.
+2. **Put it in front of the human — the mandatory terminal action** — `charter review plan.charter.md`, then
+   hand them the printed capability URL. They annotate blocks in place and answer the `:::question` forms in
+   the browser. **Never** offer reading the raw `.charter.md` as an alternative: the `:::question` forms, the
+   interactive diagrams, and in-place annotation exist only in the review server, not in the raw source, so
+   raw-file reading is not a lighter review — it is not the review at all. Do not present a "read the file
+   vs. start the review" choice; start the review.
 3. **Fold their answers back into the file** — an agent looping the review runs `charter poll --apply`; a
    solo human reviewer runs `charter resolve`. Either one writes each chosen answer **inline** into its
    `:::question` block (the living-document write), so the plan itself carries the resolved decisions.

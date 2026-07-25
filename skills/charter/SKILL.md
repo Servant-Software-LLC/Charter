@@ -79,6 +79,16 @@ injected **only at serve time**, never baked into this file (invariant 1: *porta
 is your fast inner loop while drafting; open `plan.html` yourself to sanity-check layout before you put
 it in front of the human.
 
+> **Authoring always terminates in `charter review` — this is not optional.** `render`/`plan.html` is
+> *your* private check, not the human's review. When the plan is ready for a human — by **either** path
+> (convert-and-enrich or from-scratch) — the single terminal action of authoring is to run `charter review`
+> and hand them the printed capability URL. **Never** offer reading the raw `.charter.md` (or `plan.html`)
+> as an alternative or an equally-valid option: in the review server a `:::question` is a native `<form>`,
+> a `:::diagram` is an interactive pan/zoom graph, and every block is annotatable **in place** — none of
+> which exists in the raw source. Reading the raw file is not a lighter version of the review; it is not
+> the review Charter is built around at all. Do not present a "look at the file vs. start the review"
+> choice — start the review.
+
 ### 2. REVIEW — `charter review`, then drain feedback with `charter poll`
 
 ```
