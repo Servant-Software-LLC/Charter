@@ -47,10 +47,13 @@ catalog-in-depth walkthrough with copy-ready snippets is in [`authoring-plans.md
 
 ### Before / after: an "Open Questions" section → `:::question` blocks
 
-A source that ends with a bulleted "Open Questions" list is the clearest signal you have real decisions to
-elicit. Turn each into a `:::question` and **leave it open** — omit `answer`, and the reviewer resolves it in
-the browser. If you **seeded from Markdown with `charter convert`**, this promotion already happened
-mechanically — each list item is now an open `free-text` `:::question`. Your job there is to *refine* them:
+A source with an "Open Questions" list (or a "Risks" / "Decisions" section — bulleted **or** numbered) is the
+clearest signal you have real decisions to elicit. Turn each into a `:::question` and **leave it open** — omit
+`answer`, and the reviewer resolves it in the browser. If you **seeded from Markdown with `charter convert`**,
+this promotion already happened mechanically — the convert heuristic fires on any heading naming open
+questions / risks / decisions (a numbered heading like `9. Open questions / risks` included) over a bullet or
+numbered list, and each simple list item is now an open `free-text` `:::question`. Your job there is to
+*refine* them:
 give a genuine either/or a `single`/`bool` `mode` with real `options`, drop any that aren't real decisions.
 For a PDF, a link, or a from-scratch plan, you author these by hand as shown here.
 

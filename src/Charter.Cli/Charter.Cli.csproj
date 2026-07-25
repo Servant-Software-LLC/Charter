@@ -30,6 +30,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The test project drives the hermetic skill-version-drift core (SkillDriftCheck.FindStaleSkillsIn)
+         directly against a temp skills dir, so it never touches the real ~/.claude. -->
+    <InternalsVisibleTo Include="Charter.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Charter.Core\Charter.Core.csproj" />
     <ProjectReference Include="..\Charter.Server\Charter.Server.csproj" />
   </ItemGroup>

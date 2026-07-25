@@ -21,6 +21,10 @@ if (args.Length >= 1 && args[0] is "--version" or "-v")
     // build would misreport as its bare `0.2.0`. CharterVersion reads the InformationalVersion, the same
     // value `charter skills install` stamps, keeping the two in agreement.
     Console.WriteLine($"charter {CharterVersion.Current}");
+
+    // Then surface any installed skill whose stamped version has drifted from this binary (Charter #32) — a
+    // stderr-only, non-fatal warning that leaves the stdout `charter <ver>` line clean and the exit code 0.
+    WarnOnStaleSkills(CharterVersion.Current);
     return 0;
 }
 
@@ -150,6 +154,38 @@ static void WarnOnVersionMarker(string verb, string markdown)
     {
         Console.Error.WriteLine($"charter {verb}: warning: {result.Message}");
     }
+}
+
+// Emit a NON-FATAL warning to STDERR when an installed `charter` / `charter-format` skill's stamped
+// charter-version differs from this running binary (Charter #32) — the skill-version-drift check, mirroring
+// Guardrails' #152/#153. Kept OFF stdout so `charter --version` stays a clean `charter <ver>` line, and never
+// changes the exit code (still 0). Best-effort: a matching/absent install prints nothing, and any scan
+// failure is swallowed rather than allowed to break the version output.
+static void WarnOnStaleSkills(string currentVersion)
+{
+    IReadOnlyList<SkillDriftCheck.StaleSkill> stale;
+    try
+    {
+        stale = SkillDriftCheck.FindStaleSkills(currentVersion);
+    }
+    catch (Exception)
+    {
+        return; // a drift scan must never break `charter --version`
+    }
+
+    if (stale.Count == 0)
+    {
+        return;
+    }
+
+    Console.Error.WriteLine(
+        $"charter: warning: {stale.Count} installed skill(s) are out of date (this tool is {currentVersion}):");
+    foreach (SkillDriftCheck.StaleSkill skill in stale)
+    {
+        Console.Error.WriteLine($"  {skill.Name}: installed {skill.InstalledVersion} at {skill.Directory}");
+    }
+
+    Console.Error.WriteLine("  Run `charter skills install --force` to update them.");
 }
 
 // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
