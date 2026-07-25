@@ -57,6 +57,25 @@ public class HandoffInlineAnswerTests
     }
 
     [Fact]
+    public void Emit_ResolvedBoolFalse_FlattensAsAnsweredNotOpen()
+    {
+        // Charter #43: a resolved bool "No" (answer ["false"]) is a real decision, NOT an open question. Its
+        // inline answer is non-empty, so it must flatten as Answered — a false/No is distinguishable from an
+        // unanswered question, exactly as a resolved single-select is.
+        const string resolvedBoolFalse =
+            ":::question\n" +
+            "{ \"id\": \"flag\", \"title\": \"Enable the feature flag?\", \"mode\": \"bool\", " +
+            "\"target\": \"human\", \"answer\": [\"false\"] }\n" +
+            ":::";
+
+        var output = HandoffMarkdown.Emit(resolvedBoolFalse, answers: null);
+
+        Assert.Contains("Answered:", output);
+        Assert.Contains("false", output);
+        Assert.DoesNotContain("Open question", output);
+    }
+
+    [Fact]
     public void Emit_ExternalDict_TakesPrecedenceOverInlineAnswer()
     {
         // When BOTH are present, the external answers dict wins (the freshly-drained answer is authoritative

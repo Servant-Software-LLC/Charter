@@ -136,6 +136,24 @@ public class QuestionResolutionTests
     }
 
     [Fact]
+    public void Apply_BoolFalseAnswer_ResolvesAndReparsesAsAnsweredNo()
+    {
+        // Charter #43 round-trip: a bool "No" flows like any other answer — the selected radio's value "false"
+        // is spliced as a one-element ["false"] answer, which re-parses through the schema as RESOLVED (Answer
+        // non-empty), never as an open question. This is the Core half of the Yes/No-radios end-to-end.
+        const string markdown =
+            ":::question\n" +
+            "{ \"id\": \"flag\", \"title\": \"Enable the feature flag?\", \"mode\": \"bool\", \"target\": \"human\" }\n" +
+            ":::";
+
+        var updated = QuestionResolution.Apply(markdown, Answers(("flag", new[] { "false" })));
+
+        var spec = QuestionSpec.Parse(InnerJson(BlockDocument.Parse(updated).Blocks[0].RawContent));
+        Assert.Equal(new[] { "false" }, spec.Answer); // a real inline No value, not empty
+        Assert.NotEmpty(spec.Answer);                 // distinguishable from an open (unanswered) question
+    }
+
+    [Fact]
     public void Apply_PreservesLeadingFrontMatter()
     {
         // Apply splices on the original source string, so YAML front matter above the first block is copied

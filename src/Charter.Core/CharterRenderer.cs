@@ -179,7 +179,8 @@ public static class CharterRenderer
 /// per-line sub-anchor a reviewer's note binds to), and a <c>:::question</c> as a native HTML
 /// <c>&lt;form id="..." data-question-id="..."&gt;</c> whose controls match the parsed
 /// <see cref="QuestionSpec"/>'s mode (radios for single, checkboxes for multi, a textarea for free-text, a
-/// number input for number, a checkbox for bool) — plain native HTML that needs no Charter JS to display.
+/// number input for number, two mutually-exclusive Yes/No radios for bool) — plain native HTML that needs no
+/// Charter JS to display.
 /// Every other container (<c>:::note</c>, <c>:::warn</c>, <c>:::comparison</c>) falls through to the default
 /// <see cref="HtmlCustomContainerRenderer"/>.
 /// </summary>
@@ -280,15 +281,46 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             renderer.Write('>');
         }
 
-        // Preserve the Mermaid source EXACTLY as authored rather than markdown-rendering it: the client library
-        // reads the element's textContent, so any inline formatting would corrupt the graph. Slice the raw
-        // source the inner blocks span straight from the markdown, HTML-escaped so it survives into the element.
-        renderer.WriteEscape(ContainerBody(obj));
+        // Emit the Mermaid source EXACTLY as authored (the client library reads the element's textContent, so
+        // any inline formatting would corrupt the graph) but NEVER the fence markers. The documented authoring
+        // form wraps the source in a fenced ```mermaid code block, which Markdig models as a FencedCodeBlock
+        // child; its ``` opener/closer and its `mermaid` info string are Markdig syntax, NOT diagram source, so
+        // emitting them handed Mermaid "```mermaid" as the first line and broke every diagram (Charter #40).
+        // When the body IS such a fenced block, write only its CONTENT lines; a fence-less :::diagram body (raw
+        // Mermaid) is emitted verbatim as before. Both forms are accepted so the documented examples work.
+        if (TryGetFencedMermaidSource(obj, out var fenced))
+        {
+            renderer.WriteLeafRawLines(fenced, writeEndOfLines: false, escape: true);
+        }
+        else
+        {
+            renderer.WriteEscape(ContainerBody(obj));
+        }
 
         if (renderer.EnableHtmlForBlock)
         {
             renderer.WriteLine("</pre>");
         }
+    }
+
+    /// <summary>
+    /// True when the <c>:::diagram</c> container's body is a single fenced code block — the documented
+    /// <c>```mermaid</c> (or bare <c>```</c>) authoring form. In that case the block's
+    /// <see cref="LeafBlock.Lines"/> are the Mermaid source, and the caller emits ONLY those content lines,
+    /// never the container's ``` fence markers or its <c>mermaid</c> info string. Any other body — raw
+    /// fence-less Mermaid, or mixed content — returns <c>false</c> so the caller emits the verbatim container
+    /// source instead.
+    /// </summary>
+    private static bool TryGetFencedMermaidSource(CustomContainer obj, out FencedCodeBlock fenced)
+    {
+        if (obj.Count == 1 && obj[0] is FencedCodeBlock only)
+        {
+            fenced = only;
+            return true;
+        }
+
+        fenced = null!;
+        return false;
     }
 
     private void WriteDiff(HtmlRenderer renderer, CustomContainer obj)
@@ -392,8 +424,8 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// <summary>
     /// Emit the native control(s) for the question's <see cref="QuestionSpec.Mode"/>: <c>single</c> → one
     /// radio per option, <c>multi</c> → one checkbox per option, <c>free-text</c> → a <c>&lt;textarea&gt;</c>,
-    /// <c>number</c> → a number input, <c>bool</c> → a single checkbox. Every option label appears alongside
-    /// its control.
+    /// <c>number</c> → a number input, <c>bool</c> → two mutually-exclusive Yes/No radios (values
+    /// <c>true</c>/<c>false</c>, neither pre-selected). Every option label appears alongside its control.
     /// </summary>
     private static void WriteQuestionControls(HtmlRenderer renderer, QuestionSpec spec)
     {
@@ -412,7 +444,12 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
                 renderer.WriteLine("<input type=\"number\" name=\"answer\" />");
                 break;
             case QuestionMode.Bool:
-                renderer.WriteLine("<label><input type=\"checkbox\" name=\"answer\" value=\"true\" /> Yes</label>");
+                // Two mutually-exclusive radios (name="answer"), neither pre-selected, so Yes / No / unanswered
+                // are all distinguishable — a lone checkbox left Yes and unanswered indistinguishable (Charter
+                // #43). The selected radio's value ("true"/"false") is collected, stored, and folded inline like
+                // any other single-value answer.
+                renderer.WriteLine("<label><input type=\"radio\" name=\"answer\" value=\"true\" /> Yes</label>");
+                renderer.WriteLine("<label><input type=\"radio\" name=\"answer\" value=\"false\" /> No</label>");
                 break;
         }
     }
