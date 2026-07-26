@@ -154,6 +154,32 @@ public class CharterFormatDriftTests
     }
 
     [Fact]
+    public void Skill_DocumentsBothAcceptedBodyForms_ForDiagramAndDiff()
+    {
+        // Charter #48/C8. The renderer has accepted BOTH a raw body and a fenced ```mermaid / ```diff body
+        // since Charter #40, but the catalog said only "Mermaid source as the body" — and plan-breakdown is
+        // told this skill is AUTHORITATIVE, so an interpreter following it alone expected raw Mermaid. The
+        // skill must show both forms, or the format SSOT under-specifies what the code accepts.
+        var text = ReadSkill();
+
+        Assert.Contains("Fenced body", text, StringComparison.Ordinal);
+        Assert.Contains("Raw body", text, StringComparison.Ordinal);
+        Assert.Contains("```mermaid", text, StringComparison.Ordinal);
+        Assert.Contains("```diff", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Skill_DocumentsTheUnknownDirectiveBodyPreservationRule()
+    {
+        // Charter #48/C5. The interop rule — an unknown directive's body is parsed through as prose context and
+        // NEVER silently dropped — used to live only in Guardrails' skill, so Charter's own format SSOT did not
+        // state the rule its renderer/handoff were violating.
+        var text = ReadSkill();
+
+        Assert.Contains("never silently dropped", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Skill_DeclaresTheBoundFormatVersion_WithinAValidRange()
     {
         var frontMatter = FrontMatter(ReadSkill());

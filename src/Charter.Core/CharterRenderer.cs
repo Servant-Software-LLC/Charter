@@ -186,6 +186,9 @@ public static class CharterRenderer
 /// </summary>
 internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 {
+    /// <summary>The two declared <c>bool</c> values — the "known options" a bool answer is matched against.</summary>
+    private static readonly string[] BoolValues = { "true", "false" };
+
     private readonly string _markdown;
     private readonly AnchorAssignment _assignment;
 
@@ -230,6 +233,9 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// that names the offending directive, rather than letting a typo/unlisted container flatten into a silent
     /// note (Charter #22). The block's stable id rides the wrapping <c>&lt;div&gt;</c> so the unknown block is
     /// still annotatable in the review loop.
+    /// Its BODY is preserved (escaped, in a preformatted element) beneath the marker: the interop contract
+    /// requires an unknown directive's body to survive as prose context and to NEVER be silently dropped —
+    /// discarding it lost real plan content behind a directive typo (Charter #48/C5).
     /// </summary>
     private void WriteUnknown(HtmlRenderer renderer, CustomContainer obj)
     {
@@ -245,7 +251,20 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         WriteId(renderer, obj.TryGetAttributes()?.Id);
         renderer.Write("><strong>Unknown directive:</strong> <code>:::");
         renderer.WriteEscape(directive);
-        renderer.WriteLine("</code></div>");
+        renderer.Write("</code>");
+
+        // Escaped, never raw: an unknown directive's body is untrusted plan content, and :::custom-html is the
+        // only sanctioned raw-HTML surface. <pre> keeps whatever the author laid out (a tree, a table sketch)
+        // legible instead of collapsing its whitespace.
+        var body = ContainerBody(obj);
+        if (body.Trim().Length > 0)
+        {
+            renderer.Write("<pre class=\"unknown-directive-body\">");
+            renderer.WriteEscape(body.Trim('\n', '\r'));
+            renderer.Write("</pre>");
+        }
+
+        renderer.WriteLine("</div>");
     }
 
     /// <summary>
@@ -399,11 +418,32 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             return;
         }
 
-        renderer.Write("<form class=\"question\"");
+        // A non-empty inline `answer` is the on-disk RESOLVED marker (charter-format). Before Charter #48 the
+        // renderer ignored it entirely, so a settled decision rendered byte-identically to an open one and the
+        // review artifact could not show the human which decisions were already made — a second review round
+        // re-asked every answered question. The resolved state is now marked BOTH for a human (the `answered`
+        // class + an "Answered" status in the legend, styled by charter.css) and for a machine
+        // (`data-answered="true"`), and each mode pre-selects its chosen value(s) below. An OPEN question's
+        // markup is unchanged, byte for byte.
+        var answered = spec.Answer.Count > 0;
+
+        renderer.Write("<form class=\"question");
+        if (answered)
+        {
+            renderer.Write(" answered");
+        }
+
+        renderer.Write('"');
         WriteId(renderer, id);
         renderer.Write(" data-question-id=\"");
         renderer.WriteEscape(spec.Id);
-        renderer.WriteLine("\">");
+        renderer.Write('"');
+        if (answered)
+        {
+            renderer.Write(" data-answered=\"true\"");
+        }
+
+        renderer.WriteLine(">");
 
         // The question id also rides a hidden field, so a native (JS-free) submit still posts which question
         // the answer belongs to — data attributes alone are not submitted with a plain <form>.
@@ -413,6 +453,11 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 
         renderer.Write("<fieldset><legend>");
         renderer.WriteEscape(spec.Title);
+        if (answered)
+        {
+            renderer.Write(" <span class=\"question-status\">Answered</span>");
+        }
+
         renderer.WriteLine("</legend>");
 
         WriteQuestionControls(renderer, spec);
@@ -425,31 +470,45 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// Emit the native control(s) for the question's <see cref="QuestionSpec.Mode"/>: <c>single</c> → one
     /// radio per option, <c>multi</c> → one checkbox per option, <c>free-text</c> → a <c>&lt;textarea&gt;</c>,
     /// <c>number</c> → a number input, <c>bool</c> → two mutually-exclusive Yes/No radios (values
-    /// <c>true</c>/<c>false</c>, neither pre-selected). Every option label appears alongside its control.
+    /// <c>true</c>/<c>false</c>). Every option label appears alongside its control.
+    /// When the question is RESOLVED (a non-empty <see cref="QuestionSpec.Answer"/>) the chosen value(s) are
+    /// PRE-SELECTED — <c>checked</c> on the matching radio/checkbox, the value on the textarea/number input —
+    /// so the artifact shows what has already been settled. An OPEN question emits exactly the markup it
+    /// always did (nothing is pre-selected, so Yes / No / unanswered stay distinguishable — Charter #43).
+    /// Every echoed answer value is HTML-escaped: reviewer-supplied answer text is untrusted input.
     /// </summary>
     private static void WriteQuestionControls(HtmlRenderer renderer, QuestionSpec spec)
     {
+        var answer = spec.Answer;
+
         switch (spec.Mode)
         {
             case QuestionMode.SingleSelect:
-                WriteOptionControls(renderer, spec.Options, "radio");
+                WriteOptionControls(renderer, spec.Options, "radio", answer);
                 break;
             case QuestionMode.MultiSelect:
-                WriteOptionControls(renderer, spec.Options, "checkbox");
+                WriteOptionControls(renderer, spec.Options, "checkbox", answer);
                 break;
             case QuestionMode.FreeText:
-                renderer.WriteLine("<textarea name=\"answer\"></textarea>");
+                // The answer rides as the textarea's TEXT content; escaped, so an answer carrying markup or a
+                // </textarea> sequence can never break out of the element.
+                renderer.Write("<textarea name=\"answer\">");
+                renderer.WriteEscape(JoinAnswer(answer, "\n"));
+                renderer.WriteLine("</textarea>");
                 break;
             case QuestionMode.Number:
-                renderer.WriteLine("<input type=\"number\" name=\"answer\" />");
+                renderer.Write("<input type=\"number\" name=\"answer\"");
+                WriteValueAttribute(renderer, JoinAnswer(answer, ", "));
+                renderer.WriteLine(" />");
                 break;
             case QuestionMode.Bool:
-                // Two mutually-exclusive radios (name="answer"), neither pre-selected, so Yes / No / unanswered
-                // are all distinguishable — a lone checkbox left Yes and unanswered indistinguishable (Charter
-                // #43). The selected radio's value ("true"/"false") is collected, stored, and folded inline like
-                // any other single-value answer.
-                renderer.WriteLine("<label><input type=\"radio\" name=\"answer\" value=\"true\" /> Yes</label>");
-                renderer.WriteLine("<label><input type=\"radio\" name=\"answer\" value=\"false\" /> No</label>");
+                // Two mutually-exclusive radios (name="answer") so Yes / No / unanswered are all
+                // distinguishable — a lone checkbox left Yes and unanswered indistinguishable (Charter #43).
+                // The selected radio's value ("true"/"false") is collected, stored, and folded inline like any
+                // other single-value answer; a resolved question pre-checks the one it chose.
+                WriteChoice(renderer, "radio", "true", "Yes", IsChosen(answer, "true"), cssClass: null);
+                WriteChoice(renderer, "radio", "false", "No", IsChosen(answer, "false"), cssClass: null);
+                WriteWriteIns(renderer, "radio", answer, BoolValues);
                 break;
         }
     }
@@ -457,21 +516,94 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// <summary>
     /// Write one <c>&lt;label&gt;&lt;input type="{inputType}" …/&gt; {option}&lt;/label&gt;</c> per option —
     /// a radio (single-select) or checkbox (multi-select) carrying the option as both its submitted value and
-    /// its visible label.
+    /// its visible label, <c>checked</c> when <paramref name="answer"/> chose it. Any answer value that
+    /// matches NO declared option is then surfaced as a checked write-in rather than silently vanishing.
     /// </summary>
-    private static void WriteOptionControls(HtmlRenderer renderer, IReadOnlyList<string> options, string inputType)
+    private static void WriteOptionControls(
+        HtmlRenderer renderer, IReadOnlyList<string> options, string inputType, IReadOnlyList<string> answer)
     {
         foreach (var option in options)
         {
-            renderer.Write("<label><input type=\"");
-            renderer.Write(inputType);
-            renderer.Write("\" name=\"answer\" value=\"");
-            renderer.WriteEscape(option);
-            renderer.Write("\" /> ");
-            renderer.WriteEscape(option);
-            renderer.WriteLine("</label>");
+            WriteChoice(renderer, inputType, option, option, IsChosen(answer, option), cssClass: null);
+        }
+
+        WriteWriteIns(renderer, inputType, answer, options);
+    }
+
+    /// <summary>
+    /// Surface every answer value that matches NO declared option as its own CHECKED "write-in" control. An
+    /// answer that no longer lines up with the options (the option was renamed or removed after the question
+    /// was resolved) is a real decision: dropping it would silently lose the human's answer, so it is rendered
+    /// instead — clearly marked, and escaped like every other echoed value.
+    /// </summary>
+    private static void WriteWriteIns(
+        HtmlRenderer renderer, string inputType, IReadOnlyList<string> answer, IReadOnlyList<string> known)
+    {
+        foreach (var value in answer)
+        {
+            if (!known.Contains(value, StringComparer.Ordinal))
+            {
+                WriteChoice(renderer, inputType, value, value + " (write-in)", checkedState: true, cssClass: "write-in");
+            }
         }
     }
+
+    /// <summary>
+    /// Write one labeled native control: <c>&lt;label&gt;&lt;input type="…" name="answer" value="…"
+    /// [checked] /&gt; {label}&lt;/label&gt;</c>. Both the submitted value and the visible label are escaped.
+    /// An UNCHECKED control with no css class emits exactly the markup the renderer emitted before answered
+    /// questions were rendered, so open-question output is unchanged.
+    /// </summary>
+    private static void WriteChoice(
+        HtmlRenderer renderer, string inputType, string value, string label, bool checkedState, string? cssClass)
+    {
+        renderer.Write("<label");
+        if (cssClass is not null)
+        {
+            renderer.Write(" class=\"");
+            renderer.Write(cssClass);
+            renderer.Write('"');
+        }
+
+        renderer.Write("><input type=\"");
+        renderer.Write(inputType);
+        renderer.Write("\" name=\"answer\" value=\"");
+        renderer.WriteEscape(value);
+        renderer.Write('"');
+        if (checkedState)
+        {
+            renderer.Write(" checked");
+        }
+
+        renderer.Write(" /> ");
+        renderer.WriteEscape(label);
+        renderer.WriteLine("</label>");
+    }
+
+    /// <summary>Write a <c>value="…"</c> attribute (escaped) when <paramref name="value"/> is non-empty.</summary>
+    private static void WriteValueAttribute(HtmlRenderer renderer, string value)
+    {
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        renderer.Write(" value=\"");
+        renderer.WriteEscape(value);
+        renderer.Write('"');
+    }
+
+    /// <summary>True when the resolved <paramref name="answer"/> selected <paramref name="value"/>.</summary>
+    private static bool IsChosen(IReadOnlyList<string> answer, string value)
+        => answer.Contains(value, StringComparer.Ordinal);
+
+    /// <summary>
+    /// The answer's value(s) as one string for a single-valued control. The schema says a
+    /// <c>free-text</c>/<c>number</c> answer is ONE element, but a malformed multi-element answer is joined
+    /// rather than truncated so no value is silently dropped.
+    /// </summary>
+    private static string JoinAnswer(IReadOnlyList<string> answer, string separator)
+        => answer.Count == 0 ? string.Empty : string.Join(separator, answer);
 
     /// <summary>Write an <c>id="…"</c> attribute when the block carries a stable id.</summary>
     private static void WriteId(HtmlRenderer renderer, string? id)

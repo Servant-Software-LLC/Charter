@@ -156,6 +156,37 @@ static void WarnOnVersionMarker(string verb, string markdown)
     }
 }
 
+// Emit a NON-FATAL warning when a plan carries two or more :::question blocks sharing an id, then let the verb
+// continue. charter-format calls a duplicate question id a REVIEW-TIME error, but the only enforcement used to
+// live in QuestionResolution's answer-drain — so `render`, `review` and `handoff` passed duplicates through
+// silently and the human answered first and failed afterwards (Charter #48/C6). This surfaces it at the front of
+// the loop (review STARTS with render) WITHOUT changing an exit code: a plan that otherwise renders still
+// renders, matching the version-marker warning idiom above. Best-effort — a lint failure must never break a verb.
+static void WarnOnDuplicateQuestionIds(string verb, string markdown)
+{
+    IReadOnlyList<string> duplicates;
+    try
+    {
+        duplicates = QuestionResolution.FindDuplicateQuestionIds(markdown);
+    }
+    catch (Exception)
+    {
+        return;
+    }
+
+    if (duplicates.Count == 0)
+    {
+        return;
+    }
+
+    // ASCII only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on
+    // (the same rule `charter convert`'s promotion report follows).
+    Console.Error.WriteLine(
+        $"charter {verb}: warning: duplicate :::question id(s): {string.Join(", ", duplicates)}. "
+            + "Question ids must be document-unique -- an answer would resolve into every block sharing an id, "
+            + "and `charter poll --apply` / `charter resolve` will refuse the write.");
+}
+
 // Emit a NON-FATAL warning to STDERR when an installed `charter` / `charter-format` skill's stamped
 // charter-version differs from this running binary (Charter #32) — the skill-version-drift check, mirroring
 // Guardrails' #152/#153. Kept OFF stdout so `charter --version` stays a clean `charter <ver>` line, and never
@@ -220,6 +251,7 @@ static RootCommand BuildRenderRoot()
 
         string markdown = File.ReadAllText(inputPath);
         WarnOnVersionMarker("render", markdown);
+        WarnOnDuplicateQuestionIds("render", markdown);
         string html = CharterRenderer.Render(markdown);
 
         string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -355,6 +387,7 @@ static RootCommand BuildHandoffRoot()
 
         string markdown = File.ReadAllText(inputPath);
         WarnOnVersionMarker("handoff", markdown);
+        WarnOnDuplicateQuestionIds("handoff", markdown);
         string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
 
         string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -514,7 +547,9 @@ static RootCommand BuildReviewRoot()
             return 1;
         }
 
-        WarnOnVersionMarker("review", File.ReadAllText(inputPath));
+        string planMarkdown = File.ReadAllText(inputPath);
+        WarnOnVersionMarker("review", planMarkdown);
+        WarnOnDuplicateQuestionIds("review", planMarkdown);
 
         // The session confines the served root to the plan's directory and mints a per-session capability
         // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates

@@ -37,13 +37,64 @@ Primitives are plain CommonMark. The `:::` directives are the rich, validated bl
 | note callout | `:::note` | An aside. Rendered as a callout; annotatable as a whole element. |
 | warn callout | `:::warn` | A risk the reviewer must not miss. A callout; annotatable as a whole element. |
 | comparison | `:::comparison` | Options weighed side by side — a pipe table or list body. Annotatable **per row**. |
-| diagram | `:::diagram` | A Mermaid diagram (Mermaid source as the body). Rendered theme-aware; annotatable **per node**. |
-| diff | `:::diff` | A unified diff. Annotatable **per line** (add / remove / context). |
+| diagram | `:::diagram` | A Mermaid diagram. Body is Mermaid source — raw, **or** wrapped in a fenced ` ```mermaid ` block (both accepted; see below). Rendered theme-aware; annotatable **per node**. |
+| diff | `:::diff` | A unified diff. Body is diff lines — raw, **or** wrapped in a fenced ` ```diff ` block (both accepted; see below). Annotatable **per line** (add / remove / context). |
 | custom HTML | `:::custom-html` | The sanctioned raw-HTML escape hatch — its body is passed through live (every other surface escapes raw HTML). Reach for it last. |
 | **question** | **`:::question`** | The elicitation block — asks the human (or downstream agent) to decide something inside the plan. Validated JSON body; see below. |
 
 There is **no** `:::file-tree` and **no** `:::annotated-code`. They have no renderer — do not author them,
 and treat any other unknown `:::foo` as an unknown directive, never as a known block.
+
+**Unknown-directive interop rule.** An unknown `:::foo` is flagged as unknown (never silently promoted to a
+note) — but its **body is preserved and parsed through as prose context, never silently dropped**. It is
+ordinary plan content that happened to sit behind a directive the catalog does not define (usually a typo);
+discarding it would lose real content. Every consumer — renderer, handoff, and any interpreting agent — keeps
+both the visible "unknown directive" marker *and* the body.
+
+### `:::diagram` and `:::diff` body forms
+
+Both containers accept **two** body forms, and both mean exactly the same thing. Write either; interpret both.
+
+**Fenced body** (the form the authoring examples use — it keeps editors syntax-highlighting the source):
+
+````markdown
+:::diagram
+```mermaid
+graph TD; Draft --> Review --> Handoff;
+```
+:::
+````
+
+**Raw body** (no inner fence):
+
+````markdown
+:::diagram
+graph TD; Draft --> Review --> Handoff;
+:::
+````
+
+`:::diff` is identical, with ` ```diff ` as the inner fence:
+
+````markdown
+:::diff
+```diff
++ added line
+- removed line
+  context line
+```
+:::
+````
+
+````markdown
+:::diff
++ added line
+- removed line
+  context line
+:::
+````
+
+When flattening, the body is emitted as **exactly one** fenced code block of the matching language — an
+already-fenced body is unwrapped first, never double-fenced.
 
 ## The `:::question` block — open vs. resolved
 

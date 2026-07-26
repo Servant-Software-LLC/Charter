@@ -207,6 +207,32 @@ form.question input[type="text"] {
 }
 form.question textarea { min-height: 5rem; }
 
+/*
+ * A RESOLVED question (a non-empty inline `answer`) must be obviously SETTLED at a glance, so the reviewer is
+ * never re-asked a decision they already made. The settled look is deliberately calmer than an open question's
+ * accent-bordered card: a muted border, a subdued surface, and an "Answered" chip in the legend.
+ */
+form.question.answered fieldset {
+  border-color: var(--charter-border);
+  border-style: dashed;
+  background: none;
+  opacity: 0.92;
+}
+form.question .question-status {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--charter-diff-add-bg);
+  color: var(--charter-diff-add-fg);
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+/* An answer value matching no declared option — surfaced, never dropped. */
+form.question label.write-in { font-style: italic; color: var(--charter-muted); }
+
 /* Degraded / diagnostic blocks stay visible and clearly marked. */
 .question-error, .unknown-directive, .charter-parse-error {
   margin: 1rem 0;
@@ -214,4 +240,10 @@ form.question textarea { min-height: 5rem; }
   border-left: 4px solid var(--charter-warn-border);
   border-radius: 6px;
   background: var(--charter-warn-bg);
+}
+/* An unknown directive's body is preserved as readable preformatted prose, never dropped. */
+.unknown-directive-body {
+  margin: 0.5rem 0 0;
+  background: var(--charter-bg);
+  white-space: pre-wrap;
 }

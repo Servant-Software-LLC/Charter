@@ -85,7 +85,31 @@ public class HandoffInlineAnswerTests
         var output = HandoffMarkdown.Emit(ResolvedQuestionDoc, answers);
 
         Assert.Contains("Answered:", output);
-        Assert.Contains("DynamoDB", output);
-        Assert.DoesNotContain("Postgres", output);
+
+        // Precedence is asserted on the ANSWERED LINE itself, not on the whole output: since Charter #48/C3 the
+        // question's `options` are preserved beneath an answered question too (they are the rationale — the
+        // REJECTED option is what lets the breakdown guard against reaching for it), so "Postgres" legitimately
+        // still appears in the document as an OPTION. What must not happen is Postgres surviving as the ANSWER.
+        var answered = AnsweredLine(output);
+        Assert.Contains("DynamoDB", answered);
+        Assert.DoesNotContain("Postgres", answered);
+
+        // ...and the rejected option is still on the record, exactly once, as an option.
+        Assert.Contains("options: `Postgres`, `DynamoDB`", output);
+    }
+
+    /// <summary>The single <c>**Q: … — Answered: …**</c> line of a flattened handoff.</summary>
+    private static string AnsweredLine(string output)
+    {
+        foreach (var line in output.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            if (line.Contains("Answered:", StringComparison.Ordinal))
+            {
+                return line;
+            }
+        }
+
+        Assert.Fail("the handoff carried no Answered line.");
+        return string.Empty;
     }
 }

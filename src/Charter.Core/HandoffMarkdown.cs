@@ -33,6 +33,11 @@ public static class HandoffMarkdown
     // an unrecognized directive in its flagged handoff line.
     private static readonly Regex OpenFenceName = new(@"^:::\s*(\S+)", RegexOptions.Compiled);
 
+    // A CommonMark code-fence line at COLUMN ZERO: three-or-more backticks (or tildes), an optional info
+    // string, nothing else. Column zero is deliberate — a :::diff body's context lines are INDENTED (" ```"),
+    // so an indented fence is diff CONTENT, never the container's own wrapper (see EmitFencedBody).
+    private static readonly Regex CodeFenceLine = new(@"^(`{3,}|~{3,})[ \t]*(\S*)[ \t]*$", RegexOptions.Compiled);
+
     /// <summary>
     /// Emit the plain-markdown handoff for <paramref name="markdown"/>, resolving each <c>:::question</c>
     /// against <paramref name="answers"/> (question id → the selected/submitted answer value(s), the same
@@ -81,9 +86,10 @@ public static class HandoffMarkdown
             // A comparison's inner content is already a plain markdown list — keep it verbatim, fence gone.
             BlockKind.Comparison => string.Join("\n", InnerLines(block.RawContent)),
 
-            // Diagram/diff inner source is preserved verbatim inside a fenced code block of the matching lang.
-            BlockKind.Diagram => EmitFence(InnerLines(block.RawContent), "mermaid"),
-            BlockKind.Diff => EmitFence(InnerLines(block.RawContent), "diff"),
+            // Diagram/diff inner source is preserved verbatim inside EXACTLY ONE fenced code block of the
+            // matching language — whether the body was authored raw or already wrapped in its own fence.
+            BlockKind.Diagram => EmitFencedBody(InnerLines(block.RawContent), "mermaid"),
+            BlockKind.Diff => EmitFencedBody(InnerLines(block.RawContent), "diff"),
 
             // A question resolves to answered prose or a flagged open question — never its raw JSON body.
             BlockKind.Question => EmitQuestion(block.RawContent, answers),
@@ -210,6 +216,84 @@ public static class HandoffMarkdown
     }
 
     /// <summary>
+    /// Emit a <c>:::diagram</c> / <c>:::diff</c> body as EXACTLY ONE fenced code block tagged with
+    /// <paramref name="language"/>, whichever of the two accepted authoring forms it used.
+    /// </summary>
+    /// <remarks>
+    /// The documented authoring form wraps the body in its own <c>```mermaid</c> / <c>```diff</c> fence, and
+    /// the renderer accepts both that and a raw, fence-less body. The handoff, however, wrapped
+    /// UNCONDITIONALLY: an already-fenced body came out DOUBLE-fenced (<c>````mermaid</c> around
+    /// <c>```mermaid</c>), which turns the inner fence into literal text so GitHub renders the flattened plan's
+    /// diagram as a code listing rather than a diagram (Charter #48/C2). So: unwrap an outer fence that is the
+    /// container's own wrapper, then emit once.
+    /// The wrapper is only recognized at COLUMN ZERO with a matching (or empty) info string. That is what keeps
+    /// a <c>:::diff</c> of a markdown file safe — its fence lines arrive as diff context/add/remove lines
+    /// (<c>" ```"</c>, <c>"+```"</c>), which are body content and must stay inside the emitted fence, and which
+    /// <see cref="EmitFence"/> then protects with a longer opener.
+    /// </remarks>
+    private static string EmitFencedBody(List<string> innerLines, string language)
+        => EmitFence(TryUnwrapOwnFence(innerLines, language, out var content) ? content : innerLines, language);
+
+    /// <summary>
+    /// True when <paramref name="innerLines"/> is exactly ONE fenced code block that is the container's own
+    /// wrapper — a column-zero opening fence whose info string is empty or <paramref name="language"/>, a
+    /// column-zero closing fence as the last line, and no intermediate line that would close it early. Then
+    /// <paramref name="content"/> is the lines BETWEEN the fences. Any other shape (raw body, mixed content,
+    /// an indented fence, a different language) returns false so the caller wraps the body verbatim.
+    /// </summary>
+    private static bool TryUnwrapOwnFence(List<string> innerLines, string language, out List<string> content)
+    {
+        content = innerLines;
+        if (innerLines.Count < 2)
+        {
+            return false;
+        }
+
+        var opener = CodeFenceLine.Match(innerLines[0]);
+        if (!opener.Success)
+        {
+            return false;
+        }
+
+        var info = opener.Groups[2].Value;
+        if (info.Length > 0 && !string.Equals(info, language, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var marker = opener.Groups[1].Value;
+        if (!IsCloser(innerLines[^1], marker))
+        {
+            return false;
+        }
+
+        // An intermediate closer would mean the body is several blocks, not one wrapper — leave it alone.
+        for (var i = 1; i < innerLines.Count - 1; i++)
+        {
+            if (IsCloser(innerLines[i], marker))
+            {
+                return false;
+            }
+        }
+
+        content = innerLines.GetRange(1, innerLines.Count - 2);
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="line"/> is a column-zero closing fence for an opener of
+    /// <paramref name="marker"/> — the same fence character, at least as long, and carrying no info string.
+    /// </summary>
+    private static bool IsCloser(string line, string marker)
+    {
+        var match = CodeFenceLine.Match(line);
+        return match.Success
+            && match.Groups[2].Value.Length == 0
+            && match.Groups[1].Value.Length >= marker.Length
+            && match.Groups[1].Value[0] == marker[0];
+    }
+
+    /// <summary>
     /// Wrap the inner source verbatim in a fenced code block tagged with <paramref name="language"/>. The
     /// fence is made STRICTLY longer than the longest run of consecutive backticks the body contains (and
     /// never fewer than three), so a body that itself carries <c>```</c> lines — a <c>:::diff</c> or
@@ -256,15 +340,34 @@ public static class HandoffMarkdown
     }
 
     /// <summary>
-    /// Flag an unrecognized <c>:::foo</c> directive as a single blockquote line naming the directive, so a typo
-    /// or unlisted container is VISIBLE in the handoff rather than flattened to a note (Charter #22). The line is
-    /// a blockquote and carries the directive name inside inline code, so it never starts a line with
-    /// <c>:::</c> — the invariant-5 self-parse still holds.
+    /// Flag an unrecognized <c>:::foo</c> directive as a blockquote naming the directive, so a typo or unlisted
+    /// container is VISIBLE in the handoff rather than flattened to a note (Charter #22) — followed by its BODY,
+    /// preserved as blockquoted prose context. The interop contract requires the body to be parsed through and
+    /// NEVER silently dropped; the previous single-line flag discarded it, losing real plan content behind a
+    /// directive typo (Charter #48/C5). Every emitted line begins with <c>&gt;</c> and the directive name rides
+    /// inside inline code, so no line can start with <c>:::</c> — the invariant-5 self-parse still holds even
+    /// when the body itself contains directive-looking text.
     /// </summary>
     private static string EmitUnknown(string rawContent)
     {
         var directive = UnknownDirectiveName(rawContent);
-        return $"> **Unknown Charter directive `:::{directive}` — not in the format catalog.**";
+        var body = InnerLines(rawContent);
+
+        var builder = new StringBuilder()
+            .Append("> **Unknown Charter directive `:::").Append(directive).Append("` — not in the format catalog.**");
+
+        if (body.Count == 0)
+        {
+            return builder.ToString();
+        }
+
+        builder.Append(" Its body is preserved below.").Append("\n>");
+        foreach (var line in body)
+        {
+            builder.Append('\n').Append(line.Trim().Length == 0 ? ">" : "> " + line);
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>The directive name of an unknown container — the first token after the opening <c>:::</c> fence,
@@ -293,7 +396,8 @@ public static class HandoffMarkdown
     /// <summary>
     /// Resolve a <c>:::question</c> against <paramref name="answers"/>. When the question's id is present,
     /// emit answered prose (<c>**Q: {title}** — Answered: {values}</c>); otherwise a clearly-flagged open
-    /// question (<c>&gt; **Open question (unresolved):** {title}</c>), listing the options for select modes.
+    /// question (<c>&gt; **Open question (unresolved):** {title}</c>). EITHER branch is followed by the same
+    /// <see cref="QuestionMetadataLine"/> carrying <c>id</c>, <c>mode</c>, <c>target</c> and <c>options</c>.
     /// The raw JSON body is NEVER emitted in either branch.
     /// </summary>
     private static string EmitQuestion(string rawContent, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
@@ -308,26 +412,61 @@ public static class HandoffMarkdown
             return $"> **Malformed question (could not parse): {error}**";
         }
 
-        if (answers is not null && answers.TryGetValue(spec.Id, out var values))
+        // Migration-bridge faithfulness (DA blocker 1): the external answers dict wins when it carries this id,
+        // else fall back to the answer carried INLINE in the resolved :::question (spec.Answer). Without the
+        // fallback, a resolved .charter.md flattens as all-questions-open and every human decision is lost.
+        var resolved = answers is not null && answers.TryGetValue(spec.Id, out var values)
+            ? values
+            : spec.Answer;
+
+        var metadata = QuestionMetadataLine(spec);
+
+        return resolved.Count > 0
+            ? $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}"
+            : $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+    }
+
+    /// <summary>
+    /// The question's routing metadata as ONE compact, plain-CommonMark line emitted under BOTH the Answered
+    /// and the Open line — identical in shape either way.
+    /// </summary>
+    /// <remarks>
+    /// The flattened plan used to drop <c>id</c>, <c>target</c> and <c>mode</c> outright and to keep
+    /// <c>options</c> only on OPEN questions (Charter #48/C3+C4), which broke two things measured end to end:
+    /// <list type="bullet">
+    ///   <item><description><c>options</c> on an ANSWERED question is the rationale the breakdown needs — the
+    ///     REJECTED option is what lets it author a guardrail that fails if the implementation reaches for it.
+    ///     <c>charter-format</c> tells the interpreter to fold the answer in "keeping the options as
+    ///     rationale"; dropping them destroyed exactly that.</description></item>
+    ///   <item><description><c>target</c> is the routing signal the headless breakdown branches on, so without
+    ///     it the flattened path structurally CANNOT honour <c>target: agent</c> and halts for a human on a
+    ///     decision the author had explicitly delegated to the agent.</description></item>
+    /// </list>
+    /// The shape is emphasis + inline code — plain CommonMark that renders as a readable sub-line on GitHub and
+    /// parses with a trivial <c>key: `value`</c> scan. Fields are separated by <c>;</c> so the <c>,</c> inside
+    /// the options list is unambiguous, and nothing here starts a line with <c>:::</c> (invariant 5).
+    /// </remarks>
+    private static string QuestionMetadataLine(QuestionSpec spec)
+    {
+        var builder = new StringBuilder()
+            .Append("_Question — id: `").Append(spec.Id).Append('`')
+            .Append("; mode: `").Append(QuestionSpec.Token(spec.Mode)).Append('`')
+            .Append("; target: `").Append(QuestionSpec.Token(spec.Target)).Append('`');
+
+        if (spec.Options.Count > 0)
         {
-            return $"**Q: {spec.Title}** — Answered: {string.Join(", ", values)}";
+            builder.Append("; options: ");
+            for (var i = 0; i < spec.Options.Count; i++)
+            {
+                if (i > 0)
+                {
+                    builder.Append(", ");
+                }
+
+                builder.Append('`').Append(spec.Options[i]).Append('`');
+            }
         }
 
-        // Migration-bridge faithfulness (DA blocker 1): when the external answers dict lacks this id, fall back
-        // to the answer carried INLINE in the resolved :::question (spec.Answer). Without this, a resolved
-        // .charter.md flattens as all-questions-open and every human decision is silently lost during the
-        // bridge window.
-        if (spec.Answer.Count > 0)
-        {
-            return $"**Q: {spec.Title}** — Answered: {string.Join(", ", spec.Answer)}";
-        }
-
-        var open = $"> **Open question (unresolved):** {spec.Title}";
-        if (spec.Mode is QuestionMode.SingleSelect or QuestionMode.MultiSelect)
-        {
-            open += $" (options: {string.Join(", ", spec.Options)})";
-        }
-
-        return open;
+        return builder.Append('_').ToString();
     }
 }

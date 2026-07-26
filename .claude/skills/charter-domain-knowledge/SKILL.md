@@ -109,6 +109,26 @@ via the `charter-format` skill; the **headless/autonomous** path consumes the re
 interactive path (through the shared `charter-format` skill), while the flattened markdown stays the
 contract for the headless path.
 
+**The flatten must be LOSSLESS in the two things the breakdown routes on** (Charter #48, found by the first
+real end-to-end Charter → Guardrails verification):
+
+- **Every `:::question` emits a status line PLUS a metadata line**, identical in shape whether answered or
+  open: `` _Question — id: `x`; mode: `single`; target: `human`; options: `A`, `B`_ ``. `options` are the
+  *rationale* a resolved answer is folded in with (the rejected option is what a guardrail can be written
+  against), and `target` is what lets the headless path honour `target: agent` instead of halting for a
+  human. Both used to be dropped. Shape lives in `skills/charter/references/handoff.md`.
+- **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms — raw, or already wrapped in
+  ` ```mermaid ` / ` ```diff ` — are accepted (`charter-format`), and an already-fenced body is unwrapped
+  before emitting, never double-fenced (a double fence makes the inner fence literal, so the diagram does
+  not render on GitHub).
+- **An unknown `:::foo` keeps its BODY** — flagged as unknown, body preserved as blockquoted prose, never
+  silently dropped. Same rule in the renderer (a `<pre>` under the unknown-directive marker).
+- **A RESOLVED question RENDERS as resolved** — `class="question answered"` + `data-answered="true"`, the
+  chosen value(s) pre-selected, an "Answered" chip in the legend — so a second review round does not re-ask
+  a settled decision. An answer matching no declared option is surfaced as a checked write-in, never dropped.
+- **Duplicate `:::question` ids warn early** (stderr, non-fatal, exit code unchanged) from `render`,
+  `review`, and `handoff`, not only at answer-drain.
+
 ## Format decision (settled)
 
 **markdown + directives (Markdig), as a deliberate hybrid** — chosen over MDX, Adaptive Cards, JSON
