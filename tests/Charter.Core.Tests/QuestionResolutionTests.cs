@@ -168,6 +168,84 @@ public class QuestionResolutionTests
         Assert.Contains("\"answer\"", updated);
     }
 
+    // ---- Charter #49 (bonus): the splice preserves the AUTHORED body's line structure --------------------
+
+    [Fact]
+    public void Apply_PreservesTheAuthoredMultiLineBody_ChangingExactlyOneLine()
+    {
+        // The canonical authored :::question in the charter-format skill is MULTI-LINE. Re-serializing the whole
+        // body compacted it onto one line, shrinking the file and shifting every anchor below it (Charter #49).
+        // The answer is now spliced in place instead: same line count, one line touched.
+        const string markdown =
+            ":::question\n" +
+            "{\n" +
+            "  \"id\": \"db-choice\",\n" +
+            "  \"title\": \"Which datastore for the read path?\",\n" +
+            "  \"mode\": \"single\",\n" +
+            "  \"options\": [\"Postgres\", \"DynamoDB\"],\n" +
+            "  \"target\": \"human\"\n" +
+            "}\n" +
+            ":::\n";
+
+        var updated = QuestionResolution.Apply(markdown, Answers(("db-choice", new[] { "Postgres" })));
+
+        var before = markdown.Split('\n');
+        var after = updated.Split('\n');
+        Assert.Equal(before.Length, after.Length);
+
+        var index = Assert.Single(Enumerable.Range(0, before.Length), i => before[i] != after[i]);
+        Assert.Equal("  \"target\": \"human\"", before[index]);
+        Assert.StartsWith("  \"target\": \"human\",", after[index], StringComparison.Ordinal);
+        Assert.Contains("\"answer\"", after[index], StringComparison.Ordinal);
+
+        // ...and it is still a valid, RESOLVED question through the one schema source of truth.
+        var spec = QuestionSpec.Parse(InnerJson(BlockDocument.Parse(updated).Blocks[0].RawContent));
+        Assert.Equal(new[] { "Postgres" }, spec.Answer);
+        Assert.Equal("db-choice", spec.Id);
+        Assert.Equal(new[] { "Postgres", "DynamoDB" }, spec.Options);
+    }
+
+    [Fact]
+    public void Apply_SingleLineBody_KeepsTheBodyOnOneLine()
+    {
+        const string markdown =
+            ":::question\n" +
+            "{ \"id\": \"q\", \"title\": \"T\", \"mode\": \"bool\", \"target\": \"human\" }\n" +
+            ":::\n";
+
+        var updated = QuestionResolution.Apply(markdown, Answers(("q", new[] { "true" })));
+
+        Assert.Equal(markdown.Split('\n').Length, updated.Split('\n').Length);
+        Assert.Equal(new[] { "true" }, QuestionSpec.Parse(InnerJson(BlockDocument.Parse(updated).Blocks[0].RawContent)).Answer);
+    }
+
+    [Fact]
+    public void Apply_OverwritesAnExistingAnswer_LeavingExactlyOneAnswerKey()
+    {
+        // Re-applying is a supported path (a failed commit means the next run re-applies). Whatever route the
+        // splice takes, the result must carry exactly ONE answer key holding the NEW value.
+        const string markdown =
+            ":::question\n" +
+            "{ \"id\": \"q\", \"title\": \"T\", \"mode\": \"single\", \"options\": [\"A\", \"B\"], " +
+            "\"target\": \"human\", \"answer\": [\"A\"] }\n" +
+            ":::\n";
+
+        var updated = QuestionResolution.Apply(markdown, Answers(("q", new[] { "B" })));
+
+        Assert.Equal(1, updated.Split("\"answer\"", StringSplitOptions.None).Length - 1);
+        Assert.Equal(new[] { "B" }, QuestionSpec.Parse(InnerJson(BlockDocument.Parse(updated).Blocks[0].RawContent)).Answer);
+    }
+
+    [Fact]
+    public void Apply_EmptyBodyObject_StillGainsTheAnswer()
+    {
+        // The degenerate body: no keys to comma-separate from. It carries no id, so it is left untouched —
+        // proving the splice never invents a key on a block Apply has no business rewriting.
+        const string markdown = ":::question\n{}\n:::\n";
+
+        Assert.Equal(markdown, QuestionResolution.Apply(markdown, Answers(("q", new[] { "A" }))));
+    }
+
     [Fact]
     public void FindDuplicateQuestionIds_ReportsIdsSharedByMoreThanOneQuestion()
     {

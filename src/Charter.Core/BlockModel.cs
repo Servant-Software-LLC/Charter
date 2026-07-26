@@ -134,21 +134,50 @@ public sealed class BlockDocument
 /// consume, so a discriminated id can never differ between the two paths.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A pure <see cref="Block.StableId(string)"/> is content-derived, so it ALIASES when the same content
 /// recurs in one document — two identical prose blocks, two identical <c>:::diff</c> added-lines, two
 /// identical <c>:::comparison</c> rows all hash to the same id, and an annotation on the second occurrence
 /// would resolve to the first occurrence's source line (silent misattribution). This pass walks every
-/// anchor slot ONCE, in canonical document order, and for the 2nd+ occurrence of an already-seen base id
-/// appends a positional discriminator (<c>-2</c>, <c>-3</c>, …). The FIRST occurrence keeps the pure
-/// content-derived id, so a document with no duplicates is byte-identical to a bare per-slot hash and every
-/// anchor still survives edits to unrelated blocks (invariant 2). Occurrence counting is GLOBAL across all
-/// slot kinds — a prose block and a diff line that hash alike must still get distinct ids. Both consumers
-/// look a slot's id up by that slot's intrinsic 1-based markdown line; those line numbers are identical
-/// across the renderer's and the source map's independent (but deterministic) parses, so the two paths read
-/// the SAME assignment and cannot drift.
+/// anchor slot ONCE, in canonical document order, and gives every occurrence of DUPLICATED content its own
+/// discriminated id. Content that occurs exactly once keeps the pure content-derived id, so a document with
+/// no duplicates is byte-identical to a bare per-slot hash and every anchor still survives edits to unrelated
+/// blocks (invariant 2). Duplicate detection is GLOBAL across all slot kinds — a prose block and a diff line
+/// that hash alike must still get distinct ids. Both consumers look a slot's id up by that slot's intrinsic
+/// 1-based markdown line; those line numbers are identical across the renderer's and the source map's
+/// independent (but deterministic) parses, so the two paths read the SAME assignment and cannot drift.
+/// </para>
+/// <para>
+/// <b>The discriminator is CONTEXTUAL, never positional (Charter #50).</b> It used to be the occurrence index
+/// (<c>-2</c>, <c>-3</c>, …), which is a function of how many identical blocks PRECEDE a slot: inserting an
+/// identical block earlier renumbered every later duplicate, so an existing annotation on <c>bH-2</c>
+/// resolved — successfully and silently — to a DIFFERENT block. That is misattribution, strictly worse than
+/// orphaning, because nothing detects it. The discriminator is now a hash of the PRECEDING slot's assigned id
+/// (plus the length of this slot's run of consecutive identical siblings), so a duplicate's identity is
+/// derived from where it sits in the content, not from how many copies came before it: an identical block
+/// inserted in a DIFFERENT neighbourhood gets a different id in the first place and leaves the existing
+/// duplicates untouched.
+/// </para>
+/// <para>
+/// <b>The tradeoff, stated plainly.</b> Any context-sensitive scheme means a duplicate's id can change when a
+/// NEIGHBOUR changes — editing the block above a duplicated block orphans an annotation on it, and so does
+/// growing/shrinking a run of adjacent identical siblings (the run length is folded in deliberately, so a run
+/// that changes size invalidates its anchors instead of sliding them onto the wrong sibling). Introducing a
+/// duplicate of a previously-unique block likewise re-ids ALL its copies, because "is this content
+/// duplicated?" is what decides whether a slot is discriminated at all. Every one of those is an ORPHAN: it
+/// resolves to nothing, is reported as <c>anchorStatus: "orphaned"</c> on the drain, is rendered as an orphan
+/// in the review panel, and carries the reviewer's quote as a recovery hint. A wrong attribution is none of
+/// those. Orphaning more often is the price of never misattributing, and it is worth paying. Consecutive
+/// identical siblings with identical surroundings remain genuinely interchangeable — no content-derived
+/// scheme can keep those stable — so there the guarantee is the weaker one: orphan, never re-point.
+/// </para>
 /// </remarks>
 internal sealed class AnchorAssignment
 {
+    // The document-start sentinel: the context of the very first slot. At most one slot has it, so it cannot
+    // make two discriminated ids collide.
+    private const string DocumentStart = "";
+
     private readonly IReadOnlyDictionary<int, string> _idByLine;
 
     private AnchorAssignment(IReadOnlyDictionary<int, string> idByLine) => _idByLine = idByLine;
@@ -162,23 +191,83 @@ internal sealed class AnchorAssignment
     {
         markdown ??= string.Empty;
 
-        var idByLine = new Dictionary<int, string>();
+        var slots = Slots(document, markdown).ToList();
+
+        // Pass 1 — which base ids are duplicated at all. Only those get a discriminator; unique content keeps
+        // its pure hash, so a duplicate-free document is unaffected by any of this.
         var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        foreach (var (line, baseId) in Slots(document, markdown))
+        foreach (var (_, baseId) in slots)
         {
-            var count = occurrences.TryGetValue(baseId, out var seen) ? seen + 1 : 1;
-            occurrences[baseId] = count;
+            occurrences[baseId] = occurrences.TryGetValue(baseId, out var seen) ? seen + 1 : 1;
+        }
 
-            // First occurrence keeps the pure content-derived id; the 2nd+ gets -2, -3, … so distinct
-            // occurrences of identical content get distinct, resolvable anchors. A pure base id never
-            // contains '-', so a discriminated id can never collide with another slot's pure id.
-            idByLine[line] = count == 1
+        // Pass 2 — assign, chaining each duplicate's discriminator off the PREVIOUS slot's assigned id.
+        // Uniqueness is guaranteed by induction: two slots sharing a base id have distinct predecessors, whose
+        // assigned ids are distinct by the same argument (the first slot's context is the unique sentinel), so
+        // their discriminators differ. A pure base id never contains '-', so a discriminated id can never
+        // collide with another slot's pure id either.
+        var runLengths = RunLengths(slots);
+        var idByLine = new Dictionary<int, string>();
+        var previousId = DocumentStart;
+        for (var i = 0; i < slots.Count; i++)
+        {
+            var (line, baseId) = slots[i];
+            var id = occurrences[baseId] == 1
                 ? baseId
-                : baseId + "-" + count.ToString(CultureInfo.InvariantCulture);
+                : baseId + "-" + Discriminator(previousId, runLengths[i]);
+
+            idByLine[line] = id;
+            previousId = id;
         }
 
         return new AnchorAssignment(idByLine);
+    }
+
+    /// <summary>
+    /// For each slot, the length of the maximal run of CONSECUTIVE slots sharing its base id — one linear pass.
+    /// Folded into the discriminator so that growing or shrinking a run of adjacent identical siblings changes
+    /// every id in it, turning "the reviewer's note slides onto the sibling next door" (misattribution) into
+    /// "the note orphans" (detectable, and reported as such). Adjacent identical siblings are otherwise
+    /// indistinguishable by content or context at any depth, so this is the best available answer there.
+    /// </summary>
+    private static int[] RunLengths(IReadOnlyList<(int Line, string BaseId)> slots)
+    {
+        var lengths = new int[slots.Count];
+        var start = 0;
+        for (var i = 1; i <= slots.Count; i++)
+        {
+            if (i < slots.Count && string.Equals(slots[i].BaseId, slots[start].BaseId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            for (var j = start; j < i; j++)
+            {
+                lengths[j] = i - start;
+            }
+
+            start = i;
+        }
+
+        return lengths;
+    }
+
+    /// <summary>
+    /// The contextual discriminator appended to a duplicated slot's base id: a hash of the preceding slot's
+    /// ASSIGNED id and this slot's run length. Both inputs are already-normalized ASCII (a base id is hex, a
+    /// run length is a number), so — like <see cref="Block.StableId(string)"/>, which normalizes CRLF before
+    /// hashing — the result is unaffected by the checkout's line endings.
+    /// </summary>
+    private static string Discriminator(string previousAssignedId, int runLength)
+    {
+        var seed = previousAssignedId + "|" + runLength.ToString(CultureInfo.InvariantCulture);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
+
+        // 8 bytes (64 bits). The induction above rules out two slots sharing a base id AND a context, so this
+        // only has to survive the birthday bound across one document's duplicates — comfortably, at 64 bits,
+        // for any document a human reviews. (A collision would let two slots share an id, which the source map
+        // would resolve to the first — the very misattribution this whole scheme exists to prevent.)
+        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
     }
 
     /// <summary>The assigned (possibly duplicate-discriminated) id of the anchor slot that starts at
@@ -189,7 +278,8 @@ internal sealed class AnchorAssignment
     /// Every anchor slot in canonical document order — the exact union both consumers already produce: for
     /// each top-level node, its block slot (start line + content-derived base id) followed by its sub-anchor
     /// slots (a <c>:::comparison</c>'s rows, a <c>:::diff</c>'s lines) in <see cref="CharterMarkdown.SubAnchors"/>
-    /// order. Walked once here so occurrence counting — and therefore discrimination — is single-sourced.
+    /// order. Walked once here so duplicate detection — and therefore discrimination — is single-sourced, and
+    /// so the "preceding slot" a duplicate's discriminator chains off is one agreed sequence rather than two.
     /// Each slot has a distinct 1-based line (a block starts before its sub-elements, sibling sub-elements sit
     /// on their own lines), so keying the assignment by line identifies each slot uniquely.
     /// </summary>

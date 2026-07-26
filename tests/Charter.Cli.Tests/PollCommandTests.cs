@@ -46,6 +46,46 @@ public class PollCommandTests
         "{\"id\":\"q-theme\",\"title\":\"Second\",\"mode\":\"single\",\"options\":[\"A\",\"B\"],\"target\":\"human\"}\n" +
         ":::\n";
 
+    // Charter #49 fixture: a MULTI-LINE :::question (the canonical authored shape) ABOVE the paragraph a
+    // reviewer annotates, so an apply that reflowed the question body would shift the annotated block's line.
+    // Line 13 is the annotated paragraph.
+    private const string AnchorMarker = "The annotated paragraph the agent must edit.";
+
+    private const string AnchorPlan =
+        "# Poll Anchor Plan\n" +
+        "\n" +
+        ":::question\n" +
+        "{\n" +
+        "  \"id\": \"q-theme\",\n" +
+        "  \"title\": \"Which theme should ship?\",\n" +
+        "  \"mode\": \"single\",\n" +
+        "  \"options\": [\"A\", \"B\"],\n" +
+        "  \"target\": \"human\"\n" +
+        "}\n" +
+        ":::\n" +
+        "\n" +
+        AnchorMarker + "\n";
+
+    // The same shape, but the question is ALREADY resolved. Re-answering it makes QuestionResolution fall back
+    // from the in-place splice to a whole-body re-serialize, which collapses the multi-line body onto one line
+    // — so the --apply write itself SHRINKS the file and moves the annotated paragraph (line 14 -> line 7).
+    // This is the original Charter #49 repro: the shift happens inside the very invocation that reports the line.
+    private const string ReapplyPlan =
+        "# Poll Reapply Plan\n" +
+        "\n" +
+        ":::question\n" +
+        "{\n" +
+        "  \"id\": \"q-theme\",\n" +
+        "  \"title\": \"Which theme should ship?\",\n" +
+        "  \"mode\": \"single\",\n" +
+        "  \"options\": [\"A\", \"B\"],\n" +
+        "  \"target\": \"human\",\n" +
+        "  \"answer\": [\"A\"]\n" +
+        "}\n" +
+        ":::\n" +
+        "\n" +
+        AnchorMarker + "\n";
+
     private static readonly Regex ReadyUrl = new(@"https?://127\.0\.0\.1:\d+/\?key=[0-9a-f]+", RegexOptions.Compiled);
 
     // ---- No-session + regression --------------------------------------------------------------------------
@@ -236,6 +276,15 @@ public class PollCommandTests
             Assert.Contains("apply failed", apply.StdErr);
             Assert.Contains("q-theme", apply.StdErr);
 
+            // EXACTLY ONE envelope still reaches stdout on the failed-apply path. The envelope moved AFTER the
+            // apply (so its annotation lines point into the file the write left behind — Charter #49), which
+            // would be a regression if a refusal could now swallow it: the reported answers are the primary
+            // contract, the write is the effect.
+            using (var refused = JsonDocument.Parse(apply.StdOut.Trim()))
+            {
+                Assert.Equal(1, refused.RootElement.GetProperty("answers").GetArrayLength());
+            }
+
             // The plan stayed OPEN (no partial/double write)...
             Assert.Null(ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme"));
 
@@ -244,6 +293,182 @@ public class PollCommandTests
             Assert.Equal(0, poll.ExitCode);
             using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
             Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    /// <summary>
+    /// Charter #49, end to end through the REAL CLI: the <c>sourceLine</c> the envelope hands the agent must
+    /// point at the annotated block IN THE FILE AS THE INVOCATION LEAVES IT. The original failure resolved the
+    /// line at SUBMIT time and never re-resolved it, so an edit above the block — the agent's own revision, or
+    /// the <c>--apply</c> write folding an answer into the multi-line <c>:::question</c> above it — handed the
+    /// agent a line that pointed one block off. Here the plan is edited above the annotated paragraph after the
+    /// note is submitted, and the same invocation also performs the <c>--apply</c> write.
+    /// </summary>
+    [Fact]
+    public async Task Poll_Apply_DrainedAnnotationLine_PointsAtTheBlockInTheFileTheInvocationLeaves()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(AnchorPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            var anchorId = Charter.Core.BlockDocument.Parse(AnchorPlan).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+            Assert.Equal(13, Charter.Core.SourceMap.Build(AnchorPlan).LineForAnchor(anchorId));
+
+            await PostAnnotationAsync(url, anchorId, "Spell out the acceptance criteria here.");
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+
+            // The drafting agent edits the plan ABOVE the annotated block (two extra lines). The annotated
+            // paragraph's own text is untouched, so its anchor is unchanged — only its line moved, 13 -> 15.
+            var edited = AnchorPlan.Replace(
+                "# Poll Anchor Plan\n\n",
+                "# Poll Anchor Plan\n\nAn inserted overview paragraph.\n\n",
+                StringComparison.Ordinal);
+            await File.WriteAllTextAsync(planPath, edited);
+
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+            Assert.Equal(0, poll.ExitCode);
+
+            // The line the agent was handed must resolve, in the file the invocation actually left on disk, to
+            // the annotated paragraph — not to the blank line or the block above it.
+            var onDisk = await File.ReadAllTextAsync(planPath);
+            var expectedLine = Charter.Core.SourceMap.Build(onDisk).LineForAnchor(anchorId);
+            Assert.NotNull(expectedLine);
+
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            var annotations = envelope.RootElement.GetProperty("annotations");
+            Assert.Equal(1, annotations.GetArrayLength());
+            var annotation = annotations[0];
+
+            Assert.Equal(expectedLine, annotation.GetProperty("sourceLine").GetInt32());
+            Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+
+            // ...and independently of the source map: the reported line genuinely holds the annotated text,
+            // and it MOVED (so this is not a vacuous pass on an unshifted document).
+            var lines = onDisk.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            Assert.Equal(AnchorMarker, lines[annotation.GetProperty("sourceLine").GetInt32() - 1]);
+            Assert.NotEqual(13, annotation.GetProperty("sourceLine").GetInt32());
+
+            // The --apply write still landed (the two effects are independent).
+            Assert.Equal(new[] { "A" }, ExtractQuestionAnswer(onDisk, "q-theme"));
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    /// <summary>
+    /// Charter #49's original repro, end to end: the <c>--apply</c> write in THIS invocation shortens the
+    /// <c>:::question</c> above the annotated block, so every line below it moves. The envelope is emitted
+    /// after the write and re-resolved against the file that write left behind, so the agent is handed the
+    /// block's NEW line — the failure was that it was handed the pre-apply line and edited one block off.
+    /// </summary>
+    [Fact]
+    public async Task Poll_Apply_ThatShortensAQuestionAboveTheBlock_ReportsTheShiftedLine_NotThePreApplyLine()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(ReapplyPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            var anchorId = Charter.Core.BlockDocument.Parse(ReapplyPlan).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+            var preApplyLine = Charter.Core.SourceMap.Build(ReapplyPlan).LineForAnchor(anchorId);
+            Assert.Equal(14, preApplyLine);
+
+            await PostAnnotationAsync(url, anchorId, "Reword this once the theme is settled.");
+            await PostAnswerAsync(url, "q-theme", new[] { "B" });
+
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+            Assert.Equal(0, poll.ExitCode);
+
+            var onDisk = await File.ReadAllTextAsync(planPath);
+            var postApplyLine = Charter.Core.SourceMap.Build(onDisk).LineForAnchor(anchorId);
+
+            // The apply genuinely moved the block — otherwise this test would pass vacuously.
+            Assert.NotEqual(preApplyLine, postApplyLine);
+
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            var annotation = envelope.RootElement.GetProperty("annotations")[0];
+            var reported = annotation.GetProperty("sourceLine").GetInt32();
+
+            Assert.Equal(postApplyLine, reported);
+            Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+
+            // Independently of the source map: the reported line really holds the annotated text.
+            var lines = onDisk.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            Assert.Equal(AnchorMarker, lines[reported - 1]);
+
+            Assert.Equal(new[] { "B" }, ExtractQuestionAnswer(onDisk, "q-theme"));
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    /// <summary>
+    /// Charter #49's orphan half, end to end: when the annotated block's OWN content changed, the envelope
+    /// reports <c>sourceLine: null</c> plus an explicit <c>anchorStatus: "orphaned"</c> — "the block you
+    /// commented on has changed" — instead of a confidently wrong number, with the note preserved.
+    /// </summary>
+    [Fact]
+    public async Task Poll_DrainedAnnotation_OnARewrittenBlock_ReportsOrphanedWithNullLine()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(AnchorPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            var anchorId = Charter.Core.BlockDocument.Parse(AnchorPlan).Blocks
+                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
+
+            await PostAnnotationAsync(url, anchorId, "This paragraph needs acceptance criteria.");
+
+            // The agent rewrites the very block the note points at: its content-derived anchor ceases to exist.
+            var edited = AnchorPlan.Replace(
+                AnchorMarker, "The rewritten paragraph, now with acceptance criteria.", StringComparison.Ordinal);
+            await File.WriteAllTextAsync(planPath, edited);
+
+            var poll = await RunCharterAsync(stateDir, "poll", "--url", url);
+            Assert.Equal(0, poll.ExitCode);
+
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            var annotation = envelope.RootElement.GetProperty("annotations")[0];
+
+            Assert.Equal(JsonValueKind.Null, annotation.GetProperty("sourceLine").ValueKind);
+            Assert.Equal("orphaned", annotation.GetProperty("anchorStatus").GetString());
+            Assert.Equal("This paragraph needs acceptance criteria.", annotation.GetProperty("note").GetString());
         }
         finally
         {
@@ -538,22 +763,26 @@ public class PollCommandTests
 
     /// <summary>
     /// The inline <c>answer</c> array of the <c>:::question</c> whose JSON body carries <paramref name="questionId"/>,
-    /// or <c>null</c> when that question is still OPEN (no <c>answer</c> key). The fixture's question body is a single
-    /// JSON line and <see cref="Charter.Core.QuestionResolution"/> re-serializes it as one line, so scanning the
-    /// plan's lines for the id-bearing object and reading its <c>answer</c> is sufficient — and it proves the
-    /// living-document write landed on disk by re-parsing the ACTUAL file, not the poll stdout.
+    /// or <c>null</c> when that question is still OPEN (no <c>answer</c> key). It locates the block through the
+    /// SAME block model the product uses, so it reads a single-line and a multi-line authored body alike — and
+    /// it proves the living-document write landed on disk by re-parsing the ACTUAL file, not the poll stdout.
     /// </summary>
     private static string[]? ExtractQuestionAnswer(string markdown, string questionId)
     {
-        foreach (var line in markdown.Split('\n'))
+        foreach (var block in Charter.Core.BlockDocument.Parse(markdown).Blocks)
         {
-            var trimmed = line.Trim();
-            if (!trimmed.StartsWith("{") || !trimmed.Contains("\"" + questionId + "\""))
+            if (block.Kind != Charter.Core.BlockKind.Question)
             {
                 continue;
             }
 
-            using var doc = JsonDocument.Parse(trimmed);
+            var body = QuestionBody(block.RawContent);
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("id", out var id) || id.GetString() != questionId)
+            {
+                continue;
+            }
+
             if (!doc.RootElement.TryGetProperty("answer", out var answer) || answer.ValueKind != JsonValueKind.Array)
             {
                 return null;
@@ -569,6 +798,36 @@ public class PollCommandTests
         }
 
         return null;
+    }
+
+    /// <summary>The JSON body of a <c>:::question</c> block's raw content — everything between its fences.</summary>
+    private static string QuestionBody(string rawContent)
+    {
+        var lines = new List<string>(rawContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'));
+        lines.RemoveAll(l => l.Trim().StartsWith(":::", StringComparison.Ordinal));
+        return string.Join("\n", lines).Trim();
+    }
+
+    /// <summary>
+    /// Submit an annotation to the running review server via its capability URL — a same-origin POST to
+    /// <c>/api/{key}/prompts</c>, exactly as the browser SDK would when the reviewer comments on a block.
+    /// </summary>
+    private static async Task PostAnnotationAsync(string capabilityUrl, string anchorId, string note)
+    {
+        var baseUri = new Uri(AuthorityOf(capabilityUrl) + "/");
+        var promptsUri = new Uri(baseUri, $"api/{Uri.EscapeDataString(KeyOf(capabilityUrl))}/prompts");
+
+        using var client = new HttpClient();
+        var payload = JsonSerializer.Serialize(new { kind = "element", anchorId, note });
+        using var request = new HttpRequestMessage(HttpMethod.Post, promptsUri)
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Origin", AuthorityOf(capabilityUrl));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var response = await client.SendAsync(request, cts.Token);
+        Assert.True(response.IsSuccessStatusCode, $"seed annotation POST should succeed, got {(int)response.StatusCode}.");
     }
 
     /// <summary>

@@ -21,9 +21,13 @@ namespace Charter.Core;
 /// blocks rather than re-implementing Markdig traversal (mirroring <see cref="HandoffMarkdown"/>'s discipline).
 /// </para>
 /// <para>
-/// It makes NO byte-preservation promise for a rewritten JSON body (it may be re-whitespaced), but it does
-/// preserve the fence lines, every non-question block, prose, and any YAML front matter EXACTLY — those live
-/// in the verbatim segments this kernel copies straight from the source.
+/// It preserves the fence lines, every non-question block, prose, and any YAML front matter EXACTLY — those
+/// live in the verbatim segments this kernel copies straight from the source. For the rewritten JSON body it
+/// makes a BEST-EFFORT (not guaranteed) layout promise: when the answer can be spliced in place and the result
+/// proven equivalent, the authored body survives byte-for-byte apart from the single line that gains the
+/// answer; otherwise the object is re-serialized compactly, which may re-whitespace the body. Callers must not
+/// depend on the body's byte layout — but they can rely on an answered question not silently reflowing a
+/// carefully authored multi-line block onto one line.
 /// </para>
 /// </remarks>
 public static class QuestionResolution
@@ -271,13 +275,78 @@ public static class QuestionResolution
             answerArray.Add(JsonValue.Create(value));
         }
 
+        var hadAnswer = obj.ContainsKey("answer");
         obj["answer"] = answerArray;
 
         var opening = rawContent.Substring(0, bodyStart);
+        var body = rawContent.Substring(bodyStart, bodyEnd - bodyStart);
         var closing = rawContent.Substring(bodyEnd);
         var newline = opening.EndsWith("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
 
-        return opening + obj.ToJsonString() + newline + closing;
+        // Prefer the minimal in-place splice, which keeps the AUTHORED body byte-for-byte apart from the one
+        // line that gains the answer. Re-serializing the whole object instead collapses a multi-line body onto
+        // one line, shrinking the file and shifting the source line of every anchor below it (Charter #49).
+        // Falls back to the whole-object re-serialize whenever the splice cannot be PROVEN equivalent.
+        var spliced = hadAnswer ? null : TrySpliceAnswer(body, answerArray, obj);
+        return spliced is not null
+            ? opening + spliced + closing
+            : opening + obj.ToJsonString() + newline + closing;
+    }
+
+    /// <summary>
+    /// The minimal-diff write: return <paramref name="body"/> with <c>"answer": […]</c> inserted immediately
+    /// after its last content character, so every authored line — indentation, key order, line breaks, the
+    /// trailing newline — survives untouched and only the body's final content line grows. Returns
+    /// <see langword="null"/> (caller falls back to re-serializing the object) whenever the result cannot be
+    /// PROVEN to be exactly the intended object: the body must end in the root <c>}</c>, and the spliced text
+    /// must re-parse to an object whose canonical serialization equals <paramref name="expected"/>'s. That
+    /// verification is what makes a textual splice safe — it can produce the right bytes or nothing, never
+    /// subtly wrong JSON. The caller only takes this path when the body carries NO existing <c>answer</c> key,
+    /// so the insertion can never duplicate one.
+    /// </summary>
+    private static string? TrySpliceAnswer(string body, JsonArray answer, JsonObject expected)
+    {
+        var close = LastContentIndex(body, body.Length - 1);
+        if (close < 0 || body[close] != '}')
+        {
+            return null;
+        }
+
+        var last = LastContentIndex(body, close - 1);
+        if (last < 0)
+        {
+            return null;
+        }
+
+        // An empty object ({}) has nothing to comma-separate the new key from.
+        var insertion = (body[last] == '{' ? string.Empty : ", ") + "\"answer\": " + answer.ToJsonString();
+        var candidate = string.Concat(body.AsSpan(0, last + 1), insertion, body.AsSpan(last + 1));
+
+        try
+        {
+            return JsonNode.Parse(candidate) is JsonObject spliced
+                && string.Equals(spliced.ToJsonString(), expected.ToJsonString(), StringComparison.Ordinal)
+                    ? candidate
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The index of the last non-whitespace character at or before <paramref name="from"/>, or -1.</summary>
+    private static int LastContentIndex(string text, int from)
+    {
+        for (var i = Math.Min(from, text.Length - 1); i >= 0; i--)
+        {
+            if (!char.IsWhiteSpace(text[i]))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>The string <c>id</c> of a question block's JSON body, or <c>null</c> when it is unreadable.</summary>
