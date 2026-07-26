@@ -9,8 +9,14 @@ namespace Charter.Core.Tests;
 /// identical content recurring in one document used to ALIAS to a single id — an annotation on the 2nd
 /// occurrence resolved (via <see cref="SourceMap"/>) to the 1st occurrence's source line, silently
 /// misattributing feedback. The shared <c>AnchorAssignment</c> pass — consumed by BOTH the renderer and the
-/// source map — discriminates the 2nd+ occurrence (<c>-2</c>, <c>-3</c>, …) while the FIRST keeps the pure
-/// id (so unique-content documents are byte-identical to before).
+/// source map — gives every occurrence of duplicated content its own discriminated id, while content that
+/// occurs ONCE keeps the pure content-derived id (so unique-content documents are byte-identical to before).
+///
+/// The discriminator is NOT the occurrence index (Charter #50 — that renumbered every later duplicate when an
+/// identical block was inserted earlier, silently re-pointing an existing annotation); it is derived from the
+/// slot's preceding context. Insertion stability is covered in <see cref="AnchorInsertionStabilityTests"/>;
+/// these tests assert the property that scheme must preserve — distinct, resolvable, per-occurrence anchors —
+/// without encoding the discriminator's shape.
 ///
 /// The load-bearing test here is <see cref="RenderedAnchors_AndSourceMapKeys_AreIdentical_ForDuplicateDoc"/>:
 /// it guards the exact risk the shared pass exists to prevent — the render and source-map paths deriving
@@ -31,17 +37,22 @@ public class DuplicateContentAnchorTests
             "\n" +
             "Same paragraph.";
 
-        // The FIRST occurrence keeps the pure content-derived id; the SECOND is discriminated with -2.
-        var firstId = Block.StableId("Same paragraph.");
-        var secondId = firstId + "-2";
+        var map = SourceMap.Build(markdown);
+        var firstId = AnchorAtLine(map, 1);
+        var secondId = AnchorAtLine(map, 3);
+
+        // Two occurrences of identical content, two DISTINCT anchors — each discriminated from the shared
+        // content-derived base id rather than aliasing onto it.
         Assert.NotEqual(firstId, secondId);
+        var baseId = Block.StableId("Same paragraph.");
+        Assert.StartsWith(baseId + "-", firstId, StringComparison.Ordinal);
+        Assert.StartsWith(baseId + "-", secondId, StringComparison.Ordinal);
 
         var html = CharterRenderer.Render(markdown);
         Assert.Contains($"<p id=\"{firstId}\">Same paragraph.</p>", html);
         Assert.Contains($"<p id=\"{secondId}\">Same paragraph.</p>", html);
 
         // The fix: the 2nd occurrence's id resolves to the 2nd occurrence's SOURCE LINE (3), not the 1st's (1).
-        var map = SourceMap.Build(markdown);
         Assert.Equal(1, map.LineForAnchor(firstId));
         Assert.Equal(3, map.LineForAnchor(secondId));
     }
@@ -61,9 +72,14 @@ public class DuplicateContentAnchorTests
             "+same added line\n" +
             ":::";
 
-        var firstAdd = Block.StableId("+same added line");
-        var secondAdd = firstAdd + "-2";
+        var map = SourceMap.Build(markdown);
+        var firstAdd = AnchorAtLine(map, 2);
+        var secondAdd = AnchorAtLine(map, 4);
         Assert.NotEqual(firstAdd, secondAdd);
+
+        var baseId = Block.StableId("+same added line");
+        Assert.StartsWith(baseId + "-", firstAdd, StringComparison.Ordinal);
+        Assert.StartsWith(baseId + "-", secondAdd, StringComparison.Ordinal);
 
         var html = CharterRenderer.Render(markdown);
 
@@ -73,10 +89,6 @@ public class DuplicateContentAnchorTests
         Assert.Contains($"data-anchor=\"{secondAdd}\"", html);
         Assert.Contains($"id=\"{firstAdd}\"", html);
         Assert.Contains($"id=\"{secondAdd}\"", html);
-
-        var map = SourceMap.Build(markdown);
-        Assert.Equal(2, map.LineForAnchor(firstAdd));
-        Assert.Equal(4, map.LineForAnchor(secondAdd));
     }
 
     [Fact]
@@ -94,18 +106,19 @@ public class DuplicateContentAnchorTests
             "- Repeated row\n" +
             ":::";
 
-        // A row's sub-anchor derives from that row's own trimmed source line (marker included).
-        var firstRow = Block.StableId("- Repeated row");
-        var secondRow = firstRow + "-2";
+        var map = SourceMap.Build(markdown);
+        var firstRow = AnchorAtLine(map, 2);
+        var secondRow = AnchorAtLine(map, 4);
         Assert.NotEqual(firstRow, secondRow);
+
+        // A row's sub-anchor derives from that row's own trimmed source line (marker included).
+        var baseId = Block.StableId("- Repeated row");
+        Assert.StartsWith(baseId + "-", firstRow, StringComparison.Ordinal);
+        Assert.StartsWith(baseId + "-", secondRow, StringComparison.Ordinal);
 
         var html = CharterRenderer.Render(markdown);
         Assert.Contains($"data-anchor=\"{firstRow}\"", html);
         Assert.Contains($"data-anchor=\"{secondRow}\"", html);
-
-        var map = SourceMap.Build(markdown);
-        Assert.Equal(2, map.LineForAnchor(firstRow));
-        Assert.Equal(4, map.LineForAnchor(secondRow));
     }
 
     /// <summary>
@@ -138,7 +151,7 @@ public class DuplicateContentAnchorTests
         var sourceMapKeys = SourceMap.Build(markdown).Anchors;
 
         // Sanity: discrimination actually happened, so this test exercises the risky path (not two empty sets).
-        Assert.Contains(renderedAnchors, a => a.EndsWith("-2", StringComparison.Ordinal));
+        Assert.Contains(renderedAnchors, a => a.Contains('-', StringComparison.Ordinal));
 
         // The two paths cannot silently diverge: every rendered anchor is resolvable, and every resolvable
         // anchor is rendered.
@@ -152,7 +165,7 @@ public class DuplicateContentAnchorTests
     public void UniqueContentDocument_KeepsPureIds_NoDiscriminator()
     {
         // A document with NO duplicate content must be byte-identical to the pre-change output: every block
-        // keeps the pure content-derived id (anchor-survival preserved), and nothing carries a -N suffix.
+        // keeps the pure content-derived id (anchor-survival preserved), and nothing carries a discriminator.
         const string markdown =
             "# A unique heading\n" +
             "\n" +
@@ -172,8 +185,12 @@ public class DuplicateContentAnchorTests
         }
 
         // No anchor in a duplicate-free document carries a discrimination suffix.
-        Assert.DoesNotContain(RenderedAnchors(html), a => a.Contains("-2", StringComparison.Ordinal));
+        Assert.DoesNotContain(RenderedAnchors(html), a => a.Contains('-', StringComparison.Ordinal));
     }
+
+    /// <summary>The single anchor the map resolves to <paramref name="line"/> (asserting exactly one does).</summary>
+    private static string AnchorAtLine(SourceMap map, int line)
+        => Assert.Single(map.Anchors, a => map.LineForAnchor(a) == line);
 
     /// <summary>Every id/data-anchor value the rendered HTML carries, as a set. The negative lookbehind keeps
     /// <c>id="</c> from matching the tail of a longer attribute name (e.g. <c>data-question-id="</c>).</summary>

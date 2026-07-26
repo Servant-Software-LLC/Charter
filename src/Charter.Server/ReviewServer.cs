@@ -548,8 +548,9 @@ public sealed class ReviewServer : IReviewServer
         }
 
         // Resolve the anchor to its 1-based markdown source line — the deterministic half of the round-trip.
-        // Read the plan from the session source and build the same content-derived source map the anchor came
-        // from, so the annotation carries the exact line an agent would edit.
+        // This is the SUBMIT-TIME value: it backs the reviewer's in-page panel, which is showing the page as
+        // rendered right now. It is deliberately NOT the value the agent receives — the drain re-resolves
+        // against the plan as it is at handoff, because any edit above the block moves it (Charter #49).
         var markdown = await File.ReadAllTextAsync(_session.SourcePath).ConfigureAwait(false);
         var sourceLine = SourceMap.Build(markdown).LineForAnchor(submission.AnchorId);
 
@@ -608,7 +609,18 @@ public sealed class ReviewServer : IReviewServer
         // below runs ONLY on a successful delivery — until then the sidecar still lists the annotations, so a
         // crash after a failed write rehydrates them (never a loss; at most an at-least-once re-delivery).
         var drained = _store.Drain();
-        WriteDrainedJson(response, drained, _store.Requeue);
+
+        // THE handoff moment: re-resolve every anchor against the plan as it is RIGHT NOW (Charter #49). The
+        // line stored at submit time is a snapshot for the reviewer's panel; by the time an agent drains, an
+        // edit above the block (or a rehydrate across a change made while the server was down) may have moved
+        // it. An anchor that no longer resolves drains with sourceLine null + anchorStatus "orphaned".
+        var resolved = await AnchorResolution
+            .ResolveAgainstFileAsync(drained, _session.SourcePath)
+            .ConfigureAwait(false);
+
+        // The REQUEUE puts the store's own records back — the submit-time line the panel shows — not the
+        // handoff projection; a re-drain re-resolves them anyway.
+        WriteDrainedJson(response, resolved, _ => _store.Requeue(drained));
         _sidecar?.Persist();
     }
 

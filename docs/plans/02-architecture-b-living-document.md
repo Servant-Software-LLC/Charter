@@ -180,9 +180,59 @@ Rejected alternative — **rewrite the block to prose** (`**Q: …** — Answere
 ### 1.3 How a resolved annotation / edit lands in the file
 
 An **annotation is a review comment**, not plan content. Resolving it means the agent reads the note (with
-its `SourceLine`, resolved via `SourceMap` at drain time — `ReviewServer.cs:469-470`) and **edits the
-pointed-at block**. The *edit* lands in the file; the annotation note itself stays **ephemeral** and is
-not written into `.charter.md`. This keeps the handed-off plan free of review chatter.
+its `SourceLine`) and **edits the pointed-at block**. The *edit* lands in the file; the annotation note
+itself stays **ephemeral** and is not written into `.charter.md`. This keeps the handed-off plan free of
+review chatter.
+
+**Where `SourceLine` comes from (corrected — Charter #49).** This section previously claimed the line was
+"resolved via `SourceMap` at drain time". It was not: it was resolved once at **submit** time inside
+`ReviewServer.HandlePromptsAsync` and never re-resolved, so any edit above the block — the agent's own
+revision, a change made while the server was down, or `poll --apply`'s write into a `:::question` above it —
+left the agent editing the **wrong line**. The design of record carried an incorrect model of its own deepest
+correctness seam, which is why review missed it. What the code now does:
+
+- **Submit time** — `HandlePromptsAsync` still resolves the line and stores it on the `Annotation`. That
+  value is for the **reviewer's in-page panel**, which is looking at the page as rendered right now.
+- **Drain time** — `AnchorResolution` (`src/Charter.Server/AnchorResolution.cs`) is the single kernel that
+  binds an anchor to a line, and every hand-off path runs through it against the plan **as it is at that
+  moment**: the server's `/api/poll` drain, and `charter poll --apply` again after its own write (the
+  envelope is therefore emitted **after** the apply, in a `finally` so exactly one envelope still reaches
+  stdout on every path). Sidecar rehydrate needs no special handling — a rehydrated annotation is
+  re-resolved by the same drain.
+- **When the anchor no longer resolves**, the drained annotation carries `sourceLine: null` **plus an
+  explicit `anchorStatus: "orphaned"`** (otherwise `"resolved"`) — "the block you commented on has changed",
+  with the stored `quote` / `nodeId` / note as the recovery hints. `anchorStatus` is *derived* from
+  `sourceLine`, so the two can never disagree; it is additive on the wire (an existing consumer that ignores
+  it is unaffected) and ignored on read, being recomputed from the line.
+
+Two related invariants the writer now upholds so this seam is not stressed needlessly:
+`QuestionResolution.Apply` splices the `answer` **in place** rather than re-serializing the body, so an
+authored multi-line `:::question` keeps its line structure (it used to collapse onto one line, shrinking the
+file and shifting every anchor below it); and duplicate-content anchors are discriminated **contextually**,
+not by occurrence index (Charter #50 — see §1.3.1).
+
+#### 1.3.1 Duplicate-content anchors are discriminated contextually, never positionally
+
+Identical content recurring in one document hashes to one id, so `AnchorAssignment` (`BlockModel.cs`) gives
+every occurrence of duplicated content its own discriminated id; content occurring once keeps its pure hash.
+The discriminator used to be the **occurrence index** (`-2`, `-3`, …), which is a function of how many
+identical blocks *precede* a slot: inserting an identical block earlier renumbered every later duplicate, and
+an existing annotation on `bH-2` then resolved — successfully and silently — to a **different block**. That is
+misattribution, strictly worse than orphaning, because nothing detects it.
+
+The discriminator is now a short hash of the **preceding slot's assigned id**, plus the length of the slot's
+run of consecutive identical siblings. An identical block inserted in a different neighbourhood therefore gets
+a different id *in the first place* and leaves the existing duplicates untouched. The renderer and `SourceMap`
+both read the one shared `AnchorAssignment`, so the two paths still cannot drift.
+
+**The accepted tradeoff.** A duplicate's id can now change when a **neighbour** changes (editing the block
+above it; growing or shrinking a run of adjacent identical siblings; introducing a duplicate of a
+previously-unique block, which re-ids all its copies). Every one of those is an **orphan** — it resolves to
+nothing, is reported as `anchorStatus: "orphaned"`, is rendered as an orphan in the review panel, and carries
+the reviewer's quote. A wrong attribution is none of those. Orphaning more often is the price of never
+misattributing. Consecutive identical siblings with identical surroundings remain genuinely interchangeable —
+no content-derived scheme can keep those stable — so there the guarantee is the weaker one: **orphan, never
+re-point**.
 
 **Scoped out of v1 (flagged, not silently dropped): in-browser WYSIWYG editing.** The SDK supports
 *annotating* and *answering*, not editing arbitrary prose in place. Adding that needs a reverse source-map

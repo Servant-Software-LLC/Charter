@@ -57,37 +57,54 @@ internal static class PollCommand
         var answers = await client.PeekAnswersAsync(drainCts.Token).ConfigureAwait(false);
         var drainError = annotations.Error ?? answers.Error;
 
-        // stdout: always exactly one envelope (key omitted). VERBATIM server wire shapes, no reshaping. Emitted
-        // BEFORE the --apply write so the agent always receives the reported answers even if the inline write
-        // fails — the envelope is the primary contract, the write is the effect. A non-null drainError rides
-        // the envelope so the caller sees WHY a drain came back empty.
-        Console.WriteLine(PollEnvelope.Serialize(resolution.Session, annotations.Items, answers.Items, drainError));
-
         // --apply is the living-document write: peek → apply → commit. resolution.Session (non-null whenever
         // Client is) carries the server-reported SourcePath, so this locates the plan even on the --url path.
         // Skipped when nothing was answered (no spurious rewrite). A refused apply PRESERVES the answers (never
         // committed) and exits with a distinct code so the reviewer's decision is recoverable, not lost.
-        if (apply && answers.Items.Count > 0)
+        AnswerApplication.ApplyResult? applied = null;
+        try
         {
-            var result = await AnswerApplication
-                .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
-                .ConfigureAwait(false);
-
-            if (!result.Applied)
+            if (apply && answers.Items.Count > 0)
             {
-                Console.Error.WriteLine($"charter poll: apply failed: {result.Error}");
-                Console.Error.WriteLine(
-                    "charter poll: the queued answers remain in the review store; fix the plan and re-run "
-                    + "'charter poll --apply' (or 'charter resolve') to retry.");
-                return ReviewExitCodes.ApplyFailed;
+                applied = await AnswerApplication
+                    .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
+                    .ConfigureAwait(false);
             }
+        }
+        finally
+        {
+            // stdout: always exactly one envelope (key omitted), on EVERY path — the finally is what keeps that
+            // true even if the apply throws. VERBATIM server wire shapes, no reshaping. A non-null drainError
+            // rides the envelope so the caller sees WHY a drain came back empty.
+            //
+            // Emitted AFTER the --apply write, and re-resolved against the file that write left behind: the
+            // drain resolved each annotation's sourceLine against the plan as it was moments ago, and this same
+            // invocation may have just shifted every line below an answered :::question. Handing the agent the
+            // pre-apply line makes it edit the wrong block (Charter #49). The apply's own failure still never
+            // suppresses the envelope — the reported answers are the primary contract, the write is the effect.
+            var reported = applied is { Applied: true }
+                ? await AnchorResolution
+                    .ResolveAgainstFileAsync(annotations.Items, resolution.Session!.SourcePath)
+                    .ConfigureAwait(false)
+                : annotations.Items;
 
-            if (!result.Committed)
-            {
-                Console.Error.WriteLine(
-                    "charter poll: applied the answers inline, but could not remove them from the review store; "
-                    + "they may be re-reported until the next successful drain (a re-apply is idempotent).");
-            }
+            Console.WriteLine(PollEnvelope.Serialize(resolution.Session, reported, answers.Items, drainError));
+        }
+
+        if (applied is { Applied: false } refused)
+        {
+            Console.Error.WriteLine($"charter poll: apply failed: {refused.Error}");
+            Console.Error.WriteLine(
+                "charter poll: the queued answers remain in the review store; fix the plan and re-run "
+                + "'charter poll --apply' (or 'charter resolve') to retry.");
+            return ReviewExitCodes.ApplyFailed;
+        }
+
+        if (applied is { Applied: true, Committed: false })
+        {
+            Console.Error.WriteLine(
+                "charter poll: applied the answers inline, but could not remove them from the review store; "
+                + "they may be re-reported until the next successful drain (a re-apply is idempotent).");
         }
 
         // A failed drain outranks the clean-empty verdict: the queue state is unknown, so never report

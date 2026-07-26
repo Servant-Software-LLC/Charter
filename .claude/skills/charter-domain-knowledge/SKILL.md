@@ -56,7 +56,18 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
 - **Anchors + source-map:** every block gets a content-derived **stable ID**. The renderer carries a
   **source-map (anchor ID → markdown line range)** so a human annotation on the *rendered HTML*
   round-trips to the *markdown source* the agent edits. This is the deepest correctness concern —
-  Charter splits source (markdown) from render (HTML), which Lavish never did.
+  Charter splits source (markdown) from render (HTML), which Lavish never did. Two rules keep it honest,
+  both of them "**orphan loudly rather than misattribute silently**":
+  - **The handoff line is resolved at DRAIN time, never at submit time** (was Charter #49). One kernel,
+    `AnchorResolution` (`src/Charter.Server/AnchorResolution.cs`), re-binds every anchor to the plan **as it
+    is at handoff** — on the `/api/poll` drain, and again in `charter poll --apply` after its own write. The
+    line stored at submit is a snapshot for the reviewer's in-page panel only. A stale line makes the agent
+    edit the wrong block, confidently.
+  - **Duplicate-content anchors are discriminated CONTEXTUALLY, not by occurrence index** (was Charter #50).
+    Identical content recurring in a document is disambiguated by a hash of the preceding slot's assigned id
+    (plus the length of its run of adjacent identical siblings) — so inserting an identical block elsewhere no
+    longer renumbers the existing ones onto each other's notes. Cost: a duplicate's id can change when a
+    *neighbour* changes, which orphans (detectable) rather than misattributes (not).
 - **Session:** keyed by canonicalized artifact path; holds queued prompts + annotations. Loopback-only,
   guarded by a per-session capability key.
 
@@ -68,6 +79,14 @@ submits question answers → those post to the local server → `charter poll` d
 anchor) to the agent, and `poll --apply` / `charter resolve` fold answers **inline** into the `:::question`
 blocks → agent edits the markdown → live reload re-renders. Loop until the human approves. The saved
 artifact never contains the SDK, so it opens standalone.
+
+**The drained annotation's wire shape.** Each drained annotation carries `anchorId`, `kind`, `note`, the
+sub-part fidelity fields (`quote`/`start`/`end`/`nodeId`), `sourceLine` — **resolved at drain time** — and
+**`anchorStatus`**: `"resolved"` (with a line) or `"orphaned"` (`sourceLine: null`, meaning *the block you
+commented on has changed*; the stored `quote`/`nodeId`/note are the recovery hints). `anchorStatus` is
+*derived* from `sourceLine`, so the two can never disagree, and it is additive — a consumer that ignores it is
+unaffected. An agent must never treat an orphaned annotation as "no feedback"; it is feedback whose target
+moved.
 
 **In-page annotation UI (the reviewer's surface).** Notes are written in a styled, near-target composer
 (never a native `window.prompt`), and the SDK renders a **review panel** listing the notes plus an on-block
@@ -104,7 +123,9 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 
 1. **Portable artifact** — opens standalone; SDK injected only at serve time.
 2. **Comment-in-place with round-trip** — annotations anchor to stable block IDs and map back to
-   markdown source lines; they survive re-render of unrelated blocks.
+   markdown source lines; they survive re-render of unrelated blocks. The line handed to the agent is
+   resolved **at drain time**, and an anchor that no longer resolves is reported as an explicit orphan —
+   never as a stale-but-confident line number, and never as a different block.
 3. **Format single-sourced** — the block schema lives in one place; renderer, SDK, and skill cite it.
 4. **Loopback + capability** — `127.0.0.1` default, per-session capability key, path-confined serving.
 5. **Dual handoff to Guardrails** — the interactive `/plan-breakdown` reads the `.charter.md` directly
