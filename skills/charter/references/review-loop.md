@@ -70,7 +70,8 @@ again. Each element:
     "kind": "element",
     "anchorId": "db-choice",
     "note": "Prefer Postgres unless latency is the top constraint.",
-    "sourceLine": 42
+    "sourceLine": 42,
+    "anchorStatus": "resolved"
   }
 ]
 ```
@@ -78,8 +79,18 @@ again. Each element:
 - `kind` — `element`, `textRange`, or `diagramNode` (camelCase in JSON).
 - `anchorId` — the stable block id the note is attached to.
 - `note` — the reviewer's free text.
-- `sourceLine` — the **1-based markdown line** to edit. This is what closes the round-trip: go to that
-  line in `plan.charter.md` and revise.
+- `sourceLine` — the **1-based markdown line** to edit, **resolved at drain time** against the plan file
+  as it is right now (not when the reviewer wrote the note). This is what closes the round-trip: go to
+  that line in `plan.charter.md` and revise.
+- `anchorStatus` — `resolved` or `orphaned`. **Check this before acting on `sourceLine`.**
+  - `resolved` — the anchor still exists; `sourceLine` is a live, current line number.
+  - `orphaned` — the annotated block has since **changed or been removed**, so its content-derived anchor
+    no longer resolves and `sourceLine` is `null`. Do **not** guess a line. Use the annotation's `quote`
+    (and `nodeId` for a diagram node) to find what the reviewer was looking at, and treat the note as
+    feedback on content that has already moved on — often it was your own earlier edit that addressed it.
+
+An orphan is normal and expected in a living document: the reviewer comments, you edit the block, and
+that block's anchor changes by construction. It is information, not an error.
 
 ### `GET /api/answers?key=<key>` — `:::question` answers
 
