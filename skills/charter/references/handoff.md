@@ -71,21 +71,59 @@ an offline command.
 
 ### Open question vs Answered
 
-For each `:::question`, `handoff` emits one of two plain-markdown lines:
+For each `:::question`, `handoff` emits **two** plain-markdown lines: a status line, then a metadata line.
+
+The **status** line is one of:
 
 - **Answered** (a matching `id` in `--answers`, or an `answer` already filled in inline) → an
   **"Answered:"** line carrying the chosen value(s).
 - **Open** (no inline `answer` and no matching `--answers` id) → an **"Open question (unresolved)"** line.
   Guardrails sees an unresolved decision it can surface for a human.
 
+The **metadata** line is the same shape in both cases — `id`, `mode`, `target`, and (when the mode declares
+them) `options`, as emphasis + inline code:
+
+```
+_Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgres`, `DynamoDB`_
+```
+
 So the same plan hands off differently depending on what you supply:
 
 ```
 # with --answers db-choice → ["Postgres"]
-Answered: Which datastore should the service use? → Postgres
+**Q: Which datastore should the service use?** — Answered: Postgres
+_Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgres`, `DynamoDB`_
 
 # without an answer for it
-Open question: Which datastore should the service use?
+> **Open question (unresolved):** Which datastore should the service use?
+> _Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgres`, `DynamoDB`_
+```
+
+**Why the metadata line is load-bearing** (it is not decoration):
+
+- **`options` survive on an ANSWERED question.** `charter-format` says to fold a resolved answer in *"keeping
+  the `options` as rationale"* — the **rejected** option is what lets the breakdown author a guardrail that
+  FAILS if the implementation reaches for it. Dropping options once a question was answered destroyed exactly
+  that, and made answered/open asymmetric.
+- **`target` is the routing signal.** The headless breakdown branches on `human` vs `agent`; without it the
+  flattened path structurally cannot honour `target: agent` and halts for a human on a decision the plan
+  author had explicitly delegated to the agent.
+- **`id` correlates** the flattened question back to its `:::question` block (and to `--answers`).
+
+It stays **plain CommonMark** — emphasis and inline code, nothing that reopens a `:::` directive — so the
+headless contract is unchanged and the line reads naturally in a rendered PR diff.
+
+### Unknown directives
+
+An unrecognized `:::foo` (a typo, or a container the catalog does not define) is flagged as unknown **and its
+body is preserved** — emitted as blockquoted prose under the marker, so the content behind the typo is never
+silently dropped:
+
+```
+> **Unknown Charter directive `:::file-tree` — not in the format catalog.** Its body is preserved below.
+>
+> src/
+>   Charter.Core/
 ```
 
 ### The end-to-end shape

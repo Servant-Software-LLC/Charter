@@ -284,12 +284,13 @@ public class HandoffMarkdownTests
     [Fact]
     public void Emit_DiagramBodyContainingBacktickFences_StaysOneCodeBlock()
     {
-        // The same breakout risk for a :::diagram whose body carries bare ``` lines: a hard-coded 3-backtick
-        // ```mermaid wrapper would be closed early by the inner ```; the fence must exceed the inner run so the
-        // whole Mermaid source survives as ONE code block.
+        // The same breakout risk for a :::diagram whose body carries a bare ``` line that is NOT the
+        // container's own wrapper (an unbalanced stray, so it cannot be unwrapped — see
+        // HandoffFenceFidelityTests for the balanced/wrapped form). A hard-coded 3-backtick ```mermaid opener
+        // would be closed early by that inner ```; the emitted fence must exceed the inner run so the whole
+        // Mermaid source survives as ONE code block.
         const string diagramDoc =
             ":::diagram\n" +
-            "```\n" +
             "graph TD; A-->B;\n" +
             "```\n" +
             ":::";

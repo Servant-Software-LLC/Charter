@@ -273,6 +273,32 @@ public sealed record QuestionSpec(
         return (values, null);
     }
 
+    /// <summary>
+    /// The authoring-format token for <paramref name="mode"/> — the exact inverse of the mapping
+    /// <see cref="TryParseMode"/> reads. Single-sourced here so any surface that needs to WRITE the mode back
+    /// out (the Guardrails handoff's question-metadata line) cannot drift from the token the parser accepts.
+    /// </summary>
+    public static string Token(QuestionMode mode) => mode switch
+    {
+        QuestionMode.SingleSelect => "single",
+        QuestionMode.MultiSelect => "multi",
+        QuestionMode.FreeText => "free-text",
+        QuestionMode.Bool => "bool",
+        QuestionMode.Number => "number",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown question mode."),
+    };
+
+    /// <summary>
+    /// The authoring-format token for <paramref name="target"/> — the exact inverse of the mapping
+    /// <see cref="TryParseTarget"/> reads, single-sourced for the same reason as <see cref="Token(QuestionMode)"/>.
+    /// </summary>
+    public static string Token(QuestionTarget target) => target switch
+    {
+        QuestionTarget.Human => "human",
+        QuestionTarget.Agent => "agent",
+        _ => throw new ArgumentOutOfRangeException(nameof(target), target, "Unknown question target."),
+    };
+
     /// <summary>Maps a body <paramref name="token"/> to its <see cref="QuestionMode"/>; false when unknown.</summary>
     private static bool TryParseMode(string token, out QuestionMode mode)
     {
