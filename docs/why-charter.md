@@ -45,7 +45,10 @@ others is even trying to be.
 
 | Capability | Charter | Lavish | visual-plan |
 |---|:---:|:---:|:---:|
-| In-browser comment-in-place review | ● | ● | ○ |
+| In-browser comment-in-place review | ● | ● | ● |
+| Comment threads, replies, resolve, mentions, identity | — | — | ● |
+| Anchors that survive a re-render, mapped back to source lines | ● | ○ | ○ |
+| Reviewer's decision written back **into** the plan file | ● | — | — |
 | Typed block schema — no hand-written HTML | ● | — | ● |
 | Feeds an execution engine (verified task DAG) | ● | — | — |
 | Local-first, loopback-only, zero telemetry | ● | — | — |
@@ -54,11 +57,21 @@ others is even trying to be.
 
 **●** full · **○** partial · **—** none / not the goal
 
+**Read this honestly.** On *comment richness*, `visual-plan` (Builder.io's open `agent-native`) is
+**ahead of us** — it ships threads, replies, resolve, mentions, and author identity; we ship none of
+those today. Don't claim that ground. Charter's edge is the two rows underneath it: our anchors are
+content-derived hashes carrying a **source-map back to the exact markdown line** an agent edits, and a
+reviewer's answer is **written back into the plan file itself** — so the decision travels with the
+document into execution. Neither of the others writes a reviewer's decision back into the artifact.
+
 ## If pushed on "why not just adopt one?"
 
-- **Stack — suite consistency.** Guardrails and firstmate are C#/.NET. Charter is one native binary
-  that matches them — adopting a JS/TS tool would drag a compiler and framework into the pipeline for
-  no benefit.
+- **Stack — suite consistency.** Guardrails and firstmate are C#/.NET. Charter ships as one
+  self-contained native binary that matches them — no Node, no build step, no package install at the
+  point of use. (Be precise if pressed: Charter has three NuGet dependencies and vendors a Mermaid
+  runtime for offline diagram rendering. The claim is a single binary to *deploy and run*, not "no
+  JavaScript anywhere.") Adopting a JS/TS tool would put a compiler, a framework, and a package tree
+  into the pipeline itself.
 - **Trust — properties they don't offer.** Lavish ships telemetry **default-on**; `visual-plan`'s
   default deliverable is **hosted** — data leaves the machine. Charter is loopback-only, local-first,
   zero telemetry. Not a switch you flip on someone else's tool.

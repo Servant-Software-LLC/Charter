@@ -84,7 +84,8 @@ it in front of the human.
 > (convert-and-enrich or from-scratch) — the single terminal action of authoring is to run `charter review`
 > and hand them the printed capability URL. **Never** offer reading the raw `.charter.md` (or `plan.html`)
 > as an alternative or an equally-valid option: in the review server a `:::question` is a native `<form>`,
-> a `:::diagram` is an interactive pan/zoom graph, and every block is annotatable **in place** — none of
+> a `:::diagram` is a rendered graph whose individual nodes are annotatable, and every block is
+> annotatable **in place** — none of
 > which exists in the raw source. Reading the raw file is not a lighter version of the review; it is not
 > the review Charter is built around at all. Do not present a "look at the file vs. start the review"
 > choice — start the review.
@@ -160,7 +161,7 @@ it, and a drift test binds them. Do not fork or invent directives.
 | callout | `:::note` / `:::warn` |
 | table / comparison | pipe tables · `:::comparison` |
 | code / diff | fenced ` ```lang ` · `:::diff` |
-| diagram | `:::diagram` (Mermaid body) — annotatable per node, pan/zoom |
+| diagram | `:::diagram` (Mermaid body) — rendered theme-aware as inline SVG, annotatable per node |
 | wireframe / escape hatch | `:::custom-html` (sanitized inline HTML) |
 | **question (elicitation)** | **`:::question`** |
 
