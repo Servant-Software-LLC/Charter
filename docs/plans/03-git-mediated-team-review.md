@@ -49,37 +49,51 @@ beside it. That *strengthens* Arch B's single-writer property.
 
 ---
 
-## 2. Decision: per-author-per-session append-only JSONL logs
+## 2. Decision: per-author append-only JSONL logs
 
 ```
 docs/plans/tenant-rate-limit.charter.md            <- the plan (agent writes)
 docs/plans/tenant-rate-limit.charter.review/       <- the review log (Charter writes)
-    alice-example-com.20260726T104500Z-a1b2.jsonl
-    bob-example-com.20260726T111203Z-7f3e.jsonl
+    alice-example-com.4f2a91c8.jsonl
+    bob-example-com.1d70b3e5.jsonl
 ```
 
-- **One file per (author, review session)** — a session is one `charter review` invocation.
+- **One file per author**, for the life of the plan. Filename is
+  `<slug(email)>.<first 8 hex of sha256(email)>.jsonl`.
 - **Append-only.** Records are immutable; edit/resolve/reopen/retract/reply are *new records*; state is a
   deterministic **fold**.
 - **Committed by default** (owner decision) — with a documented opt-out (§7).
 - **One JSON object per line. Never pretty-printed.**
 
+**The email hash in the filename is load-bearing, not decoration.** A slug alone is not identity:
+`alice@ng.example.com` and `alice.ng@example.com` both slug to `alice-ng-example-com`. Under a per-session
+scheme a random suffix hid that; with one file per author *forever*, two people would otherwise **share a
+file** — interleaving their records and conflicting on every parallel review. The hash makes the filename
+a function of the true identity while keeping the slug human-readable.
+
 ### Why this shape
 
-Two reviewers, or one reviewer in two sittings, never write the same file — so the **common** case needs
-no merge driver at all. Verified: three teammates, parallel branches, squash-merged PRs, **no
-`.gitattributes` present** → 0 conflicts, all records survive, and a resolve authored on one branch
-correctly closed a comment authored on another.
+**Different reviewers never write the same file**, so the ordinary parallel-review case — the one this
+design exists for — needs no merge driver at all. Verified: three teammates, parallel branches,
+squash-merged PRs, **no `.gitattributes` present** → 0 conflicts, all records survive, and a resolve
+authored on one branch correctly closed a comment authored on another.
 
-**Honest limit — this is not "conflict-free by construction" in every case.** Two reproduced exceptions:
+**Honest limit — "conflict-free by construction" applies to *distinct authors*, not to everything.**
+Reproduced exceptions, all involving one author's own file:
 
-- **Squash-merge then continue the same session.** Alice's PR is squash-merged while her `charter review`
-  is still open; she appends and syncs → **`CONFLICT (add/add)`**, clean *with* `merge=union`.
+- **Same author, two branches or two machines** (laptop and desktop, or two open PRs) → the same file
+  diverges → resolved cleanly *by* `merge=union`, but **shown as conflicting on GitHub**, which does not
+  honour the driver (below). This is the cost the per-author choice accepts, in exchange for ~10× fewer
+  files and a PR diff that reads as "what Alice said."
 - **Cherry-pick / delete-one-side** → **`CONFLICT (modify/delete)`**, which **union cannot resolve at
-  all**.
+  all**, under any file-granularity scheme.
 
-So `merge=union` is still worth committing, and the surgery cases still need a human. What per-session
-buys is that the *ordinary* parallel-review path never conflicts.
+So `merge=union` is still worth committing, and surgery cases still need a human.
+
+*(Chosen over per-author-per-session on 2026-07-26. Per-session removes the same-author case too, but at
+~60 permanently-committed files for a two-week three-reviewer review — and since it still needs union for
+squash-then-continue and cannot help modify/delete either, the gap between the two was narrower than it
+first appeared.)*
 
 ### Why not a single shared log
 
@@ -93,12 +107,13 @@ The failure is loud (merge button disabled, REST 405), not silent — no corrupt
 shared log, *every parallel review PR would show as conflicting*, in the exact workflow this design
 serves.
 
-| | single JSONL | one file per comment | per-author | **per-author-per-session** |
+| | single JSONL | one file per comment | **per-author** | per-author-per-session |
 |---|---|---|---|---|
-| Ordinary parallel review | needs `merge=union` | conflict-free | needs union (same author) | **conflict-free** |
-| Works on GitHub PRs | **no** | yes | mostly | **yes** |
-| Files for a 40-comment review | 1 | **83** | ~3 | **2 per round** |
-| PR diff readability | good | **poor** | good | **best** |
+| Ordinary parallel review (distinct authors) | needs `merge=union` | conflict-free | **conflict-free** | conflict-free |
+| Same author, two branches | needs union | conflict-free | **needs union** | conflict-free |
+| Works on GitHub PRs | **no** | yes | **yes**, except same-author-two-branches | yes |
+| Files, 3 reviewers × 2 weeks | 1 | **~150** | **3** | ~60 |
+| PR diff readability | good | **poor** | **best** — "what Alice said" | good |
 
 **Rejected — single JSON array.** Conflicts on every parallel comment.
 
@@ -267,7 +282,7 @@ Claiming "Addressed" requires positive evidence that the *commented* block's con
 **Charter never mutates git.** It does not commit, push, stage, or rewrite history. It **may read** git
 state (§5.1).
 
-- **`charter review`** — opens/creates this session's log; loads **all** logs in the plan's `.review/` dir
+- **`charter review`** — opens/appends to **this author's** log; loads **all** logs in the plan's `.review/` dir
   and folds them, so the panel shows teammates' comments. Watches the `.review/` directory as well as the
   plan file, so a `git pull` landing a teammate's log mid-session refreshes the panel instead of silently
   showing the startup fold.
@@ -346,11 +361,11 @@ Therefore:
    **rendered** artifact (a diagram node, a comparison row, a question form), anchors that survive
    re-render, and decisions that flow into execution. **Honest framing: complementary, not competitive —
    if most of your comments are "this section is wrong," PR review is cheaper and you should use it.**
-2. **Retention.** "2 files per review" is per *round*, not per plan lifetime: 3 reviewers × 2 sittings/day
-   × 2 weeks ≈ 60 files that are never deleted and outlive the plan. Deferring GC is cheap for a local
-   cache and **not** cheap for a committed artifact. Per-author (not per-session) cuts this ~10× and —
-   given §2's honest limit that per-session *also* needs union in the surgery cases — the gap between the
-   two options is narrower than the table suggests. **Re-test that row before implementation.**
+2. **Retention — resolved by the per-author choice (2026-07-26).** File count is now bounded by *team
+   size*, not by review activity: three reviewers means three files, whether the review lasts a day or a
+   quarter. Growth is within-file, and a log of one person's comments on one plan stays small. Compaction
+   is therefore deferred indefinitely rather than provisionally — and if it ever happens it is a rewrite,
+   safe only on a quiesced branch.
 3. **Two reviewers, contradictory notes on the same anchor.** No merge problem; the agent needs skill
    guidance on surfacing disagreement rather than silently picking one.
 4. **Plan rename strands the review history.** The `.review/` dir is name-derived and nothing follows it —
