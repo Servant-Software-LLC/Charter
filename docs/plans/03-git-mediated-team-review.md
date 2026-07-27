@@ -324,6 +324,23 @@ state (§5.1).
 - **`charter review verify`** *(new)* — audits that no record ever committed is missing from HEAD,
   catching both silent-loss paths (§3), and warns on a stranded `.review/` directory (§8.4).
 
+### 5.0 Solo is the primary use case and must not regress
+
+**One person using Charter alone remains the main use case.** Team review is additive; it must never make
+solo use heavier. Concretely, binding on every slice:
+
+- A solo reviewer who never intends to share **must not be nagged**. The §5.1 warnings fire only when the
+  `.review/` directory is actually **tracked** — i.e. the user has opted into sharing. Untracked,
+  gitignored, or not-a-repo ⇒ **silent**, and Charter behaves exactly as it does today.
+- No new required setup: no git identity, no `.gitattributes`, no repo. Missing git identity falls back to
+  a local identity and the review still works (§2).
+- The solo path *gains* from the log and should be framed that way: comments stop vanishing on drain, so
+  the reviewer keeps a durable record of what they asked for and what was addressed — the deeper form of
+  the #42 complaint — and it survives restarts and their own second machine.
+
+*(A solo user can still exercise the team path deliberately — two git identities in a scratch repo, two
+branches, merge — which is exactly what the spike did.)*
+
 ### 5.1 Read-only git awareness (new, and load-bearing)
 
 "Charter never runs git" conflated *must not mutate* (a sound invariant) with *must not read* (not implied,
