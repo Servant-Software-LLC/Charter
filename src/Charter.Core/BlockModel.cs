@@ -314,11 +314,23 @@ internal static class CharterMarkdown
     /// the one deliberate raw-HTML escape hatch is <c>:::custom-html</c>, which <see cref="CharterContainerRenderer"/>
     /// renders verbatim. The vendored Mermaid runtime and the serve-time SDK are injected AFTER render (not via
     /// markdown HTML), so escaping raw markdown HTML never touches them.
+    /// <para>
+    /// <see cref="MarkdownPipelineBuilderExtensions.UseSoftlineBreakAsHardlineBreak"/> is enabled (Charter #44):
+    /// a bare newline inside a paragraph is a CommonMark SOFT break, which HTML's default
+    /// <c>white-space: normal</c> then collapses — so an evidently-intentional multi-line block (a metadata
+    /// header, an address, a list of names) renders as one run-on line. That is spec-correct and still wrong for
+    /// a tool whose point is that the reviewer sees what the author intended, so Charter follows GFM (and the
+    /// author's eye) and renders each newline as a visual break. This is a RENDERER-level extension: it changes
+    /// HTML output only, never the parsed model — so content-derived <see cref="Block.Id"/> anchors, the
+    /// <see cref="SourceMap"/>, and the plain-CommonMark handoff are all unaffected, and no existing annotation
+    /// re-anchors because of it.
+    /// </para>
     /// </summary>
     internal static MarkdownPipeline Pipeline { get; } = new MarkdownPipelineBuilder()
         .UseYamlFrontMatter()
         .UsePipeTables()
         .UseCustomContainers()
+        .UseSoftlineBreakAsHardlineBreak()
         .DisableHtml()
         .Build();
 
