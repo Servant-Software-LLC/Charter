@@ -438,6 +438,15 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         renderer.Write(" data-question-id=\"");
         renderer.WriteEscape(spec.Id);
         renderer.Write('"');
+
+        // Declare the MODE to the SDK. The SDK has always preferred an explicit data-question-mode over
+        // inferring the mode from the controls present — but the renderer never stamped it, so inference was
+        // the only path, and inference reads a `bool` (two Yes/No radios since Charter #43) as a `single`. That
+        // left the SDK's bool branch dead and reported every bool answer to the agent as mode "single". The
+        // token comes from QuestionSpec, the single source of truth for the mode vocabulary.
+        renderer.Write(" data-question-mode=\"");
+        renderer.WriteEscape(QuestionSpec.Token(spec.Mode));
+        renderer.Write('"');
         if (answered)
         {
             renderer.Write(" data-answered=\"true\"");
@@ -461,10 +470,31 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         renderer.WriteLine("</legend>");
 
         WriteQuestionControls(renderer, spec);
+        WriteSubmitControl(renderer);
 
         renderer.WriteLine("</fieldset>");
         renderer.WriteLine("</form>");
     }
+
+    /// <summary>
+    /// Emit the question form's SUBMIT control (Charter #56). Without it a reviewer could not answer AT ALL:
+    /// the SDK listens for the <c>submit</c> event, and a form carrying no submit control produces none — not
+    /// from clicking a radio, not from Enter, not from Ctrl+Enter. Only a scripted <c>requestSubmit()</c> did,
+    /// which is what the browser test used, so the suite stayed green over an unusable form.
+    ///
+    /// It ships <c>disabled</c>, which is the correct initial state twice over. Semantically: nothing has
+    /// changed yet, so there is nothing to submit — true of an OPEN question (nothing chosen) and of a RESOLVED
+    /// one (what is selected IS the recorded answer). Structurally: the saved artifact carries no SDK
+    /// (invariant 1), so an enabled button there would fire a NATIVE submit and navigate the page to
+    /// <c>?answer=…</c>. The SDK owns the enabled state from load onward — it enables the moment the reviewer's
+    /// answer differs from the recorded one, which is also what lets a settled decision be revised and
+    /// re-submitted. A disabled default button additionally suppresses the form's implicit Enter submission,
+    /// so the keyboard path follows the same rule for free.
+    /// </summary>
+    private static void WriteSubmitControl(HtmlRenderer renderer)
+        => renderer.WriteLine(
+            "<div class=\"question-actions\">"
+            + "<button type=\"submit\" class=\"question-submit\" disabled>Save answer</button></div>");
 
     /// <summary>
     /// Emit the native control(s) for the question's <see cref="QuestionSpec.Mode"/>: <c>single</c> → one

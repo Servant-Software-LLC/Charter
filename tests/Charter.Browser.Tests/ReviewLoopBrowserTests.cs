@@ -157,9 +157,11 @@ public sealed class ReviewLoopBrowserTests
                 Assert.True(await page.EvaluateAsync<bool>(
                     "() => typeof window.CharterAnnotate === 'object' && typeof window.CharterAnnotate.init === 'function'"),
                     "the annotation SDK (data-charter-sdk) must have defined window.CharterAnnotate");
-                // The SDK auto-inits on DOMContentLoaded and emits 'ready'; wait on that event (no arbitrary sleep).
-                await page.WaitForFunctionAsync("() => (window.__charterEvents || []).includes('ready')",
-                    null, new PageWaitForFunctionOptions { Timeout = 10_000 });
+                // The SDK auto-inits on DOMContentLoaded and emits 'ready'; wait on that event (no arbitrary
+                // sleep). Via the bounded EvaluateAsync poll, NOT WaitForFunctionAsync: the latter's polling
+                // loop `eval`s its predicate in the page, which the served CSP (no 'unsafe-eval') refuses — it
+                // only ever appeared to work here because 'ready' is usually already true on the first check.
+                await WaitForEventAsync(page, "ready");
 
                 // ---- #8: a :::question is a native <form>, and answering it round-trips to the server ----
                 Assert.Equal("FORM", await page.EvaluateAsync<string>(
@@ -183,6 +185,364 @@ public sealed class ReviewLoopBrowserTests
                 File.Delete(planPath);
             }
         }
+    }
+
+    // ---- Charter #56: a HUMAN can answer every question mode, in a browser, with the mouse -------------
+
+    // One question per mode. The matrix exists because the two #56 defects were mode-shaped: the missing
+    // submit control broke ALL modes for a human, and the non-array `values` broke exactly free-text and
+    // number (bool escaped only because mode inference mislabelled it a single). A per-mode round-trip is the
+    // only shape of test that would have caught both.
+    private const string ModesPlan =
+        "# Every question mode\n\n" +
+        "A plan whose only content is one question of each mode.\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-single\",\"title\":\"Pick one colour\",\"mode\":\"single\",\"target\":\"human\"," +
+        "\"options\":[\"Red\",\"Green\",\"Blue\"]}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-multi\",\"title\":\"Pick the channels\",\"mode\":\"multi\",\"target\":\"human\"," +
+        "\"options\":[\"Email\",\"Slack\",\"Webhook\"]}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-free\",\"title\":\"Say why\",\"mode\":\"free-text\",\"target\":\"human\"}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-bool\",\"title\":\"Ship it?\",\"mode\":\"bool\",\"target\":\"human\"}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-number\",\"title\":\"How many replicas?\",\"mode\":\"number\",\"target\":\"human\"}\n" +
+        ":::\n";
+
+    /// <summary>
+    /// Charter #56, both halves, for EVERY mode: a human-realistic interaction (click a control / type a value,
+    /// then CLICK THE SAVE BUTTON — never a scripted <c>requestSubmit()</c>) reaches the server with an answer
+    /// whose <c>values</c> is an array carrying exactly what was chosen.
+    ///
+    /// P0 is guarded by clicking a real control: before the fix the form had no submit control at all, so no
+    /// submit event could be produced by any human action and this test cannot pass by accident.
+    /// P1 is guarded by the free-text / number / bool legs plus the zero-console-errors assertion: the old SDK
+    /// posted a bare string / boolean, the server rejected it 400, and Chromium logs the failed request as a
+    /// console error.
+    /// </summary>
+    [SkippableFact]
+    public async Task Every_question_mode_answers_through_its_save_button_and_reaches_the_server()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-question-modes-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, ModesPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // ---- single: click one radio ----
+            await AssertSaveDisabledAsync(page, "q-single");
+            await page.CheckAsync(Control("q-single", "input[type=radio][value=\"Red\"]"));
+            await SaveAsync(page, "q-single");
+            Assert.Equal(
+                new[] { "Red" },
+                await WaitForAnswerValuesAsync(server, session, "q-single"));
+
+            // ---- multi: check two boxes; BOTH must ride the array ----
+            await AssertSaveDisabledAsync(page, "q-multi");
+            await page.CheckAsync(Control("q-multi", "input[type=checkbox][value=\"Email\"]"));
+            await page.CheckAsync(Control("q-multi", "input[type=checkbox][value=\"Webhook\"]"));
+            await SaveAsync(page, "q-multi");
+            Assert.Equal(
+                new[] { "Email", "Webhook" },
+                await WaitForAnswerValuesAsync(server, session, "q-multi"));
+
+            // ---- free-text: type into the textarea (the P1 400 lived here) ----
+            await AssertSaveDisabledAsync(page, "q-free");
+            await page.FillAsync(Control("q-free", "textarea"), "Because the read path stays Postgres-only.");
+            await SaveAsync(page, "q-free");
+            Assert.Equal(
+                new[] { "Because the read path stays Postgres-only." },
+                await WaitForAnswerValuesAsync(server, session, "q-free"));
+
+            // ---- bool: the Yes radio. Charter #43 made this two radios; the SDK must now collect it AS a
+            // bool (mode "bool" on the wire), not as an accidentally-inferred single.
+            await AssertSaveDisabledAsync(page, "q-bool");
+            await page.CheckAsync(Control("q-bool", "input[type=radio][value=\"true\"]"));
+            await SaveAsync(page, "q-bool");
+            var boolAnswer = await WaitForAnswerAsync(server, session, "q-bool");
+            Assert.Equal(new[] { "true" }, ReadValues(boolAnswer));
+            Assert.Equal("bool", boolAnswer.GetProperty("mode").GetString());
+
+            // ---- number: type a number (the other P1 400) ----
+            await AssertSaveDisabledAsync(page, "q-number");
+            await page.FillAsync(Control("q-number", "input[type=number]"), "3");
+            await SaveAsync(page, "q-number");
+            Assert.Equal(
+                new[] { "3" },
+                await WaitForAnswerValuesAsync(server, session, "q-number"));
+
+            // Every mode reported its own mode over the wire — the field the headless handoff routes on.
+            foreach (var (questionId, mode) in new[]
+                     {
+                         ("q-single", "single"), ("q-multi", "multi"), ("q-free", "free-text"),
+                         ("q-bool", "bool"), ("q-number", "number"),
+                     })
+            {
+                Assert.Equal(
+                    mode,
+                    (await WaitForAnswerAsync(server, session, questionId)).GetProperty("mode").GetString());
+            }
+
+            // The whole point of asserting this here: a 400 on ANY leg above shows up as a console error, so
+            // this single assertion is what makes the P1 regression impossible to reintroduce quietly.
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A RESOLVED question must still be revisable: a review round exists to change decisions. The Save button
+    /// starts disabled (the recorded answer is already what is selected — there is nothing to submit), enables
+    /// the moment the reviewer picks something different, and re-submitting posts the NEW value.
+    /// </summary>
+    [SkippableFact]
+    public async Task Answered_question_can_be_re_answered_and_save_tracks_the_change()
+    {
+        const string plan =
+            "# A settled decision\n\n" +
+            ":::question\n" +
+            "{\"id\":\"q-settled\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\"," +
+            "\"options\":[\"Postgres\",\"DynamoDB\"],\"answer\":[\"Postgres\"]}\n" +
+            ":::\n";
+
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-question-answered-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // The answered surface still reads as answered (Charter #48) — and it still offers Save.
+            Assert.True(await page.EvaluateAsync<bool>(
+                "() => document.querySelector('form[data-question-id=\"q-settled\"]')" +
+                ".classList.contains('answered')"));
+            Assert.Equal("true", await page.GetAttributeAsync(Question("q-settled"), "data-answered"));
+            await page.WaitForSelectorAsync(Question("q-settled") + " .question-status");
+            Assert.True(await page.IsCheckedAsync(Control("q-settled", "input[type=radio][value=\"Postgres\"]")));
+
+            // Nothing has changed yet, so there is nothing to submit.
+            await AssertSaveDisabledAsync(page, "q-settled");
+
+            // Revise the decision — Save enables, and the NEW value is what reaches the server.
+            await page.CheckAsync(Control("q-settled", "input[type=radio][value=\"DynamoDB\"]"));
+            await SaveAsync(page, "q-settled");
+            Assert.Equal(
+                new[] { "DynamoDB" },
+                await WaitForAnswerValuesAsync(server, session, "q-settled"));
+
+            // Having landed, Save settles back to "nothing to submit" against the newly recorded answer.
+            await AssertSaveDisabledAsync(page, "q-settled");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enter must submit where the control makes that natural, WITHOUT costing a free-text answer its
+    /// newlines: a <c>&lt;textarea&gt;</c> keeps Enter as a newline and submits on Ctrl/⌘+Enter.
+    /// </summary>
+    [SkippableFact]
+    public async Task Free_text_keeps_enter_as_a_newline_and_submits_on_ctrl_enter()
+    {
+        const string plan =
+            "# Free text\n\n" +
+            ":::question\n" +
+            "{\"id\":\"q-why\",\"title\":\"Say why\",\"mode\":\"free-text\",\"target\":\"human\"}\n" +
+            ":::\n";
+
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-question-ctrlenter-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var textarea = Control("q-why", "textarea");
+            await page.ClickAsync(textarea);
+            await page.Keyboard.TypeAsync("first line");
+            await page.Keyboard.PressAsync("Enter");
+            await page.Keyboard.TypeAsync("second line");
+
+            // Enter did NOT submit — it inserted a newline, which is the only sane behaviour in a textarea.
+            Assert.Equal("first line\nsecond line", await page.InputValueAsync(textarea));
+            Assert.Equal(
+                0, (await ListAnswersAsync(server.Address, session.Key.Value)).GetArrayLength());
+
+            // Ctrl+Enter submits, newlines intact.
+            await page.Keyboard.PressAsync("Control+Enter");
+            Assert.Equal(
+                new[] { "first line\nsecond line" },
+                await WaitForAnswerValuesAsync(server, session, "q-why"));
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    // ---- question-form helpers ---------------------------------------------------------------------------
+
+    /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
+    private static string Question(string questionId)
+        => "form[data-question-id=\"" + questionId + "\"]";
+
+    /// <summary>A control inside <paramref name="questionId"/>'s form.</summary>
+    private static string Control(string questionId, string selector)
+        => Question(questionId) + " " + selector;
+
+    /// <summary>The Save button the renderer emits in every question form (Charter #56 / P0).</summary>
+    private static string SaveButton(string questionId)
+        => Control(questionId, "button[type=submit]");
+
+    /// <summary>
+    /// The Save button exists but is DISABLED — "there is nothing to submit". Asserting the button EXISTS is
+    /// the direct P0 guard; asserting it is disabled is the enabled-state rule.
+    /// </summary>
+    private static async Task AssertSaveDisabledAsync(IPage page, string questionId)
+    {
+        await page.WaitForSelectorAsync(SaveButton(questionId));
+        Assert.True(
+            await page.IsDisabledAsync(SaveButton(questionId)),
+            questionId + ": Save must be disabled while the form matches the recorded answer");
+    }
+
+    /// <summary>
+    /// Answer by CLICKING the Save button, the way a human does. Playwright's actionability check refuses to
+    /// click a disabled button, so this also asserts the button ENABLED once the answer changed.
+    /// </summary>
+    private static async Task SaveAsync(IPage page, string questionId)
+    {
+        Assert.True(
+            await page.IsEnabledAsync(SaveButton(questionId)),
+            questionId + ": Save must enable once the reviewer's answer differs from the recorded one");
+        await page.ClickAsync(SaveButton(questionId));
+    }
+
+    /// <summary>
+    /// Poll the non-destructive answers peek until <paramref name="questionId"/>'s answer arrives. Bounded
+    /// <c>EvaluateAsync</c>-free HTTP polling — never <c>WaitForFunctionAsync</c>, whose in-page
+    /// <c>eval</c> the served CSP correctly refuses.
+    /// </summary>
+    private static async Task<JsonElement> WaitForAnswerAsync(
+        ReviewServer server, ReviewSession session, string questionId)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (DateTime.UtcNow < deadline)
+        {
+            var answers = await ListAnswersAsync(server.Address, session.Key.Value);
+            JsonElement? latest = null;
+            foreach (var answer in answers.EnumerateArray())
+            {
+                if (string.Equals(
+                        answer.GetProperty("questionId").GetString(), questionId, StringComparison.Ordinal))
+                {
+                    // The LAST match: re-answering a question queues a second answer, and the newest is the
+                    // reviewer's current decision.
+                    latest = answer.Clone();
+                }
+            }
+
+            if (latest.HasValue)
+            {
+                return latest.Value;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail("no answer for '" + questionId + "' reached the server within 15s");
+        throw new InvalidOperationException("unreachable");
+    }
+
+    private static async Task<string[]> WaitForAnswerValuesAsync(
+        ReviewServer server, ReviewSession session, string questionId)
+        => ReadValues(await WaitForAnswerAsync(server, session, questionId));
+
+    private static string[] ReadValues(JsonElement answer)
+        => answer.GetProperty("values").EnumerateArray().Select(v => v.GetString()!).ToArray();
+
+    private static async Task<JsonElement> ListAnswersAsync(Uri address, string key)
+    {
+        using var client = new HttpClient();
+        var url = new UriBuilder(address) { Path = "api/answers", Query = "key=" + key }.Uri;
+        using var doc = JsonDocument.Parse(await client.GetStringAsync(url));
+        return doc.RootElement.Clone();
+    }
+
+    private static void AssertNoBrowserErrors(Instrumented instrumented)
+    {
+        Assert.True(
+            instrumented.ConsoleErrors.Count == 0,
+            "console errors present:\n  " + string.Join("\n  ", instrumented.ConsoleErrors));
+        Assert.True(
+            instrumented.PageErrors.Count == 0,
+            "page errors present:\n  " + string.Join("\n  ", instrumented.PageErrors));
     }
 
     // ---- Charter #41 (no native prompt) + #42 (view / edit / delete the pending notes) -------------------

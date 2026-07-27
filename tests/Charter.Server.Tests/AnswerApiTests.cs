@@ -279,6 +279,88 @@ public class AnswerApiTests
         }
     }
 
+    // ---- 6. `values` is an ARRAY — the contract both sides must agree on (Charter #56 / P1) --------------
+
+    [Theory]
+    [InlineData("\"just-a-string\"")]        // the SDK's old free-text / number shape
+    [InlineData("true")]                     // the SDK's old bool shape
+    [InlineData("42")]
+    [InlineData("{\"a\":1}")]
+    public async Task PostAnswer_WithNonArrayValues_IsRejected(string values)
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // `values` is an ARRAY of selected values — a single answer is a ONE-ELEMENT array, never a bare
+            // scalar. The server has always enforced this (Answer.Values is IReadOnlyList<string>, so a scalar
+            // fails deserialization); this pins it, because the SDK quietly violated it for free-text, number,
+            // and bool answers, which surfaced to the reviewer as an unexplained in-page error and to the
+            // console as a 400. A contract only one side honours is not a contract.
+            var answersUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/answers");
+            using var request = new HttpRequestMessage(HttpMethod.Post, answersUri)
+            {
+                Content = new StringContent(
+                    "{\"questionId\":\"q-shape\",\"mode\":\"free-text\",\"values\":" + values +
+                    ",\"target\":\"human\"}",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            // ...and nothing was queued: a rejected answer must not half-land.
+            var answersDrain =
+                new Uri(server.Address, "api/answers?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var doc = JsonDocument.Parse(await client.GetStringAsync(answersDrain));
+            Assert.Null(FindAnswer(doc.RootElement, "q-shape"));
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
+    public async Task PostAnswer_WithASingleElementArray_IsAccepted_TheShapeEveryModeMustPost()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            // The positive half of the same contract: the one-element array a free-text / number / bool answer
+            // must post. Together with the rejection theory above this is the whole rule the SDK now follows.
+            using var response = await PostAnswerAsync(
+                client, server.Address, session.Key.Value,
+                new { questionId = "q-free", mode = "free-text", values = new[] { "ship it" }, target = "human" },
+                origin: SameOrigin(server.Address));
+            Assert.True(
+                response.IsSuccessStatusCode,
+                $"a one-element values array must be accepted, got {(int)response.StatusCode}.");
+
+            var answersUri =
+                new Uri(server.Address, "api/answers?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var doc = JsonDocument.Parse(await client.GetStringAsync(answersUri));
+            var answer = FindAnswer(doc.RootElement, "q-free");
+            Assert.True(answer.HasValue, "the accepted answer should be drainable.");
+            Assert.Equal(new[] { "ship it" }, ReadValues(answer!.Value));
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     // ---- Helpers ----------------------------------------------------------------------------------------
 
     /// <summary>

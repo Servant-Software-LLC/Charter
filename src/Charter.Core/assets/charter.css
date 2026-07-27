@@ -208,6 +208,34 @@ form.question input[type="text"] {
 form.question textarea { min-height: 5rem; }
 
 /*
+ * The Save control (Charter #56). A question form without a submit control cannot be submitted by any human
+ * action, so this is the affordance that makes the elicitation half of the review loop reachable at all. It
+ * renders DISABLED and the serve-time SDK enables it once the reviewer's answer differs from the recorded one
+ * — so the disabled look is load-bearing feedback ("nothing to submit"), not decoration.
+ */
+form.question .question-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 0.9rem;
+}
+form.question .question-submit {
+  font: inherit;
+  font-size: 0.9em;
+  line-height: 1.4;
+  padding: 0.35rem 0.95rem;
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--charter-accent);
+  border: 1px solid var(--charter-accent);
+  color: #ffffff;
+}
+form.question .question-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/*
  * A RESOLVED question (a non-empty inline `answer`) must be obviously SETTLED at a glance, so the reviewer is
  * never re-asked a decision they already made. The settled look is deliberately calmer than an open question's
  * accent-bordered card: a muted border, a subdued surface, and an "Answered" chip in the legend.
