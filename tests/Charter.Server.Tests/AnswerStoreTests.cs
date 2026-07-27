@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Charter.Server;
 using Xunit;
@@ -97,6 +98,94 @@ public class AnswerStoreTests
         Assert.Single(store.Peek()); // an apply that resolved nothing must not remove a queued answer
     }
 
+    // ---- The wake-signal invariant: completed IFF the pending buffer is non-empty (Charter #62) ----------
+    // The annotation store learned this the hard way (#42): stating the signal as a PREDICATE over the buffer,
+    // re-established under the lock after EVERY mutation, is what keeps the ack path honest. For answers the
+    // dangerous mutation is CommitFront — the ack. Miss it and a drained-then-acked queue leaves a stale
+    // completed signal, so every later `poll --wait` returns instantly: a permanent hot loop.
+
+    [Fact]
+    public async Task WaitForPendingAsync_OnEmptyStore_ReturnsFalseAfterTimeout()
+    {
+        var store = new AnswerStore();
+
+        var signaled = await store.WaitForPendingAsync(TimeSpan.FromMilliseconds(50), CancellationToken.None);
+
+        Assert.False(signaled); // nothing was ever enqueued, so the wait times out to false
+    }
+
+    [Fact]
+    public async Task WaitForPendingAsync_WhenAnAnswerArrivesDuringTheWait_ReturnsTrue()
+    {
+        var store = new AnswerStore();
+
+        // Begin waiting on an (initially) empty store with a generous timeout, so the result is decided by the
+        // Enqueue signal — not by the timeout elapsing. This is Charter #62 in miniature: before the fix the
+        // answer store had NO signal at all, so an outstanding wait could only ever end on the timeout.
+        var waitTask = store.WaitForPendingAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+
+        store.Enqueue(MakeAnswer(1));
+
+        Assert.True(await waitTask);
+    }
+
+    [Fact]
+    public async Task CommitFront_EmptyingTheBuffer_ReArmsTheWakeSignal_SoWaitBlocks()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));                 // completes the wake signal
+        Assert.Single(store.CommitFront(1));          // ...and the ack empties the buffer again
+
+        // THE regression guard. Without re-arming under the lock in CommitFront, the already-completed
+        // TaskCompletionSource makes every later `poll --wait` return instantly with nothing queued.
+        var signaled = await store.WaitForPendingAsync(TimeSpan.FromMilliseconds(250), CancellationToken.None);
+
+        Assert.False(signaled);
+    }
+
+    [Fact]
+    public async Task CommitFront_LeavingLaterAnswersQueued_KeepsTheWakeSignalArmed()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+        store.Enqueue(MakeAnswer(2));
+
+        Assert.Single(store.CommitFront(1));   // one answer remains, so the signal must stay completed
+
+        Assert.True(await store.WaitForPendingAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Enqueue_AfterAnEmptyingCommit_ReArmsTheWakeSignalAgain()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+        store.CommitFront(1);
+
+        // The re-armed (fresh) signal must still be completable by the NEXT enqueue — re-arming must not strand
+        // the store in a state where no wake ever fires again.
+        var waitTask = store.WaitForPendingAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        store.Enqueue(MakeAnswer(2));
+
+        Assert.True(await waitTask);
+    }
+
+    [Fact]
+    public async Task Peek_DoesNotDisturbTheWakeSignal()
+    {
+        var store = new AnswerStore();
+        store.Enqueue(MakeAnswer(1));
+
+        // Peek is non-destructive, so the queued answer still pends and the signal must stay completed...
+        Assert.Single(store.Peek());
+        Assert.True(await store.WaitForPendingAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
+
+        // ...and peeking an EMPTY store must not complete it either.
+        store.CommitFront(1);
+        Assert.Empty(store.Peek());
+        Assert.False(await store.WaitForPendingAsync(TimeSpan.FromMilliseconds(250), CancellationToken.None));
+    }
+
     // ---- Concurrency race (load-bearing: the lock the store exists for) ---------------------------------
 
     [Fact]
@@ -136,6 +225,10 @@ public class AnswerStoreTests
         Assert.Equal(
             toEnqueue.Select(a => a.QuestionId).OrderBy(id => id, StringComparer.Ordinal),
             observedIds.OrderBy(id => id, StringComparer.Ordinal)); // exact set match (nothing lost)
+
+        // The wake-signal invariant survives the storm: everything was committed, so the buffer is empty and a
+        // wait must BLOCK. A single missed re-arm anywhere in that interleaving leaves it spinning instead.
+        Assert.False(await store.WaitForPendingAsync(TimeSpan.FromMilliseconds(250), CancellationToken.None));
     }
 
     // ---- Helpers ----------------------------------------------------------------------------------------

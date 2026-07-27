@@ -15,7 +15,8 @@ namespace Charter.Server;
 /// <c>sourcePath</c>). A connection refusal, timeout, non-200, or a source-path mismatch all mean "not the
 /// live session I expected", so the descriptor is treated as stale. Drains use
 /// <c>GET /api/poll?key=…&amp;wait=0</c> (immediate, the non-blocking default) or, under <c>--wait</c>, one
-/// native long-poll cycle, then <c>GET /api/answers?key=…</c>.
+/// native long-poll cycle, then <c>GET /api/answers?key=…</c> and <c>GET /api/review?key=…</c> (the
+/// reviewer's explicit round hand-off).
 /// </remarks>
 public sealed class ReviewClient : IDisposable
 {
@@ -150,6 +151,91 @@ public sealed class ReviewClient : IDisposable
     public async Task<DrainOutcome<Answer>> PeekAnswersAsync(CancellationToken cancellationToken)
         => await DrainAsync<Answer>($"api/answers?key={Escaped(_key)}", "answers", cancellationToken)
             .ConfigureAwait(false);
+
+    /// <summary>
+    /// Read the reviewer's pending round HAND-OFF via <c>GET /api/review?key=…</c> — the in-page "Send to
+    /// agent" click, which tells the agent "the human is done with this round" rather than "one more comment
+    /// arrived". Non-destructive: the hand-off is cleared only by <see cref="AckReviewSubmissionAsync"/>, so a
+    /// poll that dies before acking re-reports it (the safe direction) instead of losing it.
+    /// </summary>
+    /// <remarks>
+    /// A transport/parse failure is surfaced in <see cref="DrainOutcome{T}.Error"/> like the other drains — a
+    /// hand-off Charter could not read must not be reported as "the human has not handed off". A <c>404</c> is
+    /// the ONE exception: it means the running server predates this route (a session started by an older
+    /// <c>charter review</c>), which is a capability gap, not a failed drain, so it reads as "no hand-off".
+    /// </remarks>
+    public async Task<DrainOutcome<ReviewSubmission>> PeekReviewSubmissionAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _http
+                .GetAsync(Route("api/review"), cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                return DrainOutcome<ReviewSubmission>.Success(Array.Empty<ReviewSubmission>());
+            }
+
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                return DrainOutcome<ReviewSubmission>.Failure(
+                    $"the review server returned {(int)response.StatusCode} reading the review hand-off");
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("submission", out var submission) ||
+                submission.ValueKind != JsonValueKind.Object)
+            {
+                return DrainOutcome<ReviewSubmission>.Success(Array.Empty<ReviewSubmission>());
+            }
+
+            var handoff = submission.Deserialize<ReviewSubmission>(AnnotationApi.JsonOptions);
+            return DrainOutcome<ReviewSubmission>.Success(
+                handoff is null ? Array.Empty<ReviewSubmission>() : new[] { handoff });
+        }
+        catch (HttpRequestException ex)
+        {
+            return DrainOutcome<ReviewSubmission>.Failure(
+                $"could not reach the review server reading the review hand-off ({ex.Message})");
+        }
+        catch (OperationCanceledException)
+        {
+            return DrainOutcome<ReviewSubmission>.Failure(
+                "timed out reading the review hand-off from the review server");
+        }
+        catch (JsonException ex)
+        {
+            return DrainOutcome<ReviewSubmission>.Failure(
+                $"could not parse the review hand-off response ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// Clear the reported hand-off via <c>POST /api/{key}/review/ack?sequence=…</c>, so it does not re-fire on
+    /// every later poll. Compare-and-clear by <paramref name="sequence"/>: a round the reviewer handed off
+    /// AFTER this one was reported is newer and survives. Returns <c>true</c> on a 200. A failure is NON-fatal
+    /// — the hand-off simply stays pending and is reported again next poll (at-least-once, the safe
+    /// direction) — so this returns <c>false</c> rather than throwing.
+    /// </summary>
+    public async Task<bool> AckReviewSubmissionAsync(long sequence, CancellationToken cancellationToken)
+    {
+        var uri = new Uri(_base, $"api/{Escaped(_key)}/review/ack?sequence={sequence}");
+        try
+        {
+            using var content = new StringContent(string.Empty);
+            using var response = await _http.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
+            return response.StatusCode == HttpStatusCode.OK;
+        }
+        catch (HttpRequestException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Commit (remove) the front <paramref name="count"/> answers — the prefix the caller peeked and has now

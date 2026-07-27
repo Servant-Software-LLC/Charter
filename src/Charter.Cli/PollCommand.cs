@@ -4,10 +4,11 @@ namespace Charter.Cli;
 
 /// <summary>
 /// Orchestrates <c>charter poll</c>: discover the running review session (registry, explicit descriptor, or
-/// <c>--url</c>), prove it live via <see cref="ReviewClient"/>, drain queued annotations + answers, and emit
-/// the single stdout envelope — and, under <c>--apply</c>, write the drained answers INLINE into the plan's
-/// <c>:::question</c> blocks (the living-document write, via <see cref="QuestionResolution.ApplyToFile"/>). The
-/// server-facing pieces live in Charter.Server; this only sequences them and maps outcomes to exit codes.
+/// <c>--url</c>), prove it live via <see cref="ReviewClient"/>, drain queued annotations + answers + the
+/// reviewer's round hand-off, and emit the single stdout envelope — and, under <c>--apply</c>, write the
+/// drained answers INLINE into the plan's <c>:::question</c> blocks (the living-document write, via
+/// <see cref="QuestionResolution.ApplyToFile"/>). The server-facing pieces live in Charter.Server; this only
+/// sequences them and maps outcomes to exit codes.
 /// </summary>
 internal static class PollCommand
 {
@@ -55,7 +56,13 @@ internal static class PollCommand
         // reports an Error (never a silent empty), so a transient failure is not mistaken for "nothing queued".
         var annotations = await client.DrainAnnotationsAsync(wait, drainCts.Token).ConfigureAwait(false);
         var answers = await client.PeekAnswersAsync(drainCts.Token).ConfigureAwait(false);
-        var drainError = annotations.Error ?? answers.Error;
+
+        // The reviewer's explicit round HAND-OFF ("Send to agent" in the review page), read AFTER the drain so
+        // a hand-off made while a --wait poll was outstanding is reported by the very cycle it woke. Like the
+        // other drains it reports its own failure rather than a silent "no hand-off".
+        var handoff = await client.PeekReviewSubmissionAsync(drainCts.Token).ConfigureAwait(false);
+        var submission = handoff.Items.Count > 0 ? handoff.Items[0] : null;
+        var drainError = annotations.Error ?? answers.Error ?? handoff.Error;
 
         // --apply is the living-document write: peek → apply → commit. resolution.Session (non-null whenever
         // Client is) carries the server-reported SourcePath, so this locates the plan even on the --url path.
@@ -88,7 +95,18 @@ internal static class PollCommand
                     .ConfigureAwait(false)
                 : annotations.Items;
 
-            Console.WriteLine(PollEnvelope.Serialize(resolution.Session, reported, answers.Items, drainError));
+            Console.WriteLine(
+                PollEnvelope.Serialize(resolution.Session, reported, answers.Items, drainError, submission));
+        }
+
+        // The hand-off has now been REPORTED, so clear it: it marks one round, not a standing state, and an
+        // uncleared marker would tell the agent "the human is done" on every later poll. Cleared only on a
+        // CLEAN drain — when the queue state is unknown the agent has not really been told — and a failed ack
+        // is deliberately non-fatal: the marker stays and is reported again (at-least-once, the safe
+        // direction, exactly as the answers commit behaves).
+        if (submission is not null && drainError is null)
+        {
+            await client.AckReviewSubmissionAsync(submission.Sequence, drainCts.Token).ConfigureAwait(false);
         }
 
         if (applied is { Applied: false } refused)
@@ -116,7 +134,10 @@ internal static class PollCommand
             return ReviewExitCodes.DrainFailed;
         }
 
-        return annotations.Items.Count + answers.Items.Count >= 1
+        // A reviewer's round hand-off counts as something arriving even when both queues are empty (they may
+        // already have been drained): "the human says this round is done" is exactly what the agent is
+        // waiting for, so it must not be reported as a clean-empty nothing-happened.
+        return annotations.Items.Count + answers.Items.Count >= 1 || submission is not null
             ? ReviewExitCodes.Drained
             : ReviewExitCodes.CleanEmpty;
     }

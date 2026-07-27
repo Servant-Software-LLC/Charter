@@ -482,6 +482,160 @@ public class PollCommandTests
         }
     }
 
+    // ---- The reviewer's round hand-off ("Send to agent") in the envelope -----------------------------------
+
+    /// <summary>
+    /// The in-page <b>Send to agent</b> click reaches the agent as an ADDITIVE envelope marker —
+    /// <c>reviewSubmitted: true</c> plus the hand-off record — which lets it tell "the human explicitly handed
+    /// me this round" apart from "I woke because one more comment arrived". It is reported ONCE: the poll that
+    /// reports it also acks it, so a later poll does not keep re-announcing a round the agent already took.
+    /// </summary>
+    [Fact]
+    public async Task Poll_ReviewHandoff_RidesTheEnvelopeOnce_AndClearsAfterTheDrain()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            // Before the hand-off the marker is present but FALSE — additive and always parseable.
+            var idle = await RunCharterAsync(stateDir, "poll", "--url", url);
+            using (var envelope = JsonDocument.Parse(idle.StdOut.Trim()))
+            {
+                Assert.False(envelope.RootElement.GetProperty("reviewSubmitted").GetBoolean());
+                Assert.Equal(
+                    JsonValueKind.Null, envelope.RootElement.GetProperty("reviewSubmission").ValueKind);
+            }
+
+            // The reviewer answers, then clicks "Send to agent".
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+            await PostReviewSubmitAsync(url);
+
+            var handed = await RunCharterAsync(stateDir, "poll", "--url", url);
+            Assert.Equal(0, handed.ExitCode);
+
+            using (var envelope = JsonDocument.Parse(handed.StdOut.Trim()))
+            {
+                var root = envelope.RootElement;
+                Assert.True(root.GetProperty("reviewSubmitted").GetBoolean());
+
+                var submission = root.GetProperty("reviewSubmission");
+                Assert.Equal(JsonValueKind.Object, submission.ValueKind);
+                Assert.Equal(1, submission.GetProperty("answers").GetInt32());
+                Assert.Equal(0, submission.GetProperty("annotations").GetInt32());
+                Assert.True(submission.GetProperty("sequence").GetInt64() > 0);
+                Assert.NotEqual(default, submission.GetProperty("submittedAt").GetDateTimeOffset());
+
+                // The key never rides the envelope, marker or not.
+                Assert.DoesNotContain(KeyOf(url), handed.StdOut);
+            }
+
+            // Consumed by the drain that reported it: the NEXT poll is not still shouting "the human is done".
+            // The answer itself is untouched by the ack — it is still peekable (peek → apply → commit).
+            var again = await RunCharterAsync(stateDir, "poll", "--url", url);
+            using (var envelope = JsonDocument.Parse(again.StdOut.Trim()))
+            {
+                Assert.False(envelope.RootElement.GetProperty("reviewSubmitted").GetBoolean());
+                Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+            }
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    /// <summary>
+    /// A hand-off with both queues already drained is still something arriving — the human said "this round is
+    /// done" — so <c>poll</c> reports it and exits 0 (drained), never 2 (clean-empty, "nothing happened").
+    /// </summary>
+    [Fact]
+    public async Task Poll_ReviewHandoff_WithEmptyQueues_Exits0_NotCleanEmpty()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(SimplePlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            // Nothing queued at all: a plain poll is a clean-empty (exit 2).
+            Assert.Equal(2, (await RunCharterAsync(stateDir, "poll", "--url", url)).ExitCode);
+
+            await PostReviewSubmitAsync(url);
+
+            var handed = await RunCharterAsync(stateDir, "poll", "--url", url);
+            Assert.Equal(0, handed.ExitCode);
+            using var envelope = JsonDocument.Parse(handed.StdOut.Trim());
+            Assert.True(envelope.RootElement.GetProperty("reviewSubmitted").GetBoolean());
+            Assert.Equal(0, envelope.RootElement.GetProperty("annotations").GetArrayLength());
+            Assert.Equal(0, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    /// <summary>
+    /// <c>poll --wait</c> must RETURN PROMPTLY when the reviewer answers a <c>:::question</c> while the poll is
+    /// outstanding (Charter #62). The server long-polls ~30s, so completing well inside that proves the answer
+    /// woke the wait rather than the timeout expiring.
+    /// </summary>
+    [Fact]
+    public async Task PollWait_ReturnsPromptly_WhenAnAnswerArrivesDuringTheWait()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            var stopwatch = Stopwatch.StartNew();
+            var pollTask = RunCharterAsync(stateDir, "poll", "--url", url, "--wait");
+
+            // Give the child time to start and reach its long-poll, then answer.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+
+            var poll = await pollTask;
+            stopwatch.Stop();
+
+            Assert.Equal(0, poll.ExitCode);
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(25),
+                $"--wait must wake on a submitted answer, not on the ~30s timeout (took {stopwatch.Elapsed}).");
+
+            using var envelope = JsonDocument.Parse(poll.StdOut.Trim());
+            Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
     [Fact]
     public async Task Poll_DrainTransportFailure_Exits4_WithDrainError_NotCleanEmpty()
     {
@@ -942,6 +1096,27 @@ public class PollCommandTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var response = await client.SendAsync(request, cts.Token);
         Assert.True(response.IsSuccessStatusCode, $"seed answer POST should succeed, got {(int)response.StatusCode}.");
+    }
+
+    /// <summary>
+    /// Click <b>Send to agent</b> — a same-origin POST to <c>/api/{key}/review/submit</c>, exactly as the
+    /// review panel's button does when the reviewer hands the round off.
+    /// </summary>
+    private static async Task PostReviewSubmitAsync(string capabilityUrl)
+    {
+        var baseUri = new Uri(AuthorityOf(capabilityUrl) + "/");
+        var submitUri = new Uri(baseUri, $"api/{Uri.EscapeDataString(KeyOf(capabilityUrl))}/review/submit");
+
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, submitUri)
+        {
+            Content = new StringContent(string.Empty, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Origin", AuthorityOf(capabilityUrl));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var response = await client.SendAsync(request, cts.Token);
+        Assert.True(response.IsSuccessStatusCode, $"review submit POST should succeed, got {(int)response.StatusCode}.");
     }
 
     /// <summary>

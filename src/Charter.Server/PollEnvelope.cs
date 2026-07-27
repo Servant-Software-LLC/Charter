@@ -25,12 +25,16 @@ public static class PollEnvelope
     /// an agent always receives parseable JSON with <c>"session": null</c>. <paramref name="drainError"/> is
     /// <c>null</c> on a clean drain and a human-readable reason when a drain could not complete — an agent MUST
     /// treat a non-null <c>drainError</c> as "queue state unknown", never as "nothing queued" (§DA-weak-4).
+    /// <paramref name="reviewSubmission"/> is the reviewer's explicit round HAND-OFF (the in-page "Send to
+    /// agent" click) when one is pending, or <c>null</c> — it rides the envelope as the additive
+    /// <c>reviewSubmitted</c> / <c>reviewSubmission</c> pair, so a consumer that ignores both is unaffected.
     /// </summary>
     public static string Serialize(
         PollSession? session,
         IReadOnlyList<Annotation> annotations,
         IReadOnlyList<Answer> answers,
-        string? drainError = null)
+        string? drainError = null,
+        ReviewSubmission? reviewSubmission = null)
     {
         ArgumentNullException.ThrowIfNull(annotations);
         ArgumentNullException.ThrowIfNull(answers);
@@ -42,6 +46,12 @@ public static class PollEnvelope
             answers,
             drained = new { annotations = annotations.Count, answers = answers.Count },
             drainError,
+
+            // "The human explicitly handed me this round" vs "I woke because one more comment arrived". The
+            // flag is the cheap check; the record carries when the reviewer clicked and how much was queued at
+            // that moment. Reported once per hand-off: `charter poll` acks it after emitting this envelope.
+            reviewSubmitted = reviewSubmission is not null,
+            reviewSubmission,
         };
 
         return JsonSerializer.Serialize(payload, AnnotationApi.JsonOptions);

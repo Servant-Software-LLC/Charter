@@ -16,7 +16,10 @@ namespace Charter.Server;
 /// queue: <c>GET /api/annotations</c> (non-destructive list), <c>POST /api/{key}/annotations/{id}</c> (edit a
 /// pending note) and <c>POST /api/{key}/annotations/{id}/delete</c> (retract one). Those act on the pending
 /// buffer only — an id the agent has already drained answers 404 ("already handed off") — so the
-/// <c>/api/poll</c> drain contract is untouched.
+/// <c>/api/poll</c> drain contract is untouched. The round HAND-OFF (the panel's "Send to agent" control)
+/// adds <c>POST /api/{key}/review/submit</c>, <c>POST /api/{key}/review/ack</c> and
+/// <c>GET /api/review</c>: they record and clear a signal and wake the long-poll, and they never write the
+/// plan — the drafting agent stays its single writer (Architecture B).
 /// </summary>
 /// <remarks>
 /// Transport is <see cref="HttpListener"/> — a BCL primitive, so Charter stays a lean, AOT-friendly binary
@@ -45,6 +48,10 @@ public sealed class ReviewServer : IReviewServer
     private readonly ReviewSession _session;
     private readonly AnnotationStore _store;
     private readonly AnswerStore _answers;
+
+    // The reviewer's round hand-off ("Send to agent"): at most one pending submission, and the third wake
+    // signal the long-poll waits on. Purely a SIGNAL — the server never writes the plan (Architecture B).
+    private readonly ReviewSubmissionStore _handoff = new();
 
     // The durability sidecar, or null when durability is off (no SidecarDirectory configured). Every mutation
     // of a store is followed by _sidecar?.Persist() so a crash before drain loses nothing (§1.6).
@@ -406,6 +413,29 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/review/submit — the in-page "Send to agent" hand-off: record that the reviewer
+        // marked this round complete and WAKE the long-poll (state-changing: capability key + CSRF gated).
+        // It signals only — the drafting agent remains the single writer of the plan.
+        if (segments.Length == 4 &&
+            string.Equals(segments[2], "review", StringComparison.Ordinal) &&
+            string.Equals(segments[3], "submit", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleReviewSubmit(context, segments[1]);
+            return;
+        }
+
+        // POST /api/{key}/review/ack?sequence=N — clear the hand-off the agent has now been told about
+        // (state-changing: capability key + CSRF gated), mirroring /answers/ack.
+        if (segments.Length == 4 &&
+            string.Equals(segments[2], "review", StringComparison.Ordinal) &&
+            string.Equals(segments[3], "ack", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleReviewAck(context, segments[1]);
+            return;
+        }
+
         // POST /api/{key}/answers — submit a :::question answer (state-changing: capability key + CSRF gated,
         // mirroring /prompts). A dedicated route, not /prompts, because an answer's shape differs and reusing
         // the poll stream would break the wave-3 annotation contract.
@@ -448,6 +478,16 @@ public sealed class ReviewServer : IReviewServer
             string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
         {
             HandleAnnotationsList(context);
+            return;
+        }
+
+        // GET /api/review — the round's hand-off status + live pending counts (capability key on the query
+        // string, like /api/answers). Non-destructive: only /review/ack clears a hand-off.
+        if (segments.Length == 2 &&
+            string.Equals(segments[1], "review", StringComparison.Ordinal) &&
+            string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleReviewStatus(context);
             return;
         }
 
@@ -595,7 +635,7 @@ public sealed class ReviewServer : IReviewServer
         {
             try
             {
-                await _store.WaitForPendingAsync(PollTimeout, _shutdown.Token).ConfigureAwait(false);
+                await WaitForReviewWorkAsync(_shutdown.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -622,6 +662,116 @@ public sealed class ReviewServer : IReviewServer
         // handoff projection; a re-drain re-resolves them anyway.
         WriteDrainedJson(response, resolved, _ => _store.Requeue(drained));
         _sidecar?.Persist();
+    }
+
+    /// <summary>
+    /// The long-poll wait: return as soon as ANY of the three review stores has work for the agent — a queued
+    /// annotation, a queued <c>:::question</c> answer, or the reviewer's explicit round hand-off — or when the
+    /// shared poll window elapses. Waiting on the annotation store alone (Charter #62) meant the reviewer's
+    /// DECISIONS, the highest-value signal Charter carries, were also its slowest: an answer woke nothing and
+    /// sat queued until this timeout expired.
+    /// </summary>
+    private async Task WaitForReviewWorkAsync(CancellationToken cancellationToken)
+    {
+        // One shared window: each wait carries the same timeout, so when the first to settle reports "nothing"
+        // the window has elapsed for all three. Cancelling on the way out releases the losers' timers at once
+        // (they settle Canceled, never Faulted, so an abandoned wait cannot surface as an unobserved fault).
+        using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var annotations = _store.WaitForPendingAsync(PollTimeout, window.Token);
+        var answers = _answers.WaitForPendingAsync(PollTimeout, window.Token);
+        var handoff = _handoff.WaitForPendingAsync(PollTimeout, window.Token);
+
+        try
+        {
+            var settled = await Task.WhenAny(annotations, answers, handoff).ConfigureAwait(false);
+            await settled.ConfigureAwait(false);
+        }
+        finally
+        {
+            window.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// <c>POST /api/{key}/review/submit</c> — the in-page <b>Send to agent</b> control: the reviewer marks
+    /// this round of feedback complete. It RECORDS the hand-off (with the counts pending at that moment) and
+    /// WAKES the long-poll; it does not touch the plan file, apply anything, or drain anything. The agent
+    /// still does all the draining and all the writing.
+    /// </summary>
+    private void HandleReviewSubmit(HttpListenerContext context, string keyFromPath)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        // Gate — capability key. For this route the key travels in the path, like prompts and answers.
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // Gate — CSRF / same-origin, exactly as the other state-changing POSTs.
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        var submission = _handoff.Submit(_store.Snapshot().Count, _answers.Peek().Count);
+        WriteJson(response, JsonSerializer.Serialize(submission, AnnotationApi.JsonOptions));
+    }
+
+    /// <summary>
+    /// <c>POST /api/{key}/review/ack?sequence=N</c> — the agent has been TOLD about hand-off <c>N</c>, so
+    /// clear it and re-arm the wake signal. A compare-and-clear by sequence: a hand-off the reviewer made
+    /// after this one was reported is newer than <c>N</c> and survives, rather than being silently swallowed.
+    /// </summary>
+    private void HandleReviewAck(HttpListenerContext context, string keyFromPath)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        // A missing/invalid sequence acks nothing (a no-op ack is harmless, never a wrong clear).
+        var acked = long.TryParse(request.QueryString["sequence"], out var sequence) && _handoff.Ack(sequence);
+        WriteJson(response, JsonSerializer.Serialize(new { acked }, AnnotationApi.JsonOptions));
+    }
+
+    /// <summary>
+    /// <c>GET /api/review?key=…</c> — the round's status: whether the reviewer has handed it off (and the
+    /// hand-off record), plus the LIVE pending counts. Non-destructive, key-gated on the query string like
+    /// <c>/api/poll</c> and <c>/api/answers</c>. The in-page panel reads it to decide whether <b>Send to
+    /// agent</b> has anything to send; <c>charter poll</c> reads it to fill the envelope's marker.
+    /// </summary>
+    private void HandleReviewStatus(HttpListenerContext context)
+    {
+        var response = context.Response;
+        if (!_session.Key.Matches(context.Request.QueryString["key"]))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        var submission = _handoff.Peek();
+        var status = new
+        {
+            submitted = submission is not null,
+            submission,
+            pending = new { annotations = _store.Snapshot().Count, answers = _answers.Peek().Count },
+        };
+
+        WriteJson(response, JsonSerializer.Serialize(status, AnnotationApi.JsonOptions));
     }
 
     private void HandleAnnotationsList(HttpListenerContext context)

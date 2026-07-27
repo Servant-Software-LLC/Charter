@@ -856,6 +856,226 @@ public sealed class ReviewLoopBrowserTests
         }
     }
 
+    // ---- the in-page round hand-off: "Send to agent" -----------------------------------------------------
+
+    /// <summary>
+    /// The reviewer hands their round to the agent WITHOUT leaving the page. The button starts disabled
+    /// ("nothing to send"), enables once there is queued feedback, and on click posts the hand-off to the
+    /// server — proven against the server's own <c>GET /api/review</c>, not merely by the button changing
+    /// colour — after which it reflects the sent state and the panel confirms it. Zero console and page errors
+    /// throughout: a rejected fetch (wrong route, blocked by CSP, bad shape) surfaces as a console error, so
+    /// that assertion is what makes a silently-broken button impossible to ship.
+    /// </summary>
+    [SkippableFact]
+    public async Task Send_to_agent_hands_the_round_off_and_the_button_reflects_its_state()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-send-to-agent-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "round-loaded");
+
+            await page.ClickAsync(Ui("panel-toggle"));
+
+            // ---- nothing queued: the control exists but has nothing to hand off ----
+            await page.WaitForSelectorAsync(Ui("send-to-agent"));
+            Assert.True(
+                await page.IsDisabledAsync(Ui("send-to-agent")),
+                "Send to agent must be disabled while there is nothing pending to send");
+            Assert.Equal("false", await page.GetAttributeAsync(Ui("send-to-agent"), "data-charter-sent"));
+
+            // ---- queue one note, the way a reviewer does ----
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "Spell out the acceptance criteria here.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // The button enables off the SERVER's pending count (a live reload wipes any local tally), so wait
+            // for the refresh rather than assuming it is synchronous with the submit.
+            await WaitForSendEnabledAsync(page);
+
+            var before = await ReviewStatusAsync(server.Address, session.Key.Value);
+            Assert.False(before.GetProperty("submitted").GetBoolean());
+            Assert.Equal(1, before.GetProperty("pending").GetProperty("annotations").GetInt32());
+
+            // ---- click it: the hand-off must REACH THE SERVER ----
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+
+            var after = await ReviewStatusAsync(server.Address, session.Key.Value);
+            Assert.True(after.GetProperty("submitted").GetBoolean(), "the click must record the hand-off server-side");
+            Assert.Equal(1, after.GetProperty("submission").GetProperty("annotations").GetInt32());
+
+            // ---- and the button reflects it: sent, and not re-sendable until the agent takes the round ----
+            Assert.Equal("true", await page.GetAttributeAsync(Ui("send-to-agent"), "data-charter-sent"));
+            Assert.True(
+                await page.IsDisabledAsync(Ui("send-to-agent")),
+                "Send to agent must disable once the round is handed off");
+            Assert.Contains(
+                "Sent", (await page.InnerTextAsync(Ui("panel-status"))).Trim(), StringComparison.Ordinal);
+
+            // ---- the note itself is untouched: a hand-off SIGNALS, it does not drain or apply anything ----
+            Assert.Equal(1, (await ListAnnotationsAsync(server.Address, session.Key.Value)).GetArrayLength());
+            Assert.Equal(Plan, await File.ReadAllTextAsync(planPath));
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The mid-review guard: a reviewer part-way through ANSWERING a question must not have the page
+    /// navigated out from under them when the agent revises the plan. An unsaved answer is deferred exactly
+    /// as a half-typed note is (Charter #41's banner), and saving it releases the deferred reload.
+    /// </summary>
+    [SkippableFact]
+    public async Task Unsaved_answer_defers_a_live_reload_instead_of_being_discarded()
+    {
+        const string plan =
+            "# Mid-review\n\n" +
+            "An ordinary prose paragraph.\n\n" +
+            ":::question\n" +
+            "{\"id\":\"q-mid\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\"," +
+            "\"options\":[\"Postgres\",\"DynamoDB\"]}\n" +
+            ":::\n";
+
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-midreview-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        using var stopNudger = new CancellationTokenSource();
+        Task? nudger = null;
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // The reviewer picks an answer but has not saved it yet — the decision exists only in the form.
+            await page.CheckAsync(Control("q-mid", "input[type=radio][value=\"DynamoDB\"]"));
+            await page.EvaluateAsync("() => { window.__charterNotReloaded = true; }");
+
+            // The agent revises the plan underneath them. Re-touch on a cadence so the test never depends on a
+            // single write landing after the server's FileSystemWatcher is armed.
+            nudger = Task.Run(async () =>
+            {
+                var edit = 0;
+                while (!stopNudger.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await File.WriteAllTextAsync(
+                            planPath, plan + "\nEdit " + (++edit) + " by the agent.\n", stopNudger.Token);
+                        await Task.Delay(TimeSpan.FromMilliseconds(150), stopNudger.Token);
+                    }
+                    catch (IOException)
+                    {
+                        // A transient sharing conflict with the server's per-request read is harmless.
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            });
+
+            await WaitForEventAsync(page, "reload-deferred", 30_000);
+            stopNudger.Cancel();
+
+            // The choice survives, the page never navigated, and the reload is offered rather than taken.
+            Assert.True(await page.IsCheckedAsync(Control("q-mid", "input[type=radio][value=\"DynamoDB\"]")));
+            Assert.True(
+                await page.EvaluateAsync<bool>("() => window.__charterNotReloaded === true"),
+                "the SDK must NOT navigate while an answer is unsaved");
+            await page.WaitForSelectorAsync(Ui("reload-banner"));
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            stopNudger.Cancel();
+            if (nudger is not null)
+            {
+                try
+                {
+                    await nudger;
+                }
+                catch (Exception)
+                {
+                    // The nudger only writes the temp plan / awaits a cancellable delay; nothing to surface.
+                }
+            }
+
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Wait until the panel's "Send to agent" control is enabled. Bounded Playwright actionability polling —
+    /// never <c>WaitForFunctionAsync</c>, whose in-page <c>eval</c> the served CSP correctly refuses.
+    /// </summary>
+    private static async Task WaitForSendEnabledAsync(IPage page, int timeoutMs = 15_000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await page.IsEnabledAsync(Ui("send-to-agent")))
+            {
+                return;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.Fail("Send to agent never enabled once feedback was queued");
+    }
+
+    /// <summary>The server's own round status (<c>GET /api/review?key=…</c>) — the hand-off's system of record.</summary>
+    private static async Task<JsonElement> ReviewStatusAsync(Uri address, string key)
+    {
+        using var client = new HttpClient();
+        var url = new UriBuilder(address) { Path = "api/review", Query = "key=" + key }.Uri;
+        using var doc = JsonDocument.Parse(await client.GetStringAsync(url));
+        return doc.RootElement.Clone();
+    }
+
     // ---- shared browser plumbing -------------------------------------------------------------------------
 
     /// <summary>A launched Playwright + browser pair, or <see langword="null"/> where Chromium is absent.</summary>

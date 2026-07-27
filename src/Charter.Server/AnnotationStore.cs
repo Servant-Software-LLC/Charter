@@ -14,18 +14,13 @@ namespace Charter.Server;
 /// interleave partially.
 /// </para>
 /// <para>
-/// <b>The wake-signal invariant: the signal is completed IFF the pending buffer is non-empty.</b> The signal is
-/// a <see cref="TaskCompletionSource{TResult}"/> that <see cref="WaitForPendingAsync"/> awaits, and
-/// <see cref="SyncSignalLocked"/> re-establishes the invariant under the lock after EVERY mutation — not just
-/// on enqueue/drain. Stating it as a predicate over the buffer (rather than as an edge-triggered "something
-/// became available" pulse) is what makes the reviewer-facing <see cref="Remove"/> safe: a delete that empties
-/// the buffer must swap in a fresh, incomplete signal, or the stale completed one would make every later
-/// <c>poll --wait</c> return instantly with an empty batch — a permanent hot loop. A per-item counting
-/// semaphore is deliberately avoided: <see cref="Drain"/> removes many items in one atomic step, so a
-/// per-enqueue release would drift out of sync with the buffer's actual state, whereas a predicate re-checked
-/// on every mutation is exact by construction. The signal is created with
-/// <see cref="TaskCreationOptions.RunContinuationsAsynchronously"/>, so completing it inside the lock never
-/// runs a waiter's continuation inline.
+/// <b>The wake-signal invariant: the signal is completed IFF the pending buffer is non-empty.</b> The signal
+/// itself — and the statement of that invariant — lives in <see cref="PendingSignal"/>, shared with the
+/// <see cref="AnswerStore"/> and the <see cref="ReviewSubmissionStore"/>; <see cref="SyncSignalLocked"/>
+/// re-establishes it under the lock after EVERY mutation, not just on enqueue/drain. That is what makes the
+/// reviewer-facing <see cref="Remove"/> safe: a delete that empties the buffer must swap in a fresh,
+/// incomplete signal, or the stale completed one would make every later <c>poll --wait</c> return instantly
+/// with an empty batch — a permanent hot loop.
 /// </para>
 /// </remarks>
 public sealed class AnnotationStore
@@ -35,8 +30,7 @@ public sealed class AnnotationStore
 
     // The wake signal for WaitForPendingAsync. Its state is a function of _pending (see SyncSignalLocked):
     // completed while annotations are pending, fresh/incomplete while the buffer is empty.
-    private TaskCompletionSource<bool> _pendingSignal =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly PendingSignal _pendingSignal = new();
 
     /// <summary>
     /// Re-establish the wake-signal invariant — <b>completed iff <see cref="_pending"/> is non-empty</b>.
@@ -44,21 +38,7 @@ public sealed class AnnotationStore
     /// stale completed signal on an empty buffer (which would spin <c>poll --wait</c>) or an incomplete one on
     /// a non-empty buffer (which would stall an outstanding wait).
     /// </summary>
-    private void SyncSignalLocked()
-    {
-        if (_pending.Count > 0)
-        {
-            // Idempotent: already completed stays completed. RunContinuationsAsynchronously keeps any waiter's
-            // continuation off this (lock-holding) thread.
-            _pendingSignal.TrySetResult(true);
-            return;
-        }
-
-        if (_pendingSignal.Task.IsCompleted)
-        {
-            _pendingSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-    }
+    private void SyncSignalLocked() => _pendingSignal.Sync(_pending.Count > 0);
 
     /// <summary>
     /// Add an annotation to the pending buffer. Safe to call concurrently with <see cref="Drain"/> and other
@@ -217,18 +197,9 @@ public sealed class AnnotationStore
                 return true;
             }
 
-            signalTask = _pendingSignal.Task;
+            signalTask = _pendingSignal.Pending;
         }
 
-        try
-        {
-            // The signal only ever completes with true (via Enqueue); WaitAsync turns an elapsed timeout
-            // into a TimeoutException and a cancellation into an OperationCanceledException.
-            return await signalTask.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            return false;
-        }
+        return await PendingSignal.AwaitAsync(signalTask, timeout, cancellationToken).ConfigureAwait(false);
     }
 }

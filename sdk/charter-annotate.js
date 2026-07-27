@@ -55,6 +55,11 @@ window.CharterAnnotate = (function () {
     handlers: [],        // local subscribers registered via on()
     annotations: [],     // the PENDING (pre-handoff) annotations, from GET /api/annotations
     ui: null,            // the SDK-owned chrome: { style, panel, toggle, overlay, ... }
+    // The review ROUND's hand-off state, mirrored from GET /api/review. `submitted` is true while the
+    // reviewer's "Send to agent" click is pending (the agent has not been told yet); `pending` is the live
+    // server-side queue depth. Both come from the server rather than being counted locally, so they survive a
+    // live reload — which is a full navigation that would otherwise reset a local tally.
+    round: { submitted: false, pending: { annotations: 0, answers: 0 } },
     composer: null,      // the open composer, or null
     ignoreNextClick: false,
     reloadPending: false, // a reload arrived while a draft was open (see onReload)
@@ -111,6 +116,11 @@ window.CharterAnnotate = (function () {
     }
     if (data.type === 'delete' && data.detail && data.detail.id) {
       deleteNote(data.detail.id);
+    }
+    // `{ channel, type: 'send' }` hands the round off to the agent — the programmatic twin of the
+    // panel's "Send to agent" button.
+    if (data.type === 'send') {
+      sendRound();
     }
   }
 
@@ -310,6 +320,7 @@ window.CharterAnnotate = (function () {
           setStatus('');
           showPanel();
           render();
+          refreshRound();   // there is now something to hand off
         }
         emit('submitted', { status: res.status, payload: payload, id: created ? created.id : null });
         return created;
@@ -396,6 +407,7 @@ window.CharterAnnotate = (function () {
         dropLocal(id);
         setStatus('');
         render();
+        refreshRound();   // retracting the last note leaves nothing to hand off
         emit('annotation-deleted', { id: id });
         return true;
       }
@@ -416,6 +428,99 @@ window.CharterAnnotate = (function () {
       if (state.annotations[i].id !== id) kept.push(state.annotations[i]);
     }
     state.annotations = kept;
+  }
+
+  // ---- the round hand-off: "Send to agent" ---------------------------------------------------
+  // The reviewer's way to say "I am done with this round" without leaving the page. It SIGNALS ONLY:
+  // POST /api/{key}/review/submit records the hand-off and wakes the agent's long-poll. The agent still
+  // does every drain and remains the ONLY writer of the plan file — the server never touches it.
+  //
+  // The button's state is derived from the SERVER (GET /api/review), never from a local tally: a live
+  // reload is a full navigation, so anything counted in this page's memory is lost exactly when the loop
+  // is working. `submitted` stays true until the agent acks the hand-off, which is what keeps a reviewer
+  // from queueing the same round twice.
+
+  var SENT_MESSAGE = 'Sent — the agent is revising…';
+
+  function applyRound(status) {
+    var pending = (status && status.pending) || {};
+    state.round = {
+      submitted: !!(status && status.submitted),
+      pending: {
+        annotations: pending.annotations || 0,
+        answers: pending.answers || 0
+      }
+    };
+    syncSendButton();
+  }
+
+  function pendingCount() {
+    return state.round.pending.annotations + state.round.pending.answers;
+  }
+
+  function refreshRound() {
+    var url = '/api/review?key=' + encodeURIComponent(state.key || '');
+    return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
+      if (!res.ok) {
+        emit('round-error', { status: res.status });
+        return null;
+      }
+      return res.json().then(function (status) {
+        applyRound(status);
+        emit('round-loaded', {
+          submitted: state.round.submitted,
+          annotations: state.round.pending.annotations,
+          answers: state.round.pending.answers
+        });
+        return state.round;
+      }, function () {
+        emit('round-error', { reason: 'malformed' });
+        return null;
+      });
+    }).catch(function () {
+      emit('round-error', { reason: 'network' });
+      return null;
+    });
+  }
+
+  function sendRound() {
+    var url = '/api/' + encodeURIComponent(state.key || '') + '/review/submit';
+    emit('round-sending', {});
+    return fetch(url, { method: 'POST' }).then(function (res) {
+      if (!res.ok) {
+        setStatus('Could not send this round to the agent (' + res.status + ').');
+        emit('round-error', { status: res.status });
+        return null;
+      }
+      // Reflect the hand-off immediately — the reviewer just clicked and needs to see that it landed —
+      // then re-read the authoritative state behind that confirmation.
+      state.round.submitted = true;
+      syncSendButton();
+      showPanel();
+      setStatus(SENT_MESSAGE);
+      emit('round-sent', {});
+      refreshRound();
+      return true;
+    }).catch(function () {
+      setStatus('Could not reach the review server.');
+      emit('round-error', { reason: 'network' });
+      return null;
+    });
+  }
+
+  // Enabled EXACTLY when there is queued feedback the agent has not been handed yet. Disabled while the
+  // queue is empty ("nothing to send") and while a hand-off is already pending ("the agent is coming").
+  function syncSendButton() {
+    if (!state.ui || !state.ui.send) return;
+    var send = state.ui.send;
+    var nothingToSend = pendingCount() === 0;
+    send.disabled = state.round.submitted || nothingToSend;
+    send.setAttribute('data-charter-sent', state.round.submitted ? 'true' : 'false');
+    send.title = state.round.submitted
+      ? 'Sent — the agent is revising this round.'
+      : (nothingToSend
+        ? 'Nothing to send yet — add a note or answer a question first.'
+        : 'Hand this round of feedback to the agent');
   }
 
   // ---- :::question answer submit: POST the answer to /api/{key}/answers + emit over the
@@ -518,6 +623,9 @@ window.CharterAnnotate = (function () {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     }).then(function (res) {
+      if (res.ok) {
+        refreshRound();   // a saved decision is feedback the reviewer can now hand off
+      }
       emit(res.ok ? 'answer-submitted' : 'answer-error', { status: res.status, payload: payload });
       return res.ok ? res : null;
     }).catch(function (err) {
@@ -644,6 +752,8 @@ window.CharterAnnotate = (function () {
         answerStatus(form, 'Could not save this answer.', true);
       }
       syncSubmitState(form, root);
+      // The decision is no longer unsaved, so a reload deferred to protect it can now proceed.
+      maybeReload();
       return res;
     });
   }
@@ -699,6 +809,10 @@ window.CharterAnnotate = (function () {
     '  padding: 10px 12px; border-bottom: 1px solid var(--charter-border); font-weight: 600; }',
     '.charter-panel-list { flex: 1 1 auto; overflow-y: auto; padding: 8px; }',
     '.charter-panel-empty { color: var(--charter-muted); padding: 10px 4px; }',
+    '.charter-panel-actions { display: flex; align-items: center; gap: 8px; padding: 8px 12px;',
+    '  border-top: 1px solid var(--charter-border); }',
+    '.charter-panel-hint { flex: 1 1 auto; color: var(--charter-muted); font-size: 11px; }',
+    '.charter-send { flex: 0 0 auto; font-size: 12px; padding: 5px 12px; }',
     '.charter-panel-status { padding: 8px 12px; border-top: 1px solid var(--charter-border);',
     '  color: var(--charter-muted); font-size: 12px; }',
 
@@ -773,8 +887,20 @@ window.CharterAnnotate = (function () {
     var list = make('div', 'charter-panel-list', 'panel-list');
     var status = make('div', 'charter-panel-status charter-hidden', 'panel-status');
 
+    // The round hand-off. Disabled until there is queued feedback to send (and again once sent), so the
+    // control can never post an empty round or double-hand-off the same one.
+    var actions = make('div', 'charter-panel-actions', 'panel-actions');
+    actions.appendChild(make('span', 'charter-panel-hint', 'panel-hint',
+      'The agent sees your feedback as you save it.'));
+    var send = button('charter-btn charter-btn-primary charter-send', 'send-to-agent', 'Send to agent');
+    send.disabled = true;
+    send.setAttribute('data-charter-sent', 'false');
+    send.addEventListener('click', function () { sendRound(); }, false);
+    actions.appendChild(send);
+
     panel.appendChild(header);
     panel.appendChild(list);
+    panel.appendChild(actions);
     panel.appendChild(status);
 
     var toggle = button('charter-panel-toggle', 'panel-toggle', 'Notes 0');
@@ -788,9 +914,10 @@ window.CharterAnnotate = (function () {
     document.body.appendChild(toggle);
 
     state.ui = {
-      style: style, panel: panel, title: title, list: list,
+      style: style, panel: panel, title: title, list: list, send: send,
       status: status, toggle: toggle, overlay: overlay, banner: null
     };
+    syncSendButton();
     return state.ui;
   }
 
@@ -800,15 +927,26 @@ window.CharterAnnotate = (function () {
     state.ui.status.className = text ? 'charter-panel-status' : 'charter-panel-status charter-hidden';
   }
 
+  // The floating toggle is fixed to the viewport's bottom-right corner — which is INSIDE the open panel,
+  // over its footer. It exists only to open the panel (the header carries Hide), so while the panel is open
+  // it is both redundant and an occluder: leaving it there swallows clicks meant for the panel's own
+  // controls, which is how "Send to agent" became unclickable for a real mouse.
+  function setToggleVisible(visible) {
+    if (!state.ui) return;
+    state.ui.toggle.className = visible ? 'charter-panel-toggle' : 'charter-panel-toggle charter-hidden';
+  }
+
   function showPanel() {
     if (!ensureUi()) return;
     state.ui.panel.className = 'charter-panel';
+    setToggleVisible(false);
     emit('panel-opened', {});
   }
 
   function hidePanel() {
     if (!state.ui) return;
     state.ui.panel.className = 'charter-panel charter-hidden';
+    setToggleVisible(true);
     emit('panel-closed', {});
   }
 
@@ -1092,6 +1230,7 @@ window.CharterAnnotate = (function () {
     var entries = orderedEntries();
     renderPanel(entries);
     renderMarkers(entries);
+    syncSendButton();
   }
 
   // ---- jump + transient highlight (never mutates the plan's DOM) -----------------------
@@ -1250,9 +1389,28 @@ window.CharterAnnotate = (function () {
     try { window.location.reload(); } catch (e) { /* ignore */ }
   }
 
-  // Reload once the reviewer is no longer mid-note — called after a save or a cancel.
+  // Is the reviewer mid-DECISION? A question form whose Save button is enabled holds an answer that
+  // differs from the one the markup records — a choice made but not yet saved. Reloading over it loses
+  // it exactly as reloading over a half-typed note would, and the loop's whole point is that the agent
+  // revises WHILE the human reviews, so this case is now the common one rather than the rare one.
+  // Deliberately NOT folded into hasDraft(): that guard also suppresses opening a composer, and a
+  // half-answered question must not stop the reviewer annotating something else.
+  function hasDirtyAnswer() {
+    var buttons = document.querySelectorAll('form[data-question-id] ' + SUBMIT_SELECTOR);
+    for (var i = 0; i < buttons.length; i++) {
+      if (!buttons[i].disabled) return true;
+    }
+    return false;
+  }
+
+  // Everything a navigation would silently discard: a half-typed note, or a half-made decision.
+  function wouldLoseWork() {
+    return hasDraft() || hasDirtyAnswer();
+  }
+
+  // Reload once the reviewer is no longer mid-note or mid-decision — called after a save or a cancel.
   function maybeReload() {
-    if (state.reloadPending && !hasDraft()) navigate();
+    if (state.reloadPending && !wouldLoseWork()) navigate();
   }
 
   // The agent edits the plan while the reviewer is typing. A blocking window.prompt used to make
@@ -1260,7 +1418,7 @@ window.CharterAnnotate = (function () {
   // DEFERRED and offered as a banner instead of silently discarding what was typed.
   function onReload() {
     emit('reload', {});
-    if (hasDraft()) {
+    if (wouldLoseWork()) {
       state.reloadPending = true;
       showReloadBanner();
       emit('reload-deferred', {});
@@ -1273,7 +1431,7 @@ window.CharterAnnotate = (function () {
     if (!ensureUi() || state.ui.banner) return;
     var banner = make('div', 'charter-reload-banner', 'reload-banner');
     banner.appendChild(make('span', null, 'reload-banner-text',
-      'The plan changed on disk. Your note is safe \u2014 reload when you are ready.'));
+      'The plan changed on disk. Your unsaved work is safe \u2014 reload when you are ready.'));
     var now = button('charter-btn', 'reload-now', 'Reload now');
     now.addEventListener('click', navigate, false);
     banner.appendChild(now);
@@ -1318,8 +1476,10 @@ window.CharterAnnotate = (function () {
     emit('ready', { hasKey: !!state.key });
 
     // Hydrate the pending queue ONCE, here. A live reload is a full navigation, so init() runs
-    // again on the new document — re-fetching inside the reload handler would only race it.
+    // again on the new document — re-fetching inside the reload handler would only race it. The round
+    // state comes from the server for the same reason: after a reload there is no local tally left.
     hydrate();
+    refreshRound();
     return api;
   }
 
@@ -1357,6 +1517,7 @@ window.CharterAnnotate = (function () {
     }
     state.handlers.length = 0;
     state.annotations = [];
+    state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
     state.started = false;
   }
 
@@ -1371,6 +1532,8 @@ window.CharterAnnotate = (function () {
     update: updateNote,  // edit a still-pending annotation's note
     remove: deleteNote,  // retract a still-pending annotation
     panel: togglePanel,  // show/hide the review panel
+    send: sendRound,     // hand this round of feedback to the agent
+    round: refreshRound, // re-read the round's hand-off state from the server
     dispose: dispose
   };
 
