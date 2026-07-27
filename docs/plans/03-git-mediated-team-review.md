@@ -59,7 +59,10 @@ docs/plans/tenant-rate-limit.charter.review/       <- the review log (Charter wr
 ```
 
 - **One file per author**, for the life of the plan. Filename is
-  `<slug(email)>.<first 8 hex of sha256(email)>.jsonl`.
+  `<slug(lowercased email)>.<first 8 hex of sha256(lowercased email)>.jsonl`.
+  **Lowercase before hashing** — the fold compares author identity case-insensitively (so a capitalisation
+  change in `git config` cannot cost someone the right to withdraw their own comment), and filename
+  identity must agree with fold identity or one person ends up with two files.
 - **Append-only.** Records are immutable; edit/resolve/reopen/retract/reply are *new records*; state is a
   deterministic **fold**.
 - **Committed by default** (owner decision) — with a documented opt-out (§7).
@@ -172,7 +175,11 @@ teammates mint the same id) · no raw control bytes (a NUL makes git treat the f
 the driver).
 
 **Fold:**
-1. **Dedupe by `id`, first wins.**
+1. **Dedupe by `id`.** For the reachable case the spike found — the *same* record appearing twice — any
+   tie-break is equivalent. When two **different** records claim one id (tampering, or a broken writer),
+   "first wins" would be order-dependent and would violate rule 2, so **rule 2 wins**: take the
+   ordinally-smallest canonical JSON and emit a `ConflictingDuplicate` diagnostic. Order-independence is
+   absolute; it is what makes two teammates with identical commits compute identical state.
 2. **Two-pass and order-independent.** Never depend on file order.
 3. **Never sort by timestamp for causality.** Clocks are unsynchronized. Timestamps are for presentation.
 4. **Retain and report orphans** — a reply/resolve whose target is absent means an unmerged branch, not
@@ -243,6 +250,24 @@ open when the plan feeds execution.
 - **`retract` of a comment with replies** hides the body but **keeps the thread**, rendered as
   *"(comment withdrawn by author)"* with the replies intact. Replies are other people's words and are
   never removed by someone else's retract.
+
+### 4.2.1 Ratified fold semantics (settled during step 1)
+
+Cases §4.2 left open, resolved consistently with its principle — *detect and report, never silently guess*:
+
+- **A branch that never touched resolution abstains.** Only records that make a claim about open/closed
+  vote. Without this, any teammate's unrelated `edit` would contest an existing resolve and **`Contested`
+  would become the normal state**, destroying the signal.
+- **Concurrent `edit`s** follow the same rule as resolve/reopen: the last body every branch agreed on
+  stands (nearest common ancestor), plus a `ConcurrentEdit` diagnostic. Never an arbitrary winner.
+- **`retract` is monotone and permanent** — there is no `unretract`, consistent with §7's permanence.
+  It is a separate dimension from resolution: `Status` computes `Retracted > Contested > Resolved/Open`,
+  so a retraction never erases a visible disagreement, and the body is withheld by default.
+- **`resolve`/`reopen` aimed at a *reply*** is retained, reported (`UnsupportedTarget`), and **not
+  applied** — inferring the thread root is exactly the guessing §4.3 forbids. Thread-level resolve is a
+  future design call, not a fold behaviour.
+- **A missing or non-integer `v`** is a malformed line (rule 5), not an unknown version (rule 7). Both
+  are loud, retained, and not applied; only the diagnostic kind differs.
 
 ### 4.3 Anchors: exact-hash-or-orphan (the ladder is rejected)
 
@@ -395,7 +420,10 @@ Therefore:
    confinement; a static-file branch here would turn every sibling file under `docs/plans/` into a
    key-gated HTTP-readable resource in one line.
 4. **Server-less `poll` read path** (§5) — the step that actually closes the loop.
-5. **Read-only git awareness** (§5.1) + `charter review verify`.
+5. **Read-only git awareness** (§5.1) + `charter review verify`. **This step also owns the orphan diff.**
+   `anchor.base` is the *plan's* content hash, so rendering "you commented on «…», here's what changed"
+   requires fetching that plan revision from git — the fold cannot supply it. Until this step lands, an
+   orphan shows its `quote` but not a diff.
 6. **Agent voice** — `reply` from the agent; skill guidance on when to reply vs. edit.
 7. **Browser test** — two logs from two authors fold into one panel; resolve round-trips; contested renders.
 8. **Docs** — README (permanence warning, opt-out, and the honest PR-comments comparison), `charter` skill,
