@@ -124,11 +124,19 @@ public class AnsweredQuestionRenderTests
     }
 
     [Fact]
-    public void Render_OpenQuestion_EmitsByteIdenticalMarkupToThePreFixRenderer()
+    public void Render_OpenQuestion_EmitsTheExactExpectedMarkup()
     {
-        // The strongest statement of "the existing open-question rendering is preserved EXACTLY": the whole
-        // form is pinned byte for byte against the markup the renderer emitted before answered questions were
-        // rendered at all. Any stray attribute, class, or badge leaking onto the open path fails here.
+        // The strongest statement of "the open-question surface is exactly what we think it is": the whole
+        // form is pinned byte for byte. Any stray attribute, class, or badge leaking onto the open path fails
+        // here.
+        //
+        // DELIBERATELY REBASED at Charter #56 (P0). This literal used to be the markup the renderer emitted
+        // BEFORE answered questions were rendered — but that markup carried NO submit control, so it could
+        // never have been the correct target: pinning it was pinning a form a human could not submit. The
+        // baseline now includes the `<button type="submit">` and the `data-question-mode` the SDK reads.
+        // What the test was ACTUALLY protecting — that rendering an answered question does not perturb the
+        // OPEN questions around it — is not weakened; it is asserted directly, and independently of any
+        // literal, by Render_AnsweringOneQuestion_LeavesTheOtherQuestionsMarkupUntouched below.
         const string markdown = ":::question\n"
             + "{ \"id\": \"q-single\", \"title\": \"A single question\", \"mode\": \"single\", "
             + "\"target\": \"human\", \"options\": [\"A\", \"B\"] }\n"
@@ -136,15 +144,43 @@ public class AnsweredQuestionRenderTests
         var blockId = BlockDocument.Parse(markdown).Blocks[0].Id;
 
         var expected =
-            $"<form class=\"question\" id=\"{blockId}\" data-question-id=\"q-single\">\n"
+            $"<form class=\"question\" id=\"{blockId}\" data-question-id=\"q-single\" data-question-mode=\"single\">\n"
             + "<input type=\"hidden\" name=\"question-id\" value=\"q-single\" />\n"
             + "<fieldset><legend>A single question</legend>\n"
             + "<label><input type=\"radio\" name=\"answer\" value=\"A\" /> A</label>\n"
             + "<label><input type=\"radio\" name=\"answer\" value=\"B\" /> B</label>\n"
+            + "<div class=\"question-actions\">"
+            + "<button type=\"submit\" class=\"question-submit\" disabled>Save answer</button></div>\n"
             + "</fieldset>\n"
             + "</form>";
 
         Assert.Equal(expected, FormMarkup(CharterRenderer.Render(markdown)));
+    }
+
+    [Fact]
+    public void Render_AnsweringOneQuestion_LeavesTheOtherQuestionsMarkupUntouched()
+    {
+        // The invariant the byte-identical baseline above existed to protect, stated DIRECTLY and without a
+        // pinned literal: resolving one question must not perturb its neighbours' markup. Asserted by
+        // rendering the same open question twice — once beside an unanswered sibling, once beside a RESOLVED
+        // one — and requiring the two renderings to be byte-identical. This survives any future change to the
+        // question markup, which a hard-coded literal cannot.
+        const string sibling = ":::question\n"
+            + "{{ \"id\": \"q-neighbour\", \"title\": \"The neighbour\", \"mode\": \"single\", "
+            + "\"target\": \"human\", \"options\": [\"X\", \"Y\"]{0} }}\n"
+            + ":::";
+        const string subject = "\n\n:::question\n"
+            + "{ \"id\": \"q-subject\", \"title\": \"The subject\", \"mode\": \"multi\", "
+            + "\"target\": \"human\", \"options\": [\"P\", \"Q\"] }\n"
+            + ":::";
+
+        var besideOpen = SecondFormMarkup(
+            CharterRenderer.Render(string.Format(sibling, string.Empty) + subject));
+        var besideAnswered = SecondFormMarkup(
+            CharterRenderer.Render(string.Format(sibling, ", \"answer\": [\"X\"]") + subject));
+
+        Assert.Contains("q-subject", besideOpen, StringComparison.Ordinal);
+        Assert.Equal(besideOpen, besideAnswered);
     }
 
     [Fact]
@@ -234,6 +270,15 @@ public class AnsweredQuestionRenderTests
         Assert.True(end >= 0, "the rendered <form> was never closed.");
 
         return html.Substring(start, end - start + "</form>".Length);
+    }
+
+    /// <summary>The SECOND rendered <c>&lt;form&gt;…&lt;/form&gt;</c> in <paramref name="html"/>.</summary>
+    private static string SecondFormMarkup(string html)
+    {
+        var first = html.IndexOf("</form>", StringComparison.Ordinal);
+        Assert.True(first >= 0, "the rendered document contained fewer than two <form> elements.");
+
+        return FormMarkup(html.Substring(first + "</form>".Length));
     }
 
     /// <summary>Counts non-overlapping occurrences of <paramref name="needle"/>.</summary>

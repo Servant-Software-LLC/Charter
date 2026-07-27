@@ -42,7 +42,12 @@ The injected SDK lets the reviewer attach a note to three kinds of anchor:
 - **text-range** — a selected span of text inside a block.
 - **diagram-node** — a specific node inside a rendered `:::diagram`.
 
-They also fill in and submit any **`:::question`** forms. Each annotation is resolved server-side to the
+They also answer any **`:::question`** forms: choose an option (or type the answer), then click the
+**Save answer** button in the form. That button stays greyed out until the answer differs from what the plan
+already records — so on an open question it enables as soon as something is chosen, and on an already-answered
+one it enables only once the reviewer *changes* the settled choice. In a free-text answer, Enter is a newline
+and **Ctrl/⌘+Enter** saves. If you are telling a human what to do, tell them to click **Save answer** — the
+form does not submit on its own. Each annotation is resolved server-side to the
 **1-based markdown source line** of the block it points at (via the content-derived source-map), so the
 feedback you drain tells you exactly which line to edit — that round-trip is the whole point (invariant 2).
 

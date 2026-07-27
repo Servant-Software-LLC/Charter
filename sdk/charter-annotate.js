@@ -425,9 +425,14 @@ window.CharterAnnotate = (function () {
   // boundary as everything else (invariant 6): the ONLY crossings are the postMessage channel
   // (page side) and the HTTP POST to the defined route (server side).
 
-  // Resolve the question mode. Prefer an explicit attribute the renderer stamps on the block
+  // Resolve the question mode. Prefer the explicit attribute the renderer stamps on the block
   // root / form (data-question-mode | data-mode); fall back to inferring it from the controls
-  // present so the SDK still works if the renderer emits the form without a mode hint.
+  // present so the SDK still works against a form emitted without a mode hint.
+  //
+  // Inference can no longer produce 'bool': since Charter #43 a bool renders as two Yes/No RADIOS,
+  // indistinguishable by shape from a single-select. That is precisely why the renderer now stamps
+  // data-question-mode (Charter #56) — without it every bool answer was collected by the single
+  // branch and reported to the agent with mode "single".
   function resolveMode(root, form) {
     var m = root.getAttribute('data-question-mode') ||
             root.getAttribute('data-mode') ||
@@ -435,39 +440,43 @@ window.CharterAnnotate = (function () {
             form.getAttribute('data-mode');
     if (m) return m.trim();
     if (form.querySelector('input[type="radio"]')) return 'single';
-    var boxes = form.querySelectorAll('input[type="checkbox"]');
-    if (boxes.length > 1) return 'multi';
-    if (boxes.length === 1) return 'bool';
+    if (form.querySelector('input[type="checkbox"]')) return 'multi';
     if (form.querySelector('input[type="number"]')) return 'number';
     return 'free-text';
   }
 
-  // Collect the selected value(s) from the native controls, shaped by mode:
-  //   single  -> one selected radio value        (array with 0 or 1 entry)
-  //   multi   -> every checked checkbox value     (array)
-  //   bool    -> the single checkbox's state      (boolean)
-  //   free-text / number (and any unknown mode) -> the field value (string)
+  // Collect the reviewer's answer from the native controls. ALWAYS an array of strings — the
+  // server's answer contract is `values: [...]` (Answer.Values is a list), so anything else is
+  // rejected with a 400 the reviewer sees as an unexplained in-page failure. This used to return a
+  // bare boolean for bool and a bare string for free-text/number, which is exactly how those three
+  // modes became unanswerable (Charter #56 / P1).
+  //
+  //   single | bool -> the checked radio's value      (0- or 1-element array)
+  //   multi         -> every checked checkbox's value (0..n)
+  //   free-text | number (and any unknown mode) -> the field's value (0- or 1-element array)
+  //
+  // An UNANSWERED control yields an EMPTY array, never ['']: an empty string is not an answer, and
+  // the submit-enabled rule below is built on being able to tell those apart.
   function collectValues(form, mode) {
     if (mode === 'multi' || mode === 'multi-select') {
       var picked = [];
-      var boxes = form.querySelectorAll('input[type="checkbox"]:checked');
+      var boxes = form.querySelectorAll('input[type="checkbox"][name="answer"]:checked');
       for (var i = 0; i < boxes.length; i++) picked.push(boxes[i].value);
       return picked;
     }
-    if (mode === 'single' || mode === 'single-select') {
-      var radio = form.querySelector('input[type="radio"]:checked');
+    // bool shares the single-select shape: two mutually-exclusive radios valued "true"/"false"
+    // (Charter #43), NOT the lone checkbox the SDK used to look for. Explicit, not incidental.
+    if (mode === 'single' || mode === 'single-select' || mode === 'bool') {
+      var radio = form.querySelector('input[type="radio"][name="answer"]:checked');
       return radio ? [radio.value] : [];
-    }
-    if (mode === 'bool') {
-      var box = form.querySelector('input[type="checkbox"]');
-      return box ? !!box.checked : false;
     }
     var field = form.querySelector(
       'textarea, input[type="number"], input[type="text"], ' +
       'input:not([type="radio"]):not([type="checkbox"]):not([type="submit"])' +
       ':not([type="button"]):not([type="hidden"])'
     );
-    return field ? field.value : '';
+    var value = field ? String(field.value) : '';
+    return value === '' ? [] : [value];
   }
 
   // Build the structured answer from a rendered :::question <form> and its block root (the
@@ -517,18 +526,140 @@ window.CharterAnnotate = (function () {
     });
   }
 
+  // The block root of a rendered :::question form — the element carrying the question id. Usually
+  // the form itself; a form nested under an annotated block resolves to that ancestor. Returns null
+  // for any form Charter does not own, which is what keeps the SDK from claiming a foreign submit.
+  function questionRoot(form) {
+    if (!form || form.nodeType !== 1 || form.tagName !== 'FORM') return null;
+    if (form.hasAttribute('data-question-id')) return form;
+    return form.closest ? form.closest('[data-question-id]') : null;
+  }
+
   // Intercept the native submit of a rendered :::question <form>. Non-question forms (none of
   // which Charter emits today) are left to submit normally — we only claim a form that carries
   // (or sits under) a data-question-id.
   function onSubmit(ev) {
     var form = ev && ev.target;
-    if (!form || form.nodeType !== 1 || form.tagName !== 'FORM') return;
-    var root = form.hasAttribute('data-question-id')
-      ? form
-      : (form.closest ? form.closest('[data-question-id]') : null);
+    var root = questionRoot(form);
     if (!root) return;
     ev.preventDefault();
-    postAnswer(collectAnswer(form, root));
+    submitQuestionForm(form, root);
+  }
+
+  // ---- the Save control's enabled state -------------------------------------------------
+  // The renderer emits the Save button DISABLED (Charter #56): "nothing to submit yet" is the right
+  // state for an open question AND for a resolved one, and it keeps the SDK-free saved artifact from
+  // firing a native form navigation. From here the SDK owns it, against ONE rule:
+  //
+  //   Save is enabled exactly when the answer in the form DIFFERS from the answer the markup records.
+  //
+  // For an open question the markup records nothing, so that reduces to "something is selected". For a
+  // RESOLVED question the markup records the settled answer (pre-selected — Charter #48), so Save
+  // enables the moment the reviewer picks something else: revising a decision is the whole point of a
+  // second review round, and it is never blocked. After a successful submit the baseline moves to what
+  // was just saved, so Save settles back to disabled rather than inviting a duplicate post.
+
+  var SUBMIT_SELECTOR = 'button[type="submit"]';
+
+  // The reviewer's current answer as a comparable string. Built from collectValues, so the comparison
+  // and the payload can never disagree about what counts as an answer.
+  function answerSignature(form, root) {
+    return JSON.stringify(collectValues(form, resolveMode(root || form, form)));
+  }
+
+  // Record what the MARKUP says is already answered, once per form per document load. A live reload is
+  // a full navigation, so this re-runs against the freshly rendered (possibly now-resolved) markup.
+  function ensureWired(form, root) {
+    if (!form.charterAnswerBaseline) {
+      form.charterAnswerBaseline = answerSignature(form, root);
+    }
+    return form.charterAnswerBaseline;
+  }
+
+  function syncSubmitState(form, root) {
+    var button = form.querySelector(SUBMIT_SELECTOR);
+    if (!button) return;
+    var changed = answerSignature(form, root) !== ensureWired(form, root);
+    button.disabled = !changed;
+    button.title = changed
+      ? 'Save this answer to the Charter review session'
+      : 'Choose or change an answer to enable saving';
+  }
+
+  function wireQuestionForms() {
+    var forms = document.querySelectorAll('form[data-question-id]');
+    for (var i = 0; i < forms.length; i++) {
+      ensureWired(forms[i], forms[i]);
+      syncSubmitState(forms[i], forms[i]);
+    }
+  }
+
+  // Re-sync on every edit of a question control. Capture phase and delegated from the document, like
+  // the SDK's other listeners, so it needs no per-control bookkeeping.
+  function onQuestionInput(ev) {
+    var form = ev && ev.target && ev.target.form;
+    var root = questionRoot(form);
+    if (root) syncSubmitState(form, root);
+  }
+
+  // Enter submits where the control makes that natural: a radio/checkbox/number/text control triggers
+  // the form's IMPLICIT submission natively — and because the default button is the disabled-until-
+  // changed Save button, that path obeys the same rule for free. A <textarea> must keep Enter as a
+  // NEWLINE (a free-text answer is prose), so free-text submits on Ctrl/Cmd+Enter.
+  function onQuestionKeydown(ev) {
+    if (!ev || ev.key !== 'Enter' || !(ev.ctrlKey || ev.metaKey)) return;
+    var form = ev.target && ev.target.form;
+    var root = questionRoot(form);
+    if (!root) return;
+    var button = form.querySelector(SUBMIT_SELECTOR);
+    if (button && button.disabled) return;   // nothing to submit — same rule as the button
+    ev.preventDefault();
+    if (form.requestSubmit) form.requestSubmit(); else submitQuestionForm(form, root);
+  }
+
+  // A short SDK-owned status line beside Save. Without it a submit is silent, and "did that save?" is
+  // the first thing a reviewer asks. Runtime-only DOM carrying UI_ATTR like the rest of the chrome, so
+  // it never reaches the artifact (invariant 1) and can never become an annotation target.
+  function answerStatus(form, text, isError) {
+    var host = form.querySelector('.question-actions') || form;
+    var el = host.querySelector('[' + UI_ATTR + '="answer-status"]');
+    if (!el) {
+      el = make('span', null, 'answer-status');
+      el.setAttribute('role', 'status');
+      host.appendChild(el);
+    }
+    el.className = 'charter-answer-status' + (isError ? ' charter-answer-status-error' : '');
+    el.textContent = text;
+  }
+
+  // Submit one rendered :::question form, then move the baseline to what was saved so Save settles.
+  function submitQuestionForm(form, root) {
+    var answer = collectAnswer(form, root);
+    answerStatus(form, 'Saving…', false);
+    return postAnswer(answer).then(function (res) {
+      if (res) {
+        form.charterAnswerBaseline = JSON.stringify(answer.values);
+        answerStatus(form, 'Answer saved.', false);
+      } else {
+        answerStatus(form, 'Could not save this answer.', true);
+      }
+      syncSubmitState(form, root);
+      return res;
+    });
+  }
+
+  // Undo the wiring: drop the status chrome and return every Save button to the DISABLED state the
+  // renderer emits, so a disposed SDK leaves an inert (non-navigating) page behind.
+  function unwireQuestionForms() {
+    var forms = document.querySelectorAll('form[data-question-id]');
+    for (var i = 0; i < forms.length; i++) {
+      var form = forms[i];
+      var status = form.querySelector('[' + UI_ATTR + '="answer-status"]');
+      if (status && status.parentNode) status.parentNode.removeChild(status);
+      var button = form.querySelector(SUBMIT_SELECTOR);
+      if (button) { button.disabled = true; button.removeAttribute('title'); }
+      form.charterAnswerBaseline = null;
+    }
   }
 
   // ---- SDK chrome: one inline <style> + the panel + the transient highlight overlay -----
@@ -545,6 +676,9 @@ window.CharterAnnotate = (function () {
     '  background: var(--charter-code-bg); color: var(--charter-fg); }',
     '.charter-btn:disabled { opacity: 0.45; cursor: default; }',
     '.charter-btn-primary { background: var(--charter-accent); border-color: var(--charter-accent); color: #fff; }',
+
+    '.charter-answer-status { font-size: 12px; color: var(--charter-muted); }',
+    '.charter-answer-status-error { color: var(--charter-diff-del-fg); }',
 
     '.charter-composer { position: fixed; z-index: 2147483000; width: 340px; max-width: calc(100vw - 24px);',
     '  background: var(--charter-bg); color: var(--charter-fg); border: 1px solid var(--charter-border);',
@@ -1172,8 +1306,12 @@ window.CharterAnnotate = (function () {
       document.addEventListener('click', onClick, true);
       document.addEventListener('mouseup', onMouseUp, false);
       document.addEventListener('submit', onSubmit, true);
+      document.addEventListener('input', onQuestionInput, true);
+      document.addEventListener('change', onQuestionInput, true);
+      document.addEventListener('keydown', onQuestionKeydown, true);
     }
     ensureUi();
+    wireQuestionForms();
     openEvents();
 
     state.started = true;
@@ -1199,7 +1337,11 @@ window.CharterAnnotate = (function () {
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('mouseup', onMouseUp, false);
       document.removeEventListener('submit', onSubmit, true);
+      document.removeEventListener('input', onQuestionInput, true);
+      document.removeEventListener('change', onQuestionInput, true);
+      document.removeEventListener('keydown', onQuestionKeydown, true);
     }
+    unwireQuestionForms();
     if (state.events) {
       try { state.events.close(); } catch (e) { /* ignore */ }
       state.events = null;
