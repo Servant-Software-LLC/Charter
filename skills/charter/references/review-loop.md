@@ -51,6 +51,11 @@ form does not submit on its own. Each annotation is resolved server-side to the
 **1-based markdown source line** of the block it points at (via the content-derived source-map), so the
 feedback you drain tells you exactly which line to edit — that round-trip is the whole point (invariant 2).
 
+Finally, the review panel carries a **Send to agent** button: the reviewer's way to say *"I'm done with this
+round"* without leaving the page. It is disabled while there is nothing queued to send, and again once the
+round has been handed off. It **signals only** — it queues no work of its own, applies nothing, and never
+writes the plan. You remain the only writer of `plan.charter.md`.
+
 ## Draining feedback — what `charter poll` returns (and the endpoints beneath it)
 
 `charter poll` returns both streams below in one JSON envelope on stdout. If you need the raw surface —
@@ -64,9 +69,11 @@ the POSTing, which is CSRF/same-origin gated — your GETs just need the key).
 GET http://127.0.0.1:<port>/api/poll?key=<key>
 ```
 
-Long-polls: it waits until an annotation is queued (or ~30 s elapses), then returns the queued
-annotations as a JSON array and clears the queue. An idle poll returns `[]` after the timeout — just poll
-again. Each element:
+Long-polls: it waits until **any** reviewer activity is queued — an annotation, a `:::question` answer, or a
+**Send to agent** hand-off — or ~30 s elapses, then returns the queued *annotations* as a JSON array and
+clears that queue. (The answers and the hand-off are read by their own routes below; they wake the poll so
+you learn about them at once instead of on the timeout.) An idle poll returns `[]` after the timeout — just
+poll again. Each element:
 
 ```json
 [
@@ -125,6 +132,47 @@ not remove the answers — `charter poll --apply` / `charter resolve` remove the
 - `values` — the selected option value(s); always an array (empty if none).
 - `target` — `human` or `agent`, echoed verbatim for downstream routing.
 
+### `reviewSubmitted` — did the human hand you this round?
+
+`charter poll`'s envelope carries two additive fields telling you *why* you woke:
+
+```json
+{
+  "reviewSubmitted": true,
+  "reviewSubmission": {
+    "sequence": 3,
+    "submittedAt": "2026-07-27T14:02:11.4180000+00:00",
+    "annotations": 2,
+    "answers": 1
+  }
+}
+```
+
+- `reviewSubmitted: false` (the normal case) — you woke because feedback arrived. This is **incremental**:
+  the reviewer is still working. Act on what you drained, but expect more.
+- `reviewSubmitted: true` — the reviewer clicked **Send to agent**: *"this round is complete, go revise."*
+  Treat it as the point to do the substantial rewrite and re-render, not just to absorb one more comment.
+  `reviewSubmission` records when they clicked and how much was queued at that moment.
+
+**It is reported exactly once per hand-off.** The poll that reports it also clears it server-side, so the
+next poll shows `false` again unless the reviewer hands off another round. (If a poll dies before clearing,
+the marker survives and is reported again — repeating a hand-off is safe; losing one is not.) A hand-off
+makes `poll` exit `0` (drained) even when both queues are empty, because "the human says this round is
+done" is itself the thing you were waiting for.
+
+The raw route, if you need it (`--url`, scripting, debugging):
+
+```
+GET  http://127.0.0.1:<port>/api/review?key=<key>
+```
+
+which returns `{ "submitted": bool, "submission": {…}|null, "pending": { "annotations": n, "answers": n } }`
+without clearing anything. It is a read: only `charter poll` (or a `POST /api/{key}/review/ack?sequence=N`)
+clears the marker.
+
+**The hand-off never writes the plan.** The server records a signal and wakes you; every edit to
+`plan.charter.md` is still yours to make.
+
 ## The loop
 
 Put the drains together and iterate until the plan is approved:
@@ -134,8 +182,16 @@ Put the drains together and iterate until the plan is approved:
    and revise per the `note`; each drained `:::question` answer is folded **inline** into its block's
    `answer` field by `--apply`. Nothing queued yet is a clean-empty result — poll again. (A solo human
    reviewer with no looping agent uses `charter resolve` to fold in their own answers instead.)
-3. Save `plan.charter.md`. The human's next refresh shows the revision (live reload).
-4. Repeat until the human signals approval, then stop the server (Ctrl+C) and move to handoff.
+   Add `--wait` to block until something arrives instead of polling in a loop: it returns as soon as the
+   reviewer annotates, answers, or clicks **Send to agent**.
+3. Check `reviewSubmitted`. `true` means the human handed you the round — revise properly. `false` means
+   you caught feedback mid-review; a small correction is fine, but a large rewrite under a reviewer who is
+   still reading is the thing to be careful about.
+4. Save `plan.charter.md`. The human's next refresh shows the revision (live reload) — and the page reloads
+   itself, so a reviewer who clicked **Send to agent** watches your revision appear without touching
+   anything. Their unsaved work (a half-typed note, an unsaved answer) defers the reload behind a banner
+   rather than being discarded.
+5. Repeat until the human signals approval, then stop the server (Ctrl+C) and move to handoff.
 
 The low-level surface, if you need it (scripting, debugging, the `--url` path): each stream is a plain
 `GET` — any HTTP client works.
@@ -143,6 +199,7 @@ The low-level surface, if you need it (scripting, debugging, the `--url` path): 
 ```
 curl "http://127.0.0.1:53201/api/poll?key=Yb3…"     # queued annotations (waits up to ~30s)
 curl "http://127.0.0.1:53201/api/answers?key=Yb3…"  # queued :::question answers (peek; returns immediately)
+curl "http://127.0.0.1:53201/api/review?key=Yb3…"   # the round hand-off + live pending counts (peek)
 ```
 
 Once the plan is approved, capture and hand it off — see `references/handoff.md`.
