@@ -236,9 +236,11 @@ Review comments are **also** written to a durable, per-author, append-only JSONL
 teammates **by git** — Charter reads git for the author's identity but **never** commits, pushes, or stages
 anything. Design of record: `docs/plans/03-git-mediated-team-review.md`; don't restate it, cite it.
 
-`charter review` opens that log **by default** and prints one stderr line naming the file and stating that
-the records are meant to be committed and are permanent. If a human asks you to keep review local, the
-answer is to gitignore `*.review/` — not a flag.
+`charter review` opens that log **by default**. The stderr line naming the file and stating that the records
+travel by git and are permanent is printed **once, and only when `.review/` is already git-tracked** — the
+case where a teammate's records are genuinely there. A solo reviewer gets silence, and the directory is not
+even created until the first comment is appended. **Absence of that line does not mean nothing is being
+logged.** If a human asks you to keep review local, the answer is to gitignore `*.review/` — not a flag.
 
 This is what makes `charter poll <plan>` useful when **no server is running at all**. With no live session
 it folds every `*.jsonl` beside the plan and emits the *same* envelope. Two fields tell you so:
@@ -247,6 +249,12 @@ it folds every `*.jsonl` beside the plan and emits the *same* envelope. Two fiel
   read). `session` is `null` on the `review-log` path because there genuinely isn't one.
 - **`review`** — present only on a review-log annotation:
   `{ authorName, authorEmail, actor, status, ts }`.
+- **`base`** — the plan's **content hash when the comment was recorded**. Carried so you can fetch that
+  revision from git and diff it. Omitted when the record doesn't carry one.
+- **`baseStatus`** — whether the plan is *still* that text: `current` / `different` / `unknown`.
+
+**All four are review-log only.** A live-session (`source: "session"`) annotation carries none of them — the
+shipped drain shape is unchanged — so never branch on `baseStatus` without checking `source` first.
 
 ```json
 { "session": null, "source": "review-log",
@@ -255,8 +263,38 @@ it folds every `*.jsonl` beside the plan and emits the *same* envelope. Two fiel
     "sourceLine": 7, "quote": "We will add a per-tenant rate limiter",
     "review": { "authorName": "Alice Ng", "authorEmail": "alice@example.com",
                 "actor": "human", "status": "open", "ts": "2026-07-27T10:45:12Z" },
+    "base": "3f9a1c…", "baseStatus": "different",
     "anchorStatus": "resolved" } ] }
 ```
+
+### `anchorStatus` + `baseStatus` — read them as a pair
+
+Neither field means much alone. `anchorStatus` says *"does the block still exist?"*; `baseStatus` says
+*"was the plan this text when the comment was written?"* The **pair** is the signal:
+
+| `anchorStatus` | `baseStatus` | What it means |
+|---|---|---|
+| `resolved` | `current` | Ordinary live feedback. `sourceLine` is the line to edit. |
+| `resolved` | `different` | **Ambiguous, and irreducibly so.** Either the ordinary post-edit state (you revised the plan after they commented) **or** a comment from a *replaced* document whose content-derived anchor happened to collide with a block in the replacement. Charter cannot tell these apart, and neither can you from these two fields. |
+| `orphaned` | `different` | The ordinary living-document orphan — the commented block changed or went away. Use `quote` to find what they meant. |
+| `orphaned` | `current` | **The genuinely anomalous reading.** The block was never in the very text the comment was recorded against — the reviewer was commenting on a render they had not reloaded, or the anchor was never valid. |
+
+Two rules for using it:
+
+- **`current` is a sound positive; `different` proves almost nothing.** Byte-identical text at this path
+  *is* this document. But `different` means only "not exactly this text" — it is the **modal** state of
+  nearly every comment in a living document, and it is what an ordinary edit round produces. **Never read
+  `different` as "ignore this comment."** (Line endings are not content: the plan is compared in every
+  newline form, so a Windows/Linux team does not read `different` on every comment at the same revision.)
+- **`unknown` is not a verdict.** It means either the record carries no `base`, or the plan could not be
+  read — unreadable, or empty — when the drain ran. Charter is declining to make a claim about a document
+  it never saw, not reporting a mismatch.
+
+**This labels; it never withholds.** Every comment the fold holds is delivered whatever its `baseStatus` —
+the machine-local stale-queue quarantine deliberately does *not* cross over to the committed log (there is
+no local remedy for a record that belongs to someone else's machine). The evidence travels with the comment
+instead. The same pair backs the in-page review panel's orphan line, so what you drain and what the human
+sees agree.
 
 Rules for acting on it:
 

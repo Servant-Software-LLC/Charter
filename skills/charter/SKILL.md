@@ -37,21 +37,19 @@ reporting on work already finished.
 
 | Verb | What it does |
 |---|---|
-| `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: pass every block through unchanged, promote a section whose heading names open questions / risks / decisions (including a numbered heading like `9. Open questions / risks`) over a bullet **or numbered** list into `:::question` blocks, and stamp the format marker. Only **simple** items (one paragraph, no nested structure) promote; a **complex/nested** item (sub-bullets, a trailing decision paragraph) is left **verbatim as prose** and **reported on stderr** (`promoted X of Y`, plus a warning naming each item left) — never silently dropped. The deterministic floor — you then **enrich** it (diagrams, comparisons, more questions), including hand-promoting or enriching any item convert reported it left as prose. |
+| `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: every block passes through unchanged, the **simple** items of a section whose heading names open questions / risks / decisions become `:::question` blocks, and the format marker is stamped. The deterministic floor you then **enrich** — see step 1 below for what it leaves behind and why you must read its stderr. |
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open] [--keep-annotations]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. If the plan was **replaced** at the same path (no queued annotation's anchor still resolves), the old queue is **set aside, never deleted** — Charter says where on stderr **and in the review panel**; `--keep-annotations` restores it. |
 | `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. With **no** live session, `charter poll <plan>` instead folds the **committed review logs** beside the plan — how you read a teammate's comments while executing. **Branch on its exit code** (`0` drained · `2` clean-empty · `3` no session/log · `4` drain FAILED, state unknown · `5` apply refused), never on an empty array. |
 | `charter resolve <plan.charter.md> [--apply-stale-answers]` | Solo-reviewer companion to `poll --apply`: fold a human reviewer's queued answers **inline** into the plan when no agent is looping `poll`. An answer whose `:::question` has **changed shape** since it was given (title/mode/target/options) is reported and left queued (exit `5`), never written — `--apply-stale-answers` is the human's explicit "apply it anyway". |
+| `charter headless <plan.charter.md> [--out-dir <dir>]` | The **unattended** sibling of `charter review` — for a crewmate or any run with no human present. Serves nothing and waits for nothing: writes `export`'s artifact (**same exporter, byte-identical**) plus a **forensic JSON record**, at names **derived** from the plan (`storage.charter.md` → `storage.charter.html` + `storage.charter.headless.json`), then exits. **Its exit codes are their own vocabulary, not the drain's**: `0` nothing outstanding · `2` both files are on disk **and** a human must decide or fix something (an **escalation**, not a failure) · `1` verb error. |
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
-| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the headless Guardrails `plan-breakdown` path. |
+| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the **autonomous** Guardrails `plan-breakdown` path. (That path is also called "headless" — an unrelated sense of the word from the `charter headless` verb above. `handoff` writes no record; `headless` writes no CommonMark.) |
 | `charter skills install [--project] [--force]` | Install the bundled `charter` + `charter-format` skills so Guardrails `plan-breakdown` can discover them. |
 | `charter --version` | Print the version. |
 
-You read the human's feedback with **`charter poll`** — it drains the queued annotations and `:::question`
-answers from the running review server, discovering the session from a per-user registry so the capability
-key never crosses your command line. `charter poll --apply` (agent-in-the-loop) and `charter resolve` (solo
-human reviewer) then fold the answers **inline** into the plan's `:::question` blocks. The loopback HTTP
-endpoints still sit beneath `poll` — see [The review loop](#the-review-loop) and `references/review-loop.md`.
+`poll` discovers the running session from a per-user registry, so the **capability key never crosses your
+command line**. The loopback HTTP endpoints still sit beneath it — `references/review-loop.md`.
 
 ## The workflow: AUTHOR → REVIEW → HANDOFF
 
@@ -129,9 +127,21 @@ until the plan is approved. The JSON envelope shapes, the exit codes, the long-p
 concrete drain loop are in `references/review-loop.md`.
 
 `charter review` also writes each comment to a durable per-author log at `<plan>.review/*.jsonl` beside the
-plan, and says so on stderr. Those records travel to teammates **by git** and are permanent in history —
-Charter reads git for the author's identity but never commits, pushes, or stages. If the human wants review
-kept local, tell them to gitignore `*.review/`.
+plan. Those records travel to teammates **by git** and are permanent in history — Charter reads git for the
+author's identity but never commits, pushes, or stages. The stderr notice saying so fires **once, and only
+when that directory is already git-tracked**; a solo reviewer is told nothing, and the directory isn't
+created until the first comment lands. **Absence of that line does not mean nothing is being logged.** If the
+human wants review kept local, tell them to gitignore `*.review/`.
+
+#### When there is no human — `charter headless`
+
+If the run is genuinely unattended (a firstmate crewmate, CI), review has nobody to elicit anything from.
+`charter headless plan.charter.md` is that path: it writes `export`'s artifact **plus a forensic record**
+(`planSha256`, every `:::question` with its target and answered state, Charter's own diagnostics, and an
+**`anchorId` → markdown-line `sourceMap`** so a human can trace an artifact element back to its source line
+**offline, after the fact**), then exits. **Branch on its exit code** — `2` means everything is on disk *and*
+a human must decide or fix something. It is review's **sibling, not its replacement**: it collects no
+feedback and answers no question. Details in `references/unattended.md`.
 
 ### 3. HANDOFF — `charter export` (optional) then `charter handoff`
 
@@ -171,7 +181,7 @@ it, and a drift test binds them. Do not fork or invent directives.
 | callout | `:::note` / `:::warn` |
 | table / comparison | pipe tables · `:::comparison` |
 | code / diff | fenced ` ```lang ` · `:::diff` |
-| diagram | `:::diagram` (Mermaid body) — rendered theme-aware as inline SVG, annotatable per node |
+| diagram | `:::diagram` (Mermaid body) — rendered theme-aware as inline SVG; annotatable per node and as a whole; pan/zoom in review when oversized |
 | wireframe / escape hatch | `:::custom-html` (sanitized inline HTML) |
 | **question (elicitation)** | **`:::question`** |
 
@@ -199,5 +209,8 @@ Keep this file lean; the depth lives in `references/`:
   feedback with `charter poll` (`--apply` / `charter resolve` fold answers inline) on the loopback server;
   **the exit codes**, `drainError`, the **Send to agent** round hand-off, and reading a teammate's
   committed comments with no server running.
+- **`references/unattended.md`** — `charter headless`: the unattended sibling of review. The derived output
+  names, the forensic record's shape, the **separate** exit-code vocabulary, and exactly what raises
+  `needsHuman`.
 - **`references/handoff.md`** — `charter export` (offline artifact) and `charter handoff` (→ plain
   CommonMark; the `--answers` JSON shape; Open-question vs Answered).
