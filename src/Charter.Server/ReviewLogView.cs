@@ -30,6 +30,22 @@ public static class ReviewStatusTokens
     /// </summary>
     public const string AnchorOrphaned = "orphaned";
 
+    /// <summary>
+    /// The plan is byte-identical (modulo line endings) to the text this comment was written against. A SOUND
+    /// positive — byte-identical text at this path is this document (§4.3.1).
+    /// </summary>
+    public const string BaseCurrent = "current";
+
+    /// <summary>
+    /// The plan is not the text this comment was written against. <b>Evidence of nothing on its own</b> — an
+    /// ordinary edit and a wholesale replacement look identical here, and this is the modal state of nearly
+    /// every comment in a living document. Never read it as "ignore this comment" (§4.3.1).
+    /// </summary>
+    public const string BaseDifferent = "different";
+
+    /// <summary>The record carries no <c>anchor.base</c>, or the plan could not be read (§4.3.1).</summary>
+    public const string BaseUnknown = "unknown";
+
     /// <summary>The token for a <see cref="ReviewCommentStatus"/>.</summary>
     public static string For(ReviewCommentStatus status) => status switch
     {
@@ -73,6 +89,13 @@ public sealed record ReviewLogReplyView(
 /// <param name="Kind">The anchor kind token (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>).</param>
 /// <param name="Quote">What the reviewer had selected — how an orphan stays legible.</param>
 /// <param name="SourceLine">The anchor's current 1-based markdown line, or null when orphaned.</param>
+/// <param name="Base">The record's <c>anchor.base</c> verbatim — the plan's content hash when it was recorded.</param>
+/// <param name="BaseStatus">
+/// Whether the plan is still that text: <c>current</c> / <c>different</c> / <c>unknown</c> (§4.3.1). It exists
+/// so the panel's orphan line — <i>"the plan has changed since this comment was written"</i> — is a claim
+/// Charter can back, rather than one it asserts on every orphan including the ones where the plan has not
+/// changed at all.
+/// </param>
 /// <param name="Body">The settled text, or null when withdrawn.</param>
 /// <param name="Ts">Display stamp.</param>
 /// <param name="Mine">Whether the reading identity wrote it — only its own author may retract it.</param>
@@ -89,6 +112,8 @@ public sealed record ReviewLogCommentView(
     string? Kind,
     string? Quote,
     int? SourceLine,
+    string? Base,
+    string BaseStatus,
     string? Body,
     string? Ts,
     bool Mine,
@@ -148,7 +173,8 @@ public sealed record ReviewLogView(
         ArgumentNullException.ThrowIfNull(read);
 
         var map = SourceMap.Build(markdown ?? string.Empty);
-        var comments = read.State.Comments.Select(c => Project(c, map, selfEmail)).ToList();
+        var revision = ReviewBaseStatus.ForPlan(markdown);
+        var comments = read.State.Comments.Select(c => Project(c, map, revision, selfEmail)).ToList();
         var diagnostics = read.State.Diagnostics
             .Select(d => new ReviewLogNoticeView(d.Kind.ToString(), d.Message, d.FileName, d.LineNumber))
             .ToList();
@@ -156,7 +182,8 @@ public sealed record ReviewLogView(
         return new ReviewLogView(comments, diagnostics, read.Unreadable, selfEmail);
     }
 
-    private static ReviewLogCommentView Project(ReviewComment comment, SourceMap map, string? selfEmail)
+    private static ReviewLogCommentView Project(
+        ReviewComment comment, SourceMap map, ReviewBaseStatus revision, string? selfEmail)
     {
         // Exact match or orphan. LineForAnchor IS the exact-id lookup — a miss means the block the reviewer
         // commented on has changed, which is a fact to report, not a prompt to go looking for a near match.
@@ -173,6 +200,8 @@ public sealed record ReviewLogView(
             Kind: comment.Anchor.Kind,
             Quote: comment.Anchor.Quote,
             SourceLine: sourceLine,
+            Base: comment.Anchor.Base,
+            BaseStatus: revision.Of(comment.Anchor.Base),
             Body: comment.Body,
             Ts: comment.Record.Ts,
             Mine: IsSelf(comment.Author.Email, selfEmail),

@@ -1471,6 +1471,11 @@ window.CharterAnnotate = (function () {
       actor: comment.actor || null,
       status: comment.status || 'open',
       anchorStatus: comment.anchorStatus || null,
+      // Whether the plan is still the text this comment was written against: 'current' / 'different' /
+      // 'unknown' (§4.3.1). It is deliberately NOT rendered as a per-comment badge — 'different' is the modal
+      // state of nearly every comment in a living document, so badging it would train the reviewer to ignore
+      // the one badge that matters. It is used only to keep the orphan line an EARNED claim.
+      baseStatus: comment.baseStatus || null,
       mine: !!comment.mine,
       sides: comment.sides || [],
       replies: comment.replies || [],
@@ -1491,6 +1496,7 @@ window.CharterAnnotate = (function () {
       actor: null,
       status: 'open',
       anchorStatus: null,
+      baseStatus: null,
       mine: true,
       sides: [],
       replies: [],
@@ -1555,6 +1561,7 @@ window.CharterAnnotate = (function () {
     item.setAttribute('data-charter-anchor-status', orphaned ? 'orphaned' : 'resolved');
     item.setAttribute('data-charter-status', record.status || 'open');
     item.setAttribute('data-charter-committed', record.committed ? 'true' : 'false');
+    if (record.baseStatus) item.setAttribute('data-charter-base-status', record.baseStatus);
     if (record.authorEmail) item.setAttribute('data-charter-author-email', record.authorEmail);
     if (record.actor) item.setAttribute('data-charter-actor', record.actor);
 
@@ -1583,13 +1590,20 @@ window.CharterAnnotate = (function () {
     item.appendChild(make('div', 'charter-item-note', 'item-note',
       retracted ? '(comment withdrawn by author)' : (record.note || '')));
 
-    // An orphan is never blind: the quote it was written against, plus the neutral FACT that the plan has
-    // changed. Deliberately not "addressed" — folding a :::question answer rewrites that block and orphans
-    // every comment on it though nobody addressed anything.
+    // An orphan is never blind: the quote it was written against, plus the neutral FACT that its block is
+    // gone. Deliberately not "addressed" — folding a :::question answer rewrites that block and orphans every
+    // comment on it though nobody addressed anything.
+    //
+    // The stronger sentence — "the plan has CHANGED since this comment was written" — is a claim about the
+    // whole document, and it is made only when `baseStatus` backs it (§4.3.1). It used to be asserted on every
+    // orphan, including the ones where the plan is byte-identical to what the reviewer saw and the anchor
+    // simply never resolved.
     if (orphaned) {
       var orphan = make('div', 'charter-item-orphan', 'item-orphan');
       orphan.appendChild(make('div', null, 'item-orphan-note',
-        'The plan has changed since this comment was written.'));
+        record.baseStatus === 'different'
+          ? 'The plan has changed since this comment was written.'
+          : 'The block this comment was written on is not in the plan.'));
       if (record.quote) {
         orphan.appendChild(make('div', 'charter-item-quote', 'item-quote',
           '“' + truncate(record.quote, 160) + '”'));

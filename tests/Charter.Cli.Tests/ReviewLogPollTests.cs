@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -335,7 +337,212 @@ public class ReviewLogPollTests
         }
     }
 
+    // ---- #74: staleness LABELS, it never withholds (§4.3.1) ------------------------------------------------
+
+    /// <summary>
+    /// <b>The normative guard.</b> This is the #67 scenario exactly — a plan deleted and a completely different
+    /// document authored at the same path — reproduced on the COMMITTED review log, where the sidecar's
+    /// quarantine rule fires on every clause: there is at least one comment, the plan is not byte-identical to
+    /// the revision they were written against, and NOT ONE anchor resolves.
+    /// <para>
+    /// Every comment is delivered anyway. That is the resolution of Charter #74 (§4.3.1): the quarantine does
+    /// not cross over to a shared, permanent, git-tracked log, because its remedy (copy aside, rewrite the live
+    /// file) does not exist there and its evidence has a high benign base rate — a fresh clone or a second
+    /// machine has an empty consumption ledger, so a mature plan's whole review history arrives at once and
+    /// nearly all of it is legitimately orphaned. A rule that fired there would silence a committed objection
+    /// with no local remedy.
+    /// </para>
+    /// <para>
+    /// <b>If this test ever fails by delivering fewer comments, the fix is not to relax the assertion.</b>
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Poll_WhenTheDocumentAtThisPathWasREPLACED_StillDeliversEveryComment_Labelled()
+    {
+        var stateDir = NewTempDir();
+        var plan = WritePlan(ReplacedOldPlan);
+        try
+        {
+            var bob = new ReviewLogWriter(plan, Bob);
+            var written = OldPlanAnchorsNotSharedWithTheReplacement()
+                .Select((anchor, i) => bob.AppendCreate(
+                    new ReviewAnchor(anchor, "element", "quoted from the old document", BaseOf(ReplacedOldPlan)),
+                    "objection " + i + " about a document that is no longer here"))
+                .ToList();
+
+            Assert.True(written.Count >= 2, "the fixture must carry more than one doomed anchor");
+
+            // The plan is deleted and a different document is authored at the same path.
+            File.WriteAllText(plan, ReplacedNewPlan);
+
+            var result = await RunCharterAsync(stateDir, "poll", plan);
+
+            Assert.Equal(0, result.ExitCode);
+            var annotations = Annotations(result.StdOut);
+
+            // NOTHING is withheld: every comment the fold holds is delivered...
+            Assert.Equal(written.Count, annotations.Count);
+            Assert.All(written, record => Assert.Contains(
+                annotations, a => a.GetProperty("id").GetString() == record.Id));
+
+            // ...and the quarantine's own trigger condition genuinely held: not one anchor resolves.
+            Assert.All(annotations, a => Assert.Equal("orphaned", a.GetProperty("anchorStatus").GetString()));
+
+            // The evidence travels instead of the suppression: each says which revision it was written against.
+            Assert.All(annotations, a =>
+            {
+                Assert.Equal("different", a.GetProperty("baseStatus").GetString());
+                Assert.Equal(BaseOf(ReplacedOldPlan), a.GetProperty("base").GetString());
+            });
+        }
+        finally
+        {
+            Cleanup(stateDir, plan);
+        }
+    }
+
+    /// <summary>
+    /// #67's <b>worst</b> finding, which orphan-labelling alone never addressed: a comment from the deleted
+    /// document whose content-derived anchor COLLIDES with a block carried into the replacement (an identical
+    /// boilerplate line) arrives looking exactly like fresh feedback — <c>anchorStatus: "resolved"</c>, a
+    /// plausible source line — with no way for an agent to tell it apart.
+    /// <para>
+    /// It still arrives (nothing is withheld), but it now names the revision it was actually written against.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Poll_AColludingAnchorFromTheReplacedDocument_ResolvesButSaysWhichRevisionItSaw()
+    {
+        var stateDir = NewTempDir();
+        var plan = WritePlan(ReplacedOldPlan);
+        try
+        {
+            var shared = SharedAnchor();
+            var comment = new ReviewLogWriter(plan, Bob).AppendCreate(
+                new ReviewAnchor(shared, "element", "Status: Draft for review", BaseOf(ReplacedOldPlan)),
+                "Please add line breaks here as appropriate");
+
+            File.WriteAllText(plan, ReplacedNewPlan);
+
+            var result = await RunCharterAsync(stateDir, "poll", plan);
+
+            Assert.Equal(0, result.ExitCode);
+            var annotation = Assert.Single(Annotations(result.StdOut));
+            Assert.Equal(comment.Id, annotation.GetProperty("id").GetString());
+
+            // The collision is real: the anchor resolves in a document the comment was never written about.
+            Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+            Assert.NotEqual(JsonValueKind.Null, annotation.GetProperty("sourceLine").ValueKind);
+
+            // ...and THIS is what now distinguishes it from genuinely fresh feedback.
+            Assert.Equal("different", annotation.GetProperty("baseStatus").GetString());
+            Assert.Equal(BaseOf(ReplacedOldPlan), annotation.GetProperty("base").GetString());
+        }
+        finally
+        {
+            Cleanup(stateDir, plan);
+        }
+    }
+
+    /// <summary>
+    /// The sound positive: a comment written against the plan as it stands reads <c>current</c>. This is the
+    /// only <c>baseStatus</c> value that asserts anything — byte-identical text at this path IS this document.
+    /// </summary>
+    [Fact]
+    public async Task Poll_ACommentWrittenAgainstThePlanAsItStands_ReadsCurrent()
+    {
+        var stateDir = NewTempDir();
+        var plan = WritePlan();
+        try
+        {
+            new ReviewLogWriter(plan, Bob).AppendCreate(
+                new ReviewAnchor(AnchorAt(2), "element", "the write path", BaseOf(Plan)),
+                "a comment on the plan exactly as it is now");
+
+            var result = await RunCharterAsync(stateDir, "poll", plan);
+
+            Assert.Equal(0, result.ExitCode);
+            var annotation = Assert.Single(Annotations(result.StdOut));
+            Assert.Equal("current", annotation.GetProperty("baseStatus").GetString());
+            Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+        }
+        finally
+        {
+            Cleanup(stateDir, plan);
+        }
+    }
+
+    /// <summary>
+    /// A record that never recorded which revision it saw reads <c>unknown</c> — never <c>different</c>, which
+    /// would be a claim, and never omitted, which would leave an agent to guess. The raw <c>base</c> is simply
+    /// absent from the wire, exactly as <c>review</c> is absent from a pending-queue annotation.
+    /// </summary>
+    [Fact]
+    public async Task Poll_ACommentWithNoRecordedRevision_ReadsUnknown_AndOmitsBase()
+    {
+        var stateDir = NewTempDir();
+        var plan = WritePlan();
+        try
+        {
+            new ReviewLogWriter(plan, Bob).AppendCreate(Anchor(AnchorAt(2)), "a comment from before base was stamped");
+
+            var result = await RunCharterAsync(stateDir, "poll", plan);
+
+            Assert.Equal(0, result.ExitCode);
+            var annotation = Assert.Single(Annotations(result.StdOut));
+            Assert.Equal("unknown", annotation.GetProperty("baseStatus").GetString());
+            Assert.False(annotation.TryGetProperty("base", out _));
+        }
+        finally
+        {
+            Cleanup(stateDir, plan);
+        }
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------------
+
+    // The #67 fixture: one document, then a COMPLETELY different one at the same path. The "Status: Draft"
+    // line is byte-identical and unique in both, so it keeps its pure content-derived id in each — which is
+    // exactly how an anchor from the dead document collides with a block in the replacement.
+    private const string ReplacedOldPlan =
+        "# Launcher Policy Plan\n" +
+        "\n" +
+        "Status: Draft for review\n" +
+        "\n" +
+        "The rollout uses PinnedVersion to hold a fleet on a known build.\n" +
+        "\n" +
+        "Precedence between the machine policy and the user policy is undefined.\n";
+
+    private const string ReplacedNewPlan =
+        "# Tenant Rate Limit Plan\n" +
+        "\n" +
+        "Status: Draft for review\n" +
+        "\n" +
+        "Each tenant gets a token bucket sized from its contracted throughput.\n" +
+        "\n" +
+        "Buckets refill on a wall clock, never on request arrival.\n";
+
+    /// <summary>The anchor the two documents share, which is what makes the collision reachable.</summary>
+    private static string SharedAnchor()
+    {
+        var shared = AnchorsOf(ReplacedOldPlan).Intersect(AnchorsOf(ReplacedNewPlan), StringComparer.Ordinal).ToList();
+        return Assert.Single(shared);
+    }
+
+    /// <summary>Every anchor of the old document that the replacement does NOT carry — all of them doomed.</summary>
+    private static IReadOnlyList<string> OldPlanAnchorsNotSharedWithTheReplacement()
+        => AnchorsOf(ReplacedOldPlan).Except(AnchorsOf(ReplacedNewPlan), StringComparer.Ordinal).ToList();
+
+    private static IReadOnlyList<string> AnchorsOf(string markdown)
+        => SourceMap.Build(markdown).Anchors.OrderBy(a => a, StringComparer.Ordinal).ToList();
+
+    /// <summary>
+    /// The plan's content hash in the <c>anchor.base</c> wire format, computed here independently of the
+    /// implementation that mints it — <c>base</c> is a committed, immutable artifact, so a change to how it is
+    /// derived must break a test rather than quietly making every existing record read <c>different</c>.
+    /// </summary>
+    private static string BaseOf(string markdown)
+        => "sha256:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(markdown))).ToLowerInvariant();
 
     private static string AnchorAt(int index)
         => SourceMap.Build(Plan).Anchors.OrderBy(a => a, StringComparer.Ordinal).ElementAt(index);
@@ -352,13 +559,13 @@ public class ReviewLogPollTests
     private static IReadOnlyList<JsonElement> Annotations(string stdout)
         => Root(stdout).GetProperty("annotations").EnumerateArray().Select(e => e.Clone()).ToList();
 
-    private static string WritePlan()
+    private static string WritePlan(string? markdown = null)
     {
         var directory = Path.Combine(
             Path.GetTempPath(), "charter-review-poll-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "team.charter.md");
-        File.WriteAllText(path, Plan);
+        File.WriteAllText(path, markdown ?? Plan);
         return path;
     }
 

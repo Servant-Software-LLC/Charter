@@ -454,6 +454,74 @@ public class ReviewLogPanelTests : IDisposable
         Assert.Equal(HttpStatusCode.NotFound, afterDrain.StatusCode);
     }
 
+    // ---- #74: the panel says only what the evidence backs (§4.3.1) ----------------------------------------
+
+    /// <summary>
+    /// The panel's orphan line used to assert <i>"the plan has changed since this comment was written"</i> on
+    /// EVERY orphan, including the ones where the plan is byte-identical to what the reviewer saw. §4.3.1 makes
+    /// that a claim Charter must be able to back, so the projection carries <c>baseStatus</c> and the panel
+    /// speaks only to it.
+    /// <para>
+    /// Both comments are still listed — labelling never withholds. That is the point of the resolution.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheProjection_SaysWhichRevisionEachCommentSaw_AndStillListsThemAll()
+    {
+        var plan = WritePlan();
+        var alice = new ReviewLogWriter(plan, Alice);
+
+        // Written against this exact text — sound positive — but on a block id that never existed. The plan has
+        // NOT changed; the anchor simply does not resolve.
+        var unchanged = alice.AppendCreate(
+            new ReviewAnchor("b-no-such-block-in-this-plan", "element", "a quote", ReviewLogBridge.PlanHash(PlanMarkdown)),
+            "an orphan whose plan is byte-identical to what the reviewer saw");
+
+        // Written against a document that is not what is at this path.
+        var elsewhere = alice.AppendCreate(
+            new ReviewAnchor("b-another-block-that-is-gone", "element", "a quote", ReviewLogBridge.PlanHash("# Some other document\n")),
+            "an orphan whose plan really has moved on");
+
+        using var server = StartServer(plan, Alice, out var session);
+        using var client = new HttpClient();
+
+        var comments = (await ReadViewAsync(client, server, session.Key.Value))
+            .GetProperty("comments").EnumerateArray().ToList();
+
+        Assert.Equal(2, comments.Count);
+
+        var current = comments.Single(c => c.GetProperty("id").GetString() == unchanged.Id);
+        Assert.Equal("orphaned", current.GetProperty("anchorStatus").GetString());
+        Assert.Equal("current", current.GetProperty("baseStatus").GetString());
+
+        var moved = comments.Single(c => c.GetProperty("id").GetString() == elsewhere.Id);
+        Assert.Equal("orphaned", moved.GetProperty("anchorStatus").GetString());
+        Assert.Equal("different", moved.GetProperty("baseStatus").GetString());
+        Assert.Equal(ReviewLogBridge.PlanHash("# Some other document\n"), moved.GetProperty("base").GetString());
+    }
+
+    /// <summary>
+    /// A record from before <c>base</c> was stamped reads <c>unknown</c> — never <c>different</c>, which would
+    /// be a claim about a document the record never described.
+    /// </summary>
+    [Fact]
+    public async Task ACommentWithNoRecordedRevision_ProjectsAsUnknown()
+    {
+        var plan = WritePlan();
+        new ReviewLogWriter(plan, Alice).AppendCreate(
+            Anchor(AnchorsOf(PlanMarkdown)[1], "a quote"), "a comment from before base was stamped");
+
+        using var server = StartServer(plan, Alice, out var session);
+        using var client = new HttpClient();
+
+        var folded = Assert.Single(
+            (await ReadViewAsync(client, server, session.Key.Value)).GetProperty("comments").EnumerateArray());
+
+        Assert.Equal("resolved", folded.GetProperty("anchorStatus").GetString());
+        Assert.Equal("unknown", folded.GetProperty("baseStatus").GetString());
+        Assert.Equal(JsonValueKind.Null, folded.GetProperty("base").ValueKind);
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------------
 
     private string WritePlan()
