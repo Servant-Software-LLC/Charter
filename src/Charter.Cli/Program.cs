@@ -786,11 +786,20 @@ static RootCommand BuildResolveRoot()
         Description = "Path to the Charter plan (.charter.md) whose queued answers to apply inline.",
     };
 
+    var applyStaleOption = new Option<bool>("--apply-stale-answers")
+    {
+        Description =
+            "Apply queued answers even when their :::question has CHANGED SHAPE since they were given (its "
+            + "title, mode, target or options differ). Without it such answers are reported and left queued, "
+            + "never written into the plan and never discarded.",
+    };
+
     var resolve = new Command(
         "resolve",
         "Apply a solo reviewer's queued :::question answers INLINE into the plan (single-writer-safe; via a live review server or the durable sidecar).")
     {
         inputArgument,
+        applyStaleOption,
     };
 
     resolve.SetAction(parseResult => RunVerb("resolve", () =>
@@ -803,7 +812,7 @@ static RootCommand BuildResolveRoot()
             return 1;
         }
 
-        return ResolveCommand.Execute(inputPath);
+        return ResolveCommand.Execute(inputPath, parseResult.GetValue(applyStaleOption));
     }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")

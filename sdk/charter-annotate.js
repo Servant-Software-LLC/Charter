@@ -64,6 +64,12 @@ window.CharterAnnotate = (function () {
     // server-side queue depth. Both come from the server rather than being counted locally, so they survive a
     // live reload — which is a full navigation that would otherwise reset a local tally.
     round: { submitted: false, pending: { annotations: 0, answers: 0 } },
+    // The replaced-plan quarantine, mirrored from GET /api/review: { count, fileName, durabilityDisabled } or
+    // null. `charter review` is frequently launched BY an agent, so the stderr notice it also writes may reach
+    // no human at all — this is what puts "your earlier notes were set aside, here is how to get them back"
+    // where the reviewer actually is. Runtime-only DOM, like every other piece of SDK chrome.
+    staleQueue: null,
+    staleQueueShown: false,
     composer: null,      // the open composer, or null
     ignoreNextClick: false,
     reloadPending: false, // a reload arrived while a draft was open (see onReload)
@@ -688,7 +694,57 @@ window.CharterAnnotate = (function () {
         answers: pending.answers || 0
       }
     };
+    applyStaleQueue(status && status.staleQueue);
     syncSendButton();
+  }
+
+  // ---- the replaced-plan quarantine notice (#75 item 2) -------------------------------------------
+  // The server set an earlier annotation queue aside because none of its anchors resolve in the plan now at
+  // this path. Nothing was destroyed, and the recovery is one flag — but only stderr used to say so, and a
+  // review an agent started shows a human none of it. Said here, once, in the panel.
+
+  function applyStaleQueue(notice) {
+    if (!notice || !notice.count) return;
+    state.staleQueue = {
+      count: notice.count,
+      fileName: notice.fileName || '',
+      durabilityDisabled: !!notice.durabilityDisabled
+    };
+    renderStaleQueue();
+    // Open the panel the first time, and only the first time: a reviewer whose earlier notes are missing must
+    // not have to go looking for the explanation, but re-reading /api/review must not keep reopening a panel
+    // they deliberately hid.
+    if (!state.staleQueueShown) {
+      state.staleQueueShown = true;
+      showPanel();
+      emit('stale-queue', {
+        count: state.staleQueue.count,
+        durabilityDisabled: state.staleQueue.durabilityDisabled
+      });
+    }
+  }
+
+  function staleQueueText(stale) {
+    var notes = stale.count + (stale.count === 1 ? ' earlier note' : ' earlier notes');
+    return notes + ' from a previous review at this path were set aside: none of them still point at a block '
+      + 'in this plan, so Charter did not hand them to the agent. Nothing was deleted'
+      + (stale.fileName ? ' — they are kept in ' + stale.fileName : '')
+      + '. Re-run charter review with --keep-annotations to restore them.'
+      + (stale.durabilityDisabled
+        ? ' Charter could not copy them aside, so this session is not saving new notes across a restart.'
+        : '');
+  }
+
+  function renderStaleQueue() {
+    if (!state.ui || !state.staleQueue) return;
+    if (!state.ui.stale) {
+      var stale = make('div', 'charter-panel-stale', 'stale-queue');
+      stale.setAttribute('role', 'status');
+      state.ui.panel.insertBefore(stale, state.ui.list);
+      state.ui.stale = stale;
+    }
+    state.ui.stale.setAttribute('data-charter-stale-count', String(state.staleQueue.count));
+    state.ui.stale.textContent = staleQueueText(state.staleQueue);
   }
 
   function pendingCount() {
@@ -1140,6 +1196,8 @@ window.CharterAnnotate = (function () {
     '  border-left: 1px solid var(--charter-border); box-shadow: -4px 0 18px rgba(0, 0, 0, 0.14); }',
     '.charter-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px;',
     '  padding: 10px 12px; border-bottom: 1px solid var(--charter-border); font-weight: 600; }',
+    '.charter-panel-stale { padding: 8px 12px; border-bottom: 1px solid var(--charter-warn-border);',
+    '  background: var(--charter-warn-bg); color: var(--charter-fg); font-size: 12px; line-height: 1.45; }',
     '.charter-panel-list { flex: 1 1 auto; overflow-y: auto; padding: 8px; }',
     '.charter-panel-empty { color: var(--charter-muted); padding: 10px 4px; }',
     '.charter-panel-actions { display: flex; align-items: center; gap: 8px; padding: 8px 12px;',
@@ -1271,9 +1329,13 @@ window.CharterAnnotate = (function () {
 
     state.ui = {
       style: style, panel: panel, title: title, list: list, send: send,
-      status: status, toggle: toggle, overlay: overlay, banner: null
+      status: status, toggle: toggle, overlay: overlay, banner: null,
+      // The quarantine notice is built on demand (renderStaleQueue) and lives inside the panel, so disposing
+      // the panel disposes it. It is never in the saved artifact — invariant 1 — like the rest of this chrome.
+      stale: null
     };
     syncSendButton();
+    renderStaleQueue();
     return state.ui;
   }
 
@@ -2040,6 +2102,8 @@ window.CharterAnnotate = (function () {
     state.annotations = [];
     state.log = { comments: [], diagnostics: [], unreadable: [], selfEmail: null };
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
+    state.staleQueue = null;
+    state.staleQueueShown = false;
     state.started = false;
   }
 

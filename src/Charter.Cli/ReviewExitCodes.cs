@@ -23,8 +23,12 @@ internal static class ReviewExitCodes
     public const int DrainFailed = 4;
 
     /// <summary>
-    /// The inline apply failed (duplicate question ids, a concurrent external edit, or an I/O error). The
-    /// queued answers are PRESERVED (never committed), so a corrected re-run recovers them — no data loss.
+    /// The inline apply did not happen. Either it FAILED (duplicate question ids, a concurrent external edit,
+    /// or an I/O error) or it was REFUSED because a queued answer's <c>:::question</c> is no longer the one the
+    /// reviewer was asked (Charter #75 item 3). Both share this code because they share the property that
+    /// matters to a caller: nothing was written, and the queued answers are PRESERVED (never committed), so a
+    /// corrected re-run — or an explicit <c>charter resolve --apply-stale-answers</c> — recovers them with no
+    /// data loss. stderr names which of the two it was.
     /// </summary>
     public const int ApplyFailed = 5;
 }

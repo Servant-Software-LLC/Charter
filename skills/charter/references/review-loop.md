@@ -72,7 +72,7 @@ Script against the code:
 | **2** | Clean empty: a live session (or a readable review log) was found and nothing was queued. | Poll again / keep waiting. |
 | **3** | No live session **and** no readable review log for this plan. Also returned when several sessions are live and you gave no selector (the candidates are listed on stderr). | Start `charter review`, or pass `<plan>` / `--url`. |
 | **4** | A drain **could not complete** (transport, parse, or an unreadable review log). The queue state is **UNKNOWN**. | Retry. **Never** report "nothing queued". |
-| **5** | `--apply` refused the inline write (duplicate `:::question` ids, a concurrent external edit, an I/O error). The answers are **preserved**, never committed. | Fix the plan, re-run `poll --apply` or `charter resolve`. |
+| **5** | The inline apply did not happen — it either **failed** (duplicate `:::question` ids, a concurrent external edit, an I/O error) or was **refused** because a queued answer's `:::question` has changed shape since it was given. Either way the answers are **preserved**, never committed; stderr names which. | Fix the plan and re-run — or, for a refusal, have the human re-answer or run `charter resolve <plan> --apply-stale-answers`. |
 | 1 | Generic verb error (an unexpected exception — e.g. a malformed `--url`). **No envelope is written.** | Fix the invocation. |
 
 Source of truth: `src/Charter.Cli/ReviewExitCodes.cs` and `src/Charter.Cli/PollCommand.cs`. `charter resolve`
@@ -124,7 +124,10 @@ poll again. Each element:
 
 - `kind` — `element`, `text-range`, or `diagram-node`. **Hyphenated on the wire**, not camelCase: the C#
   enum is serialized through a dedicated converter (`AnnotationApi.AnnotationKindConverter`) so it matches
-  the browser SDK's tokens exactly. Branching on `"textRange"` never matches.
+  the browser SDK's tokens exactly. Branching on `"textRange"` never matches — and **posting** `"textRange"`
+  is now refused with **400** naming the three accepted tokens, rather than being accepted and stored as
+  `element` (Charter #79). The camelCase spelling is not an alias; there is one spelling per kind. Omitting
+  `kind` entirely still means the whole block.
 - `anchorId` — the stable block id the note is attached to.
 - `note` — the reviewer's free text.
 - `sourceLine` — the **1-based markdown line** to edit, **resolved at drain time** against the plan file
@@ -139,6 +142,14 @@ poll again. Each element:
 
 An orphan is normal and expected in a living document: the reviewer comments, you edit the block, and
 that block's anchor changes by construction. It is information, not an error.
+
+**The panel's read agrees with the drain.** `GET /api/annotations?key=<key>` is the reviewer's in-page
+pre-drain queue (list, don't drain). It re-resolves through the *same* kernel `/api/poll` uses, so
+`sourceLine` and `anchorStatus` mean one thing on every route: **the anchor's line in the plan as it is
+now** (Charter #78). They used to disagree — the list route reported the value captured at submit time, so
+the same annotation against a replaced plan read `sourceLine: 1, "resolved"` from the list and
+`null, "orphaned"` from the drain, and an agent reading the list edited the wrong block confidently. There
+is no submit-time twin field; if you need a line, either route gives you the same current one.
 
 ### `GET /api/answers?key=<key>` — `:::question` answers
 
@@ -318,23 +329,43 @@ written against **and _not one_ of its annotations' anchors still resolves. One 
 queue is treated as live.** Over-eager quarantine would risk discarding real review work, which is the
 worse failure — so the rule is the weakest one that still catches a genuine replacement.
 
-**Nothing is ever destroyed.** The queue is copied to a `.stale-<utc>.json` file beside the sidecar, and
-Charter names the path on stderr:
+**Nothing is ever destroyed.** The queue is copied to a `<sidecar>.stale-<utc>.json` file beside the
+sidecar, and Charter names the full path on stderr — two lines, verbatim:
 
 ```
-charter review: this plan looks replaced — 8 queued annotation(s) no longer match any block.
-charter review: they are kept at <path>. Re-run with --keep-annotations to restore them.
+charter review: 8 queued annotation(s) at this path were written against a different document -- not one of
+their anchors resolves in this plan -- so they are NOT being served or handed off.
+charter review: they are kept at <path>. Re-run with --keep-annotations to restore them into this session,
+or delete that file to discard them.
 ```
 
-So when you drive a review and see that line, **tell the human** — they have not lost their notes, and
+(When the copy itself could not be made, the second line instead says the notes remain at the live sidecar
+and that the session is running **without durability** rather than overwriting them.)
+
+**The reviewer is also told in the browser.** The in-page panel opens itself and shows the same fact — how
+many notes were set aside, the file name they are kept in, and that `--keep-annotations` restores them
+(Charter #75 item 2). `charter review` is often started *by an agent*, so stderr alone reached nobody. The
+notice is runtime-only SDK chrome: it is never in the saved artifact, and it names the file, never a local
+absolute path.
+
+So when you drive a review and see either surface, **tell the human** — they have not lost their notes, and
 `charter review <plan> --keep-annotations` brings them back. Do not silently proceed as though the queue
 was empty.
 
-Two limits worth knowing:
+**Set-aside files are bounded, conservatively.** A `.stale-*.json` is retired only once it is **older than
+30 days** *and* has been **superseded by a newer set-aside queue for the same plan**; the newest is kept at
+any age, because it may be the only copy of those notes. Pruning happens when a new queue is set aside,
+never on a read.
 
-- **Answers are never quarantined.** A `:::question` answer is keyed by the question's `id`, not by an
-  anchor, so anchor evidence says nothing about it. If a replaced plan reuses a question id, an answer
-  from the old document can still fold into the new one.
+Two things worth knowing:
+
+- **Answers are never quarantined — but they are now checked.** A `:::question` answer is keyed by the
+  question's `id`, not by an anchor, so the anchor evidence says nothing about it. Instead, each submitted
+  answer records the question's **declared shape** (id, title, mode, target, options — not its answer), and
+  `charter resolve` / `poll --apply` refuse to fold in a decision whose question has changed shape since,
+  exiting **5** with the answers preserved (Charter #75 item 3). An ordinary edited plan applies exactly as
+  before. The human's explicit override is `charter resolve <plan> --apply-stale-answers`; `poll --apply`
+  deliberately has none.
 - **This applies to the machine-local queue, not the committed review log.** A log record whose anchor no
   longer resolves is still delivered, deliberately — an orphan there is a neutral fact carrying its
   `quote`, not an error. See the review-log section above.

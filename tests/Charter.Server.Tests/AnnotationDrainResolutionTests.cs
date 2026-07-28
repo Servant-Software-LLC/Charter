@@ -209,10 +209,10 @@ public class AnnotationDrainResolutionTests
         }
     }
 
-    // ---- 5. The pre-drain panel list still sees the submit-time resolution ---------------------------------
+    // ---- 5. The pre-drain panel list reports the SAME resolution the drain would ---------------------------
 
     [Fact]
-    public async Task PendingList_KeepsTheSubmitTimeLine_ForTheInPageReviewPanel()
+    public async Task PendingList_ReportsTheAnchorsCurrentLine_LikeEveryOtherRoute()
     {
         var planPath = WriteTempPlan(PlanMarkdown);
         try
@@ -225,9 +225,10 @@ public class AnnotationDrainResolutionTests
             var anchorId = AnchorOf(PlanMarkdown, TargetParagraph);
             await PostAnnotationAsync(client, server.Address, session.Key.Value, anchorId, "Panel note.");
 
-            // GET /api/annotations is the reviewer's PRE-DRAIN queue view — it reports the line as resolved when
-            // the note was taken, which is what the reviewer is looking at. Drain-time re-resolution is for the
-            // agent-facing handoff, and must not have disturbed this read.
+            // GET /api/annotations is the reviewer's PRE-DRAIN queue view. It is non-destructive, but its
+            // sourceLine/anchorStatus mean exactly what the drain's do — the anchor against the plan as it is
+            // now (Charter #78). With no intervening edit that is the anchor's original line; the divergence
+            // case is pinned by PanelDrainParityTests.
             var listUri = new Uri(server.Address, "api/annotations?key=" + Uri.EscapeDataString(session.Key.Value));
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             using var response = await client.GetAsync(listUri, cts.Token);
