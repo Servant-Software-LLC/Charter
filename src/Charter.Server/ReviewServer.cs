@@ -133,13 +133,40 @@ public sealed class ReviewServer : IReviewServer
         // (the sidecar reference is created only after seeding) — so a review process that crashed before drain
         // comes back with its queue intact. With no sidecar directory, durability is off (in-memory only).
         ReviewSidecar? sidecar = null;
+        StaleAnnotationQueue? stale = null;
         if (!string.IsNullOrEmpty(options.SidecarDirectory))
         {
             var sidecarPath = ReviewSidecar.PathForPlan(options.SidecarDirectory, session.SourcePath);
             var restored = ReviewSidecar.Rehydrate(sidecarPath);
-            foreach (var annotation in restored.Annotations)
+
+            // The reviewer's explicit KEEP, which is what makes the notice's advice true: fold any queue a
+            // previous session set aside back in. The files it read are retired only after the merged queue has
+            // been persisted below.
+            IReadOnlyList<string> reclaimed = Array.Empty<string>();
+            if (options.KeepStaleAnnotations)
             {
-                store.Enqueue(annotation);
+                (restored, reclaimed) = ReviewSidecar.Reclaim(sidecarPath, restored);
+            }
+
+            // Charter #67: the sidecar is keyed by the plan's PATH, so a plan deleted and re-authored at the
+            // same path used to rehydrate the dead document's queue — notes Charter's own anchor resolution
+            // already knew were orphaned. A queue where not one anchor survives is not this document's; move it
+            // aside and report it rather than delivering it or destroying it.
+            var replaced = !options.KeepStaleAnnotations
+                && TryReadPlan(session.SourcePath) is { } current
+                && ReviewSidecar.IsStale(restored, current);
+            if (replaced)
+            {
+                var preserved = ReviewSidecar.Quarantine(sidecarPath, session.SourcePath, restored);
+                stale = new StaleAnnotationQueue(
+                    restored.Annotations.Count, preserved ?? sidecarPath, DurabilityDisabled: preserved is null);
+            }
+            else
+            {
+                foreach (var annotation in restored.Annotations)
+                {
+                    store.Enqueue(annotation);
+                }
             }
 
             foreach (var answer in restored.Answers)
@@ -147,16 +174,52 @@ public sealed class ReviewServer : IReviewServer
                 answers.Enqueue(answer);
             }
 
-            sidecar = new ReviewSidecar(sidecarPath, session.SourcePath, store, answers);
+            // Bind the sidecar unless the stale queue could not be preserved — Persist() snapshots the live
+            // stores, so binding it there would overwrite the very notes the copy failed to save.
+            if (stale is not { DurabilityDisabled: true })
+            {
+                sidecar = new ReviewSidecar(sidecarPath, session.SourcePath, store, answers);
+
+                // Persist BEFORE retiring what was reclaimed, so the reviewer's notes exist in exactly one
+                // durable place at every instant of the hand-back.
+                if (reclaimed.Count > 0)
+                {
+                    sidecar.Persist();
+                    ReviewSidecar.RetireQuarantined(reclaimed);
+                }
+            }
         }
 
-        // The review log beside the plan. When this Charter can write it, materialize the .review/ directory
-        // now so the reload watcher can be armed on it before anyone has commented — otherwise a teammate's
-        // log landing mid-session would be invisible until the next page load.
+        // The review log beside the plan. The .review/ directory is deliberately NOT created here: it comes
+        // into existence only when a record is actually written (§5.0 — a solo reviewer who writes nothing must
+        // leave no trace beside their plan), so the /events stream arms its watcher lazily instead.
         var reviewLog = new ReviewLogBridge(session.SourcePath, options.ReviewLog);
-        options.ReviewLog?.EnsureDirectory();
 
-        return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address);
+        return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address)
+        {
+            StaleAnnotations = stale,
+        };
+    }
+
+    /// <summary>
+    /// The queue this server declined to rehydrate because it belongs to a different document (Charter #67), or
+    /// <see langword="null"/> when there was none. The CLI reports it; nothing is destroyed either way.
+    /// </summary>
+    public StaleAnnotationQueue? StaleAnnotations { get; private init; }
+
+    // The plan's markdown at start, or NULL when it cannot be read. Null is deliberately not "empty": an
+    // unreadable plan resolves no anchors, so treating it as empty would quarantine a perfectly live queue on a
+    // transient read failure. No evidence means no judgement — the queue rehydrates exactly as it does today.
+    private static string? TryReadPlan(string sourcePath)
+    {
+        try
+        {
+            return File.ReadAllText(sourcePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Stop the server and release the bound port.</summary>
@@ -1193,8 +1256,9 @@ public sealed class ReviewServer : IReviewServer
         planWatcher.EnableRaisingEvents = true;
 
         // ...and the .review/ DIRECTORY, filtered to *.jsonl. Without this, a `git pull` landing a teammate's
-        // log mid-session would leave the panel silently showing the fold taken at startup.
-        using var logWatcher = TryWatchReviewLogs(() => Signal(ReviewLogEvent));
+        // log mid-session would leave the panel silently showing the fold taken at startup. The directory is
+        // created lazily (only when a record is actually written), so this ALSO watches for its arrival.
+        using var logWatcher = new ReviewLogWatch(_reviewLog.Directory, () => Signal(ReviewLogEvent));
 
         // Push the named events whenever something changed; otherwise a periodic keep-alive comment keeps the
         // connection observably alive. Exits on server shutdown or client disconnect.
@@ -1242,34 +1306,130 @@ public sealed class ReviewServer : IReviewServer
     private const string ReviewLogEvent = "review-log";
 
     /// <summary>
-    /// A watcher on the plan's <c>.review/</c> directory, or null when it does not exist (this Charter has no
-    /// writer and nobody has ever commented). Best-effort: a watcher this stream could not arm must never cost
-    /// the reviewer their live-reload connection.
+    /// Watches the plan's <c>.review/</c> directory for logs arriving (a teammate's <c>git pull</c>, or this
+    /// reviewer's own first comment) — and, because that directory is created <b>lazily</b>, watches the plan's
+    /// own directory for the moment it appears and arms itself then.
     /// </summary>
-    private FileSystemWatcher? TryWatchReviewLogs(Action onChange)
+    /// <remarks>
+    /// <para>
+    /// The laziness is §5.0's requirement, not an optimisation: a solo reviewer who writes nothing must leave no
+    /// trace beside their plan, so <c>charter review</c> can no longer materialise <c>.review/</c> up front and
+    /// a stream that armed only at start would be permanently blind on the very first session that needs it.
+    /// </para>
+    /// <para>
+    /// Both watches are name-filtered and non-recursive — the plan directory is watched for one directory NAME,
+    /// exactly as the plan watcher watches it for one file name. Never a tree walk (Lavish's lesson). Every arm
+    /// is best-effort: a watcher this stream could not create must never cost the reviewer their live-reload
+    /// connection.
+    /// </para>
+    /// </remarks>
+    private sealed class ReviewLogWatch : IDisposable
     {
-        try
+        private readonly object _gate = new();
+        private readonly string _directory;
+        private readonly Action _onChange;
+        private FileSystemWatcher? _logs;
+        private FileSystemWatcher? _arrival;
+        private bool _disposed;
+
+        public ReviewLogWatch(string directory, Action onChange)
         {
-            if (!Directory.Exists(_reviewLog.Directory))
+            _directory = directory;
+            _onChange = onChange;
+
+            lock (_gate)
             {
-                return null;
+                ArmLogs();
+                if (_logs is null)
+                {
+                    ArmArrival();
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+                _logs?.Dispose();
+                _logs = null;
+                _arrival?.Dispose();
+                _arrival = null;
+            }
+        }
+
+        // The real watch: *.jsonl inside .review/. Only possible once the directory exists.
+        private void ArmLogs()
+        {
+            if (_disposed || _logs is not null || string.IsNullOrEmpty(_directory))
+            {
+                return;
             }
 
-            var watcher = new FileSystemWatcher(_reviewLog.Directory, ReviewLogPaths.LogSearchPattern)
+            try
             {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
-                    | NotifyFilters.CreationTime,
-            };
-            watcher.Changed += (_, _) => onChange();
-            watcher.Created += (_, _) => onChange();
-            watcher.Deleted += (_, _) => onChange();
-            watcher.Renamed += (_, _) => onChange();
-            watcher.EnableRaisingEvents = true;
-            return watcher;
+                if (!Directory.Exists(_directory))
+                {
+                    return;
+                }
+
+                var watcher = new FileSystemWatcher(_directory, ReviewLogPaths.LogSearchPattern)
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+                        | NotifyFilters.CreationTime,
+                };
+                watcher.Changed += (_, _) => _onChange();
+                watcher.Created += (_, _) => _onChange();
+                watcher.Deleted += (_, _) => _onChange();
+                watcher.Renamed += (_, _) => _onChange();
+                watcher.EnableRaisingEvents = true;
+                _logs = watcher;
+            }
+            catch (Exception)
+            {
+                _logs = null;
+            }
         }
-        catch (Exception)
+
+        // The bridge: the plan's own directory, filtered to the ONE directory name, so the log watch arms the
+        // instant .review/ is created instead of on the next page load. Deliberately left armed afterwards —
+        // disposing a watcher from inside its own callback is a needless hazard, and a `.review/` removed and
+        // restored (a branch switch) then re-arms the log watch for free.
+        private void ArmArrival()
         {
-            return null;
+            try
+            {
+                var parent = Path.GetDirectoryName(_directory);
+                var name = Path.GetFileName(_directory);
+                if (string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name) || !Directory.Exists(parent))
+                {
+                    return;
+                }
+
+                var watcher = new FileSystemWatcher(parent, name)
+                {
+                    NotifyFilter = NotifyFilters.DirectoryName,
+                };
+                watcher.Created += (_, _) => OnArrived();
+                watcher.Renamed += (_, _) => OnArrived();
+                watcher.EnableRaisingEvents = true;
+                _arrival = watcher;
+            }
+            catch (Exception)
+            {
+                _arrival = null;
+            }
+        }
+
+        private void OnArrived()
+        {
+            lock (_gate)
+            {
+                ArmLogs();
+            }
+
+            _onChange();
         }
     }
 

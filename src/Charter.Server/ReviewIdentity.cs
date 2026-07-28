@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Charter.Core;
 
 namespace Charter.Server;
@@ -29,9 +28,6 @@ public static class GitIdentity
 {
     /// <summary>The domain that marks a fallback identity as machine-local rather than a real address.</summary>
     public const string LocalDomain = "localhost";
-
-    // git config answers instantly; a longer wait would only delay `charter review`'s ready line.
-    private static readonly TimeSpan ConfigTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Read <c>user.name</c> / <c>user.email</c> from git as configured for
@@ -92,64 +88,11 @@ public static class GitIdentity
 
     /// <summary>
     /// One <c>git config --get &lt;key&gt;</c>, or null on any failure. <c>--get</c> is a pure read; nothing
-    /// here can alter a repository.
+    /// here can alter a repository. Shares <see cref="GitCommand"/> with the tracked-directory read, so there
+    /// is exactly one place in Charter that spawns git.
     /// </summary>
     private static string? ReadConfig(string workingDirectory, string key)
-    {
-        try
-        {
-            var startInfo = new ProcessStartInfo("git")
-            {
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            startInfo.ArgumentList.Add("config");
-            startInfo.ArgumentList.Add("--get");
-            startInfo.ArgumentList.Add(key);
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return null;
-            }
-
-            var output = process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit((int)ConfigTimeout.TotalMilliseconds))
-            {
-                TryKill(process);
-                return null;
-            }
-
-            return process.ExitCode == 0 ? Trim(output) : null;
-        }
-        catch (Exception)
-        {
-            // git absent, not executable, sandboxed, or refused: an identity Charter cannot read is simply a
-            // fallback, never a failed review.
-            return null;
-        }
-    }
-
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (Exception)
-        {
-            // It already exited, or cannot be killed; either way nothing further to do.
-        }
-    }
-
-    private static string? Trim(string? value)
-    {
-        var trimmed = value?.Trim();
-        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
-    }
+        => GitCommand.Read(workingDirectory, "config", "--get", key);
 
     // Keep the fallback address parseable and file-name-safe: the log's file name is derived from it.
     private static string SanitizeUser(string? user)

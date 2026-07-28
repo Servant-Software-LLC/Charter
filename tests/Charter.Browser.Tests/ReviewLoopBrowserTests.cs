@@ -76,7 +76,7 @@ public sealed class ReviewLoopBrowserTests
 
             await using (browser)
             {
-                var context = await browser.NewContextAsync();
+                var context = await NewContextAsync(browser);
                 var page = await context.NewPageAsync();
 
                 // Collect the browser's own error channels — the direct #37 guard is that both stay EMPTY.
@@ -1592,10 +1592,323 @@ public sealed class ReviewLoopBrowserTests
         Assert.Fail("the panel never showed '" + selector + "' after the teammate's log arrived");
     }
 
+    // ---- Charter #56: a text range's start/end must be in ONE reference frame ----------------------------
+
+    /// <summary>
+    /// One paragraph with a bold run in the middle, so a selection can cross THREE text nodes, and long enough
+    /// to wrap onto several rendered lines at a narrow viewport. The concatenated text of the block is exactly
+    /// the sentence below with the <c>**</c> markers removed — which is the frame the offsets are measured in.
+    /// </summary>
+    private const string TextRangePlan =
+        "# Text range offsets\n\n" +
+        "The opening clause is plain prose, then **the middle clause is bold**, and then a closing clause " +
+        "runs on for long enough that this paragraph wraps onto more than one rendered line at a narrow " +
+        "viewport width.\n";
+
+    /// <summary>
+    /// Charter #56: the SDK recorded <c>start: selection.anchorOffset</c> and <c>end: selection.focusOffset</c>
+    /// — offsets within their OWN text nodes. Across a multi-node selection they are not comparable at all (the
+    /// focus node's offset 0 is the start of the LAST node), and a real multi-line selection drained as
+    /// <c>"start": 146, "end": 0</c> over a ~150-character quote: <c>end</c> before <c>start</c>.
+    ///
+    /// Both legs assert the same contract — the offsets index the ANCHORED BLOCK's text content, so
+    /// <c>end &gt; start</c> and <c>blockText.slice(start, end)</c> is the quote. The multi-node leg is the one
+    /// that fails against the old code; the single-node leg pins that the fix did not shift the easy case.
+    /// </summary>
+    [SkippableFact]
+    public async Task Text_range_offsets_index_the_blocks_own_text_for_single_and_multi_node_selections()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-text-range-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, TextRangePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var blockText = await BlockTextAsync(page);
+
+            // A span wholly inside the FIRST text node...
+            const string singleNode = "opening clause is plain";
+            var singleAt = blockText.IndexOf(singleNode, StringComparison.Ordinal);
+            Assert.True(singleAt >= 0, "fixture drift: the single-node span is not in the block's text");
+            await SelectAndAnnotateAsync(page, singleAt, singleAt + singleNode.Length, "single-node note");
+
+            // ...and a span crossing the <strong>, so THREE text nodes contribute. Its first and last
+            // characters live in different nodes, which is precisely what the old anchorOffset/focusOffset
+            // pair could not express.
+            const string multiNode = "prose, then the middle clause is bold, and then a closing";
+            var multiAt = blockText.IndexOf(multiNode, StringComparison.Ordinal);
+            Assert.True(multiAt >= 0, "fixture drift: the multi-node span is not in the block's text");
+
+            // Pin that the block really does contribute three text nodes and that this span straddles them —
+            // otherwise the "multi-node" leg could quietly degrade into a second single-node one.
+            var nodeCount = await page.EvaluateAsync<int>(
+                "() => { let n = 0;" +
+                "  (function walk(x) {" +
+                "    if (x.nodeType === 1) {" +
+                "      if (x.hasAttribute && x.hasAttribute('data-charter-ui')) return;" +
+                "      for (const c of x.childNodes) walk(c);" +
+                "      return;" +
+                "    }" +
+                "    if (x.nodeType === 3) n++;" +
+                "  })(document.querySelector('body > p'));" +
+                "  return n; }");
+            Assert.Equal(3, nodeCount);
+            Assert.True(
+                multiAt < blockText.IndexOf("the middle clause is bold", StringComparison.Ordinal)
+                    && multiAt + multiNode.Length > blockText.IndexOf("bold,", StringComparison.Ordinal),
+                "fixture drift: the multi-node span must start before the <strong> and end after it");
+
+            await SelectAndAnnotateAsync(page, multiAt, multiAt + multiNode.Length, "multi-node note");
+
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(2, listed.GetArrayLength());
+
+            AssertCoherentSpan(FindByNote(listed, "single-node note"), blockText, singleAt, singleNode);
+            AssertCoherentSpan(FindByNote(listed, "multi-node note"), blockText, multiAt, multiNode);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The issue's own scenario, driven by a REAL mouse: a human drag across more than one rendered line,
+    /// through the real composer, must drain a coherent pair. The reported failure was produced by exactly this
+    /// gesture and by no scripted one, so this leg exists to make the human path itself the guard.
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_multi_line_mouse_selection_drains_a_coherent_text_range()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-text-range-drag-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, TextRangePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            // Narrow enough that the paragraph is guaranteed to wrap, so the drag really does cross lines.
+            await page.SetViewportSizeAsync(520, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var blockText = await BlockTextAsync(page);
+
+            // One client rect per LINE BOX. It has to come from a RANGE over the paragraph's contents: a
+            // block-level element's own getClientRects() is a single border box, which says nothing about wrap.
+            var lines = await page.EvaluateAsync<JsonElement>(
+                "() => {" +
+                "  const range = document.createRange();" +
+                "  range.selectNodeContents(document.querySelector('body > p'));" +
+                "  return Array.from(range.getClientRects())" +
+                "    .filter(r => r.width > 0 && r.height > 0)" +
+                "    .map(r => ({ x: r.left, y: r.top, w: r.width, h: r.height }));" +
+                "}");
+            Assert.True(
+                lines.GetArrayLength() >= 2,
+                "the fixture paragraph must wrap for this to be a multi-LINE selection; got "
+                    + lines.GetArrayLength() + " line box(es)");
+
+            var firstLine = lines[0];
+            var secondLine = lines[1];
+
+            // A genuine press-drag-release from partway along line 1 to partway along line 2.
+            await page.Mouse.MoveAsync(
+                (float)(firstLine.GetProperty("x").GetDouble() + 4),
+                (float)(firstLine.GetProperty("y").GetDouble() + (firstLine.GetProperty("h").GetDouble() / 2)));
+            await page.Mouse.DownAsync();
+            await page.Mouse.MoveAsync(
+                (float)(secondLine.GetProperty("x").GetDouble()
+                    + (secondLine.GetProperty("w").GetDouble() * 0.6)),
+                (float)(secondLine.GetProperty("y").GetDouble() + (secondLine.GetProperty("h").GetDouble() / 2)),
+                new MouseMoveOptions { Steps = 12 });
+            await page.Mouse.UpAsync();
+
+            // The composer opening at all proves the drag produced a text-range anchor.
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "put soft line feeds here");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(1, listed.GetArrayLength());
+            var drained = listed[0];
+            Assert.Equal("text-range", drained.GetProperty("kind").GetString());
+
+            // The exact pair the issue reported as meaningless. No expected VALUES here — a real drag lands
+            // where it lands — only that the pair is a real span of the block, in one frame, matching the quote.
+            var start = drained.GetProperty("start").GetInt32();
+            var end = drained.GetProperty("end").GetInt32();
+            Assert.True(end > start, $"end must follow start for a non-empty selection; got start={start}, end={end}");
+            Assert.InRange(start, 0, blockText.Length);
+            Assert.InRange(end, 0, blockText.Length);
+            Assert.Equal(
+                Normalize(drained.GetProperty("quote").GetString()),
+                Normalize(blockText[start..end]));
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The annotated block's text content with every <c>[data-charter-ui]</c> subtree skipped — the SDK's own
+    /// frame, computed here independently so the assertions do not simply echo the code under test.
+    /// </summary>
+    private static Task<string> BlockTextAsync(IPage page)
+        => page.EvaluateAsync<string>(
+            "() => {" +
+            "  const out = [];" +
+            "  (function walk(n) {" +
+            "    if (n.nodeType === 1) {" +
+            "      if (n.hasAttribute && n.hasAttribute('data-charter-ui')) return;" +
+            "      for (const c of n.childNodes) walk(c);" +
+            "      return;" +
+            "    }" +
+            "    if (n.nodeType === 3) out.push(n.nodeValue || '');" +
+            "  })(document.querySelector('body > p'));" +
+            "  return out.join('');" +
+            "}");
+
+    /// <summary>
+    /// Select <c>[from, to)</c> of the block's text — placing each boundary in whichever text node actually
+    /// holds it, which is what makes the multi-node leg genuinely multi-node — then release the mouse and save
+    /// a note through the real composer.
+    /// </summary>
+    private static async Task SelectAndAnnotateAsync(IPage page, int from, int to, string note)
+    {
+        await page.EvaluateAsync(
+            "([from, to]) => {" +
+            "  const nodes = [];" +
+            "  (function walk(n) {" +
+            "    if (n.nodeType === 1) {" +
+            "      if (n.hasAttribute && n.hasAttribute('data-charter-ui')) return;" +
+            "      for (const c of n.childNodes) walk(c);" +
+            "      return;" +
+            "    }" +
+            "    if (n.nodeType === 3) nodes.push(n);" +
+            "  })(document.querySelector('body > p'));" +
+            "  const range = document.createRange();" +
+            "  let pos = 0, started = false;" +
+            "  for (const n of nodes) {" +
+            "    const len = (n.nodeValue || '').length;" +
+            "    if (!started && from < pos + len) { range.setStart(n, from - pos); started = true; }" +
+            "    if (started && to <= pos + len) { range.setEnd(n, to - pos); break; }" +
+            "    pos += len;" +
+            "  }" +
+            "  const sel = window.getSelection();" +
+            "  sel.removeAllRanges(); sel.addRange(range);" +
+            "  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));" +
+            "}",
+            new[] { from, to });
+
+        await page.WaitForSelectorAsync(Ui("composer-input"));
+        await page.FillAsync(Ui("composer-input"), note);
+        await page.ClickAsync(Ui("composer-save"));
+        await WaitForEventAsync(page, "submitted");
+    }
+
+    /// <summary>
+    /// The contract, stated once: the pair is a real, ordered span of the block's own text, it is exactly where
+    /// the selection was made, and slicing the block with it reproduces the quote.
+    /// </summary>
+    private static void AssertCoherentSpan(JsonElement annotation, string blockText, int at, string expected)
+    {
+        var start = annotation.GetProperty("start").GetInt32();
+        var end = annotation.GetProperty("end").GetInt32();
+
+        Assert.True(end > start, $"end must follow start for a non-empty selection; got start={start}, end={end}");
+        Assert.Equal(at, start);
+        Assert.Equal(at + expected.Length, end);
+        Assert.Equal(expected, blockText[start..end]);
+        Assert.Equal(Normalize(expected), Normalize(annotation.GetProperty("quote").GetString()));
+    }
+
+    private static JsonElement FindByNote(JsonElement annotations, string note)
+    {
+        foreach (var annotation in annotations.EnumerateArray())
+        {
+            if (string.Equals(annotation.GetProperty("note").GetString(), note, StringComparison.Ordinal))
+            {
+                return annotation;
+            }
+        }
+
+        Assert.Fail("no drained annotation carried the note '" + note + "'");
+        return default;
+    }
+
+    // The browser's Selection.toString() renders whitespace as the page shows it, while the block's text
+    // content carries the source's own runs. Comparing them collapsed is the honest comparison of the two.
+    private static string Normalize(string? text)
+        => System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\s+", " ").Trim();
+
     // ---- shared browser plumbing -------------------------------------------------------------------------
 
     /// <summary>A launched Playwright + browser pair, or <see langword="null"/> where Chromium is absent.</summary>
     private sealed record Launched(IPlaywright Playwright, IBrowser Browser);
+
+    /// <summary>
+    /// How long a NAVIGATION in this suite may take before it fails, deliberately far above Playwright's 30s
+    /// default. Charter #66: <c>Answered_question_can_be_re_answered_and_save_tracks_the_change</c> hit the
+    /// default on a contended <c>windows-latest</c> runner and a re-run of the identical commit passed 8/8. A
+    /// gate that fails randomly gets re-run reflexively and stops being believed — which would quietly cost us
+    /// the guard these tests exist to be (#37, #38, #57 were all invisible to the C#-string golden tests).
+    ///
+    /// Only navigation is relaxed, and only ONCE, on the context — so every page created from it inherits the
+    /// bound and a new test cannot reintroduce the flake by forgetting a per-call option. Every ASSERTION below
+    /// keeps its own tight, explicit deadline, so a genuine hang still fails; this only stops a slow cold start
+    /// being reported as one.
+    /// </summary>
+    private const float NavigationTimeoutMs = 90_000;
+
+    /// <summary>
+    /// The suite's single browser-context factory. Everything that navigates goes through here, which is what
+    /// makes <see cref="NavigationTimeoutMs"/> a property of the suite rather than of one call site.
+    /// </summary>
+    private static async Task<IBrowserContext> NewContextAsync(IBrowser browser)
+    {
+        var context = await browser.NewContextAsync();
+        context.SetDefaultNavigationTimeout(NavigationTimeoutMs);
+        return context;
+    }
 
     /// <param name="showScrollbars">
     /// Drop Chromium's default <c>--hide-scrollbars</c> flag, which Playwright passes for headless runs and
@@ -1635,7 +1948,7 @@ public sealed class ReviewLoopBrowserTests
     /// </summary>
     private static async Task<Instrumented> NewInstrumentedPageAsync(Launched launched)
     {
-        var context = await launched.Browser.NewContextAsync();
+        var context = await NewContextAsync(launched.Browser);
         var page = await context.NewPageAsync();
 
         var console = new List<string>();
