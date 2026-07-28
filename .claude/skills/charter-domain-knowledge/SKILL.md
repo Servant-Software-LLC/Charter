@@ -444,15 +444,18 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 
 ## Status (update as milestones complete)
 
-- **Current version — `0.7.0`, release PENDING.** `<Version>` in `src/Charter.Cli/Charter.Cli.csproj` is
-  `0.7.0` and `charter --version` reports it, but **there is no `v0.7.0` tag** — it was cut, unwound to take
-  more fixes, and will be re-cut. The newest published tag is `v0.6.0`. Do not describe 0.7.0 as released.
+- **`v0.7.0` IS RELEASED** — GitHub release, remote tag, and NuGet all carry it. (An earlier attempt was cut
+  and unwound mid-test-phase to take more fixes; nothing published then, so the same number was re-used. That
+  is why a stale note may claim it is pending — it isn't.)
+- **Master is AHEAD of v0.7.0 and `<Version>` has not been bumped yet.** `src/Charter.Cli/Charter.Cli.csproj`
+  still says `0.7.0`, so a local build reports a version already published. Everything in the *"Also landed"*
+  bullet below is **unreleased** and heading for the next tag — bump `<Version>` before cutting it.
 - **Master baseline:** **735** tests green, 0 warnings — Core 389 · Server 244 · Cli 81 · Browser 21.
-- **Landed since v0.6.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
+- **Shipped in v0.7.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
   tracked-gate; the #67 replaced-plan quarantine + `--keep-annotations`; text-range offsets in the block's own
   frame (#56); the browser-flake fix (#66); diagram-node anchors to the block (#48); whole-diagram annotation
   (#60); no accidental text-range from a diagram gesture (#61); radio deselect (#63).
-- **Also landed (all merged to master):** panel/drain anchor parity (#78); an unrecognised annotation `kind`
+- **Also landed — merged to master but NOT YET RELEASED:** panel/drain anchor parity (#78); an unrecognised annotation `kind`
   refused with 400 rather than coerced to `element` (#79); the three #75 quarantine follow-ups (panel
   surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention) — PR #82. The
   unattended `charter headless` verb (#7) — PR #83. Pan/zoom for an oversized `:::diagram` (#51), SDK-only —
