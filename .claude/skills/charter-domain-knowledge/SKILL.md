@@ -107,6 +107,27 @@ production `charter review` path — the durable log still knows the id, so the 
 (`/api/poll`, `charter poll`, `PollEnvelope`) is unchanged, and the panel/markers/composer are runtime-only
 DOM — invariant 1 still holds.
 
+**A `:::diagram` has exactly TWO annotatable granularities, and BOTH anchor to the block.** A diagram renders
+as `<pre class="mermaid" id="<stable charter id>">` whose content Mermaid then replaces with an `<svg>`
+carrying **its own** generated ids (on the svg and on every `g.node`). Those are not Charter anchors —
+`SourceMap.LineForAnchor` cannot map one, and they change on every render. So: Alt+click a **node** ⇒ a
+`diagram-node` note whose `anchorId` is the **block** and whose `nodeId` carries the Mermaid node
+(was Charter #48, where `anchorId` was the Mermaid id and the agent got **no `sourceLine` at all**);
+Alt+click **anywhere else in the block** — svg background, padding, an edge ⇒ the ordinary `element` note
+every other block produces (was Charter #60, where a diagram was the one block type with no whole-block
+annotation). The composer's context line is the only thing distinguishing them for the reviewer, so it names
+which one explicitly. A diagram is **never** text-range annotatable: it carries no prose, and Chromium's
+word-select fallback on its background used to fabricate a text-range note over unrelated text elsewhere on
+the page (was Charter #61). The SDK also refuses any text-range whose selection does not include the element
+the reviewer's gesture ended on.
+
+**"Unanswered" is a state a reviewer can return a `:::question` to.** Clicking the already-selected radio
+clears it (Space does too — Blink dispatches no click for that gesture, so the SDK handles keyup itself).
+On an **open** question that just restores "nothing to save"; on an **answered** one it is a real, submittable
+retraction — Save renames itself to **Clear answer** and posts `values: []`, which `charter-format` reads as
+open again. A reviewer who may freely *change* a settled decision must be able to *withdraw* it, and a form
+showing nothing selected while the server still held an answer would be a lying UI (Charter #63).
+
 **The round HAND-OFF ("Send to agent").** The reviewer can say *"I am done with this round"* without leaving
 the page: `POST /api/{key}/review/submit` records a hand-off and wakes the long-poll, `GET /api/review`
 reports it plus the live pending counts, `POST /api/{key}/review/ack?sequence=N` clears it by

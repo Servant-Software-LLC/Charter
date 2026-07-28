@@ -1592,6 +1592,492 @@ public sealed class ReviewLoopBrowserTests
         Assert.Fail("the panel never showed '" + selector + "' after the teammate's log arrived");
     }
 
+    // ---- Charter #48 / #60 / #61: annotating a rendered :::diagram ---------------------------------------
+
+    /// <summary>
+    /// A plan whose diagram BRANCHES, so the rendered SVG has real empty background between and beside its
+    /// nodes for a background click to land on, and whose prose sits ABOVE the diagram — the "unrelated text
+    /// elsewhere on the page" that a stray double-click's native word-select can grab (Charter #61).
+    /// </summary>
+    private const string DiagramPlan =
+        "# Diagram review\n\n" +
+        "Preceding prose the reviewer never touched at all.\n\n" +
+        ":::diagram\n" +
+        "graph TD\n" +
+        "A[Start] --> B[Middle]\n" +
+        "A --> C[Other]\n" +
+        "B --> D[End]\n" +
+        ":::\n";
+
+    /// <summary>
+    /// Charter #48 + #60, together, because they are one problem: a <c>:::diagram</c> renders as
+    /// <c>&lt;pre class="mermaid" id="&lt;stable charter id&gt;"&gt;</c> and Mermaid then replaces its content
+    /// with an <c>&lt;svg&gt;</c> carrying ITS OWN generated ids — on the svg and on every <c>g.node</c>.
+    ///
+    /// <para>#48: a diagram-node note resolved its anchor by the generic "nearest ancestor with an id" walk, so
+    /// it stopped at the Mermaid node id. <c>SourceMap.LineForAnchor</c> cannot map that, so the agent was
+    /// handed no <c>sourceLine</c> at all, and the anchor orphaned on the next render. The fix keeps the node's
+    /// identity in <c>nodeId</c> — which is what that field is for — and anchors to the BLOCK.</para>
+    ///
+    /// <para>#60: the diagram was the one block type with no whole-block annotation. Clicking its background
+    /// either did nothing useful or (as the probe for this fix found) anchored to the SVG's Mermaid id with a
+    /// context line read out of Mermaid's own inline <c>&lt;style&gt;</c>. A background click now produces the
+    /// same plain <c>element</c> annotation every other block produces.</para>
+    ///
+    /// Both legs assert the POSTED payload, not the DOM: the C#-string golden tests are blind to all of this.
+    /// </summary>
+    [SkippableFact]
+    public async Task Diagram_node_and_diagram_background_both_anchor_to_the_block_with_a_source_line()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-anchor-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, DiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await page.WaitForSelectorAsync(".mermaid svg", new PageWaitForSelectorOptions { Timeout = 20_000 });
+
+            // ---- the fixture's own premise: Mermaid really does stamp ids of its own ----
+            // Without this the whole test could pass against the broken code by coincidence.
+            var blockId = await page.EvaluateAsync<string>("() => document.querySelector('pre.mermaid').id");
+            var svgId = await page.EvaluateAsync<string>("() => document.querySelector('pre.mermaid svg').id");
+            var mermaidNodeId = await page.EvaluateAsync<string>(
+                "() => document.querySelector('pre.mermaid g.node').id");
+            Assert.False(string.IsNullOrEmpty(blockId), "the renderer must stamp a stable block id on pre.mermaid");
+            Assert.False(string.IsNullOrEmpty(svgId), "fixture drift: Mermaid no longer stamps an id on its <svg>");
+            Assert.False(
+                string.IsNullOrEmpty(mermaidNodeId), "fixture drift: Mermaid no longer stamps an id on its nodes");
+            Assert.NotEqual(blockId, svgId);
+            Assert.NotEqual(blockId, mermaidNodeId);
+
+            // ---- (c) a NODE: kind diagram-node, anchored to the block, node identity in nodeId ----
+            await page.Locator("pre.mermaid g.node").First
+                .ClickAsync(new LocatorClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer"));
+
+            var nodeContext = await page.InnerTextAsync(Ui("composer-context"));
+            Assert.Contains("diagram node", nodeContext, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("whole diagram", nodeContext, StringComparison.OrdinalIgnoreCase);
+
+            await page.FillAsync(Ui("composer-input"), "this node needs an explicit failure path");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // ---- (a) the BACKGROUND: the same shape any other block produces ----
+            var background = await DiagramBackgroundPointAsync(page);
+            await page.Keyboard.DownAsync("Alt");
+            await page.Mouse.ClickAsync(background.X, background.Y);
+            await page.Keyboard.UpAsync("Alt");
+            await page.WaitForSelectorAsync(Ui("composer"));
+
+            var wholeContext = await page.InnerTextAsync(Ui("composer-context"));
+            Assert.Contains("whole diagram", wholeContext, StringComparison.OrdinalIgnoreCase);
+            // Mermaid ships its theme CSS in a <style> INSIDE the svg, whose text nodes used to be read out
+            // as the block's "visible" label — the composer's context line was literally a stylesheet.
+            Assert.DoesNotContain("font-family", wholeContext, StringComparison.OrdinalIgnoreCase);
+
+            await page.FillAsync(Ui("composer-input"), "this diagram should flow left to right");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // ---- the posted payloads: both anchored to the BLOCK, both source-mappable ----
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(2, listed.GetArrayLength());
+
+            var node = FindByNote(listed, "this node needs an explicit failure path");
+            Assert.Equal("diagram-node", node.GetProperty("kind").GetString());
+            Assert.Equal(blockId, node.GetProperty("anchorId").GetString());
+            Assert.Equal(mermaidNodeId, node.GetProperty("nodeId").GetString());
+            AssertMapsToTheDiagramBlock(node);
+
+            var whole = FindByNote(listed, "this diagram should flow left to right");
+            Assert.Equal("element", whole.GetProperty("kind").GetString());
+            Assert.Equal(blockId, whole.GetProperty("anchorId").GetString());
+            Assert.Equal(JsonValueKind.Null, whole.GetProperty("nodeId").ValueKind);
+            AssertMapsToTheDiagramBlock(whole);
+
+            // Nothing reached the agent carrying a Mermaid-generated id in the field the source map reads.
+            foreach (var annotation in listed.EnumerateArray())
+            {
+                Assert.NotEqual(svgId, annotation.GetProperty("anchorId").GetString());
+                Assert.DoesNotContain(
+                    "flowchart", annotation.GetProperty("anchorId").GetString()!, StringComparison.Ordinal);
+            }
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Charter #61: double-clicking a diagram's background must produce NOTHING. Chromium's native
+    /// word-select fallback fires where there is no selectable prose and lands on whatever text is nearest —
+    /// which the SDK's selection listener then took for an intentional text-range annotation, pointing the
+    /// composer at text the reviewer never touched.
+    ///
+    /// The second half of the test is the anti-over-correction guard: a REAL press-drag-release across the
+    /// prose paragraph must still produce a coherent text-range note (Charter #56's contract, unregressed).
+    /// </summary>
+    [SkippableFact]
+    public async Task Double_clicking_the_diagram_background_annotates_nothing_but_prose_still_selects()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-dblclick-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, DiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await page.WaitForSelectorAsync(".mermaid svg", new PageWaitForSelectorOptions { Timeout = 20_000 });
+
+            var openedBefore = await CountEventsAsync(page, "composer-opened");
+            var background = await DiagramBackgroundPointAsync(page);
+
+            // Twice, and once more as a triple click: the reported behaviour was intermittent, and a
+            // paragraph-select gesture is the same class of accident.
+            await page.Mouse.DblClickAsync(background.X, background.Y);
+            await page.Mouse.DblClickAsync(background.X, background.Y);
+            await page.Mouse.ClickAsync(background.X, background.Y, new MouseClickOptions { ClickCount = 3 });
+
+            // The composer is created synchronously inside the mouseup handler, so one round trip after the
+            // gesture is enough to observe it — but hold the negative for a bounded window anyway, since an
+            // accidental composer arriving late would be just as wrong as one arriving now.
+            await AssertNoComposerForAsync(page, 1_500);
+            Assert.Equal(openedBefore, await CountEventsAsync(page, "composer-opened"));
+            Assert.Equal(0, (await ListAnnotationsAsync(server.Address, session.Key.Value)).GetArrayLength());
+
+            // ---- the reported symptom itself, made deterministic ----
+            // WHICH far-away word Chromium's fallback grabs depends on layout, so the STATE it produces is
+            // reproduced directly instead: a real, non-empty selection in the heading, while the reviewer's
+            // gesture ended on the diagram. It is a perfectly good selection in a perfectly good block, and
+            // it is still not what the reviewer pointed at — so it must annotate nothing.
+            await page.EvaluateAsync(
+                "() => {" +
+                "  const range = document.createRange();" +
+                "  range.selectNodeContents(document.querySelector('h1'));" +
+                "  const sel = window.getSelection();" +
+                "  sel.removeAllRanges(); sel.addRange(range);" +
+                "}");
+
+            // Asserted BEFORE the gesture: opening a composer focuses its textarea, which collapses the
+            // selection — so reading this afterwards would report "empty" in exactly the failing case.
+            Assert.False(
+                await page.EvaluateAsync<bool>("() => window.getSelection().isCollapsed"),
+                "fixture drift: this leg proves nothing unless the stray selection is genuinely non-empty");
+
+            await page.EvaluateAsync(
+                "() => document.querySelector('pre.mermaid svg')" +
+                "  .dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))");
+
+            await AssertNoComposerForAsync(page, 500);
+            Assert.Equal(openedBefore, await CountEventsAsync(page, "composer-opened"));
+            Assert.Equal(0, (await ListAnnotationsAsync(server.Address, session.Key.Value)).GetArrayLength());
+
+            // ---- and the legitimate gesture is untouched: a real drag across prose still annotates ----
+            var line = await FirstLineRectAsync(page, "body > p");
+            await page.Mouse.MoveAsync(line.X + 4, line.Y + (line.Height / 2));
+            await page.Mouse.DownAsync();
+            await page.Mouse.MoveAsync(
+                line.X + (line.Width * 0.7f), line.Y + (line.Height / 2), new MouseMoveOptions { Steps = 10 });
+            await page.Mouse.UpAsync();
+
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "say which prose the reviewer meant");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(1, listed.GetArrayLength());
+            var prose = listed[0];
+            Assert.Equal("text-range", prose.GetProperty("kind").GetString());
+            Assert.Equal(
+                await page.EvaluateAsync<string>("() => document.querySelector('body > p').id"),
+                prose.GetProperty("anchorId").GetString());
+            Assert.False(
+                string.IsNullOrWhiteSpace(prose.GetProperty("quote").GetString()),
+                "a real prose drag must still carry the selected text");
+            Assert.True(
+                prose.GetProperty("end").GetInt32() > prose.GetProperty("start").GetInt32(),
+                "a real prose drag must still carry an ordered span (Charter #56)");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The drained annotation resolves to the <c>:::diagram</c>'s own source line — the whole point of
+    /// anchoring to the block rather than to a Mermaid id. Asserted against the plan text itself, so it proves
+    /// the agent is pointed at the right markdown, not merely that some number arrived.
+    /// </summary>
+    private static void AssertMapsToTheDiagramBlock(JsonElement annotation)
+    {
+        var line = annotation.GetProperty("sourceLine");
+        Assert.True(
+            line.ValueKind == JsonValueKind.Number,
+            "Charter #48: the annotation reached the agent with no sourceLine, so it cannot tell which "
+                + "markdown line to edit (anchorId was '" + annotation.GetProperty("anchorId").GetString() + "')");
+        Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+
+        var lines = DiagramPlan.Split('\n');
+        var text = lines[line.GetInt32() - 1];
+        Assert.StartsWith(":::diagram", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A viewport point on the rendered diagram's BACKGROUND — inside the block, inside the <c>&lt;svg&gt;</c>,
+    /// and not on any Mermaid node. Scanned from the live layout rather than assumed, and it FAILS when the
+    /// fixture leaves no such point, which would make every background assertion vacuous.
+    /// </summary>
+    private static async Task<(float X, float Y)> DiagramBackgroundPointAsync(IPage page)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "() => {" +
+            "  const block = document.querySelector('pre.mermaid');" +
+            "  const svg = block && block.querySelector('svg');" +
+            "  if (!svg) return 'null';" +
+            "  const r = svg.getBoundingClientRect();" +
+            "  for (let fy = 0.06; fy < 1; fy += 0.04) {" +
+            "    for (let fx = 0.02; fx < 1; fx += 0.02) {" +
+            "      const x = r.left + (r.width * fx), y = r.top + (r.height * fy);" +
+            "      const el = document.elementFromPoint(x, y);" +
+            "      if (!el || !block.contains(el)) continue;" +
+            "      if (el.closest && el.closest('.node, g.node, [data-node-id], [data-charter-ui]')) continue;" +
+            "      return JSON.stringify({ x: x, y: y });" +
+            "    }" +
+            "  }" +
+            "  return 'null';" +
+            "}");
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return (
+            (float)doc.RootElement.GetProperty("x").GetDouble(),
+            (float)doc.RootElement.GetProperty("y").GetDouble());
+    }
+
+    /// <summary>The first RENDERED LINE BOX of <paramref name="selector"/>'s contents — a real drag target.</summary>
+    private static async Task<(float X, float Y, float Width, float Height)> FirstLineRectAsync(
+        IPage page, string selector)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "s => {" +
+            "  const range = document.createRange();" +
+            "  range.selectNodeContents(document.querySelector(s));" +
+            "  const r = Array.from(range.getClientRects()).filter(b => b.width > 0 && b.height > 0)[0];" +
+            "  return r ? JSON.stringify({ x: r.left, y: r.top, w: r.width, h: r.height }) : 'null';" +
+            "}",
+            selector);
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return (
+            (float)doc.RootElement.GetProperty("x").GetDouble(),
+            (float)doc.RootElement.GetProperty("y").GetDouble(),
+            (float)doc.RootElement.GetProperty("w").GetDouble(),
+            (float)doc.RootElement.GetProperty("h").GetDouble());
+    }
+
+    /// <summary>
+    /// No composer appears for <paramref name="windowMs"/>. Asserting a NEGATIVE needs a settle window, and
+    /// this is a bounded poll over the selector engine — never <c>WaitForFunctionAsync</c>, whose in-page
+    /// <c>eval</c> the served CSP refuses.
+    /// </summary>
+    private static async Task AssertNoComposerForAsync(IPage page, int windowMs)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(windowMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            Assert.Equal(0, await page.Locator(Ui("composer")).CountAsync());
+            await Task.Delay(100);
+        }
+    }
+
+    // ---- Charter #63: a reviewer can clear an accidental radio answer -----------------------------------
+
+    /// <summary>
+    /// One open single-select, one open bool (also radios), and one ALREADY-ANSWERED single-select — the three
+    /// states the deselect rule has to be coherent across.
+    /// </summary>
+    private const string ClearableQuestionPlan =
+        "# Clearing an answer\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-open\",\"title\":\"Pick one colour\",\"mode\":\"single\",\"target\":\"human\"," +
+        "\"options\":[\"Red\",\"Green\",\"Blue\"]}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-bool\",\"title\":\"Ship it?\",\"mode\":\"bool\",\"target\":\"human\"}\n" +
+        ":::\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-settled\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\"," +
+        "\"options\":[\"Postgres\",\"DynamoDB\"],\"answer\":[\"Postgres\"]}\n" +
+        ":::\n";
+
+    /// <summary>
+    /// Charter #63. A native radio cannot be deselected, so one mis-click leaves a decision the reviewer never
+    /// made with no way back — and for a <c>:::question</c> "unanswered" is a real state, not the absence of
+    /// one (<c>charter-format</c>: a question with no non-empty <c>answer</c> IS open).
+    ///
+    /// <para>The chosen semantics, asserted here in both states. On an OPEN question a deselect returns the
+    /// form to nothing-selected, so there is nothing to save and Save goes back to disabled. On an ALREADY
+    /// ANSWERED one a deselect DIFFERS from the recorded answer, so Save enables, says <c>Clear answer</c>
+    /// rather than <c>Save answer</c>, and posts <c>values: []</c> — which clears the recorded answer and
+    /// returns the question to open. A reviewer who may freely change a settled decision must be able to
+    /// withdraw it too, and a form showing nothing selected while the server still held an answer would be a
+    /// lying UI.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Clicking_the_selected_radio_clears_it_and_an_answered_question_can_be_returned_to_open()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-clear-answer-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // ---- an OPEN question: the accidental click, then the way back ----
+            var red = Control("q-open", "input[type=radio][value=\"Red\"]");
+            await AssertSaveDisabledAsync(page, "q-open");
+            await page.ClickAsync(red);
+            Assert.True(await page.IsCheckedAsync(red));
+            Assert.True(
+                await page.IsEnabledAsync(SaveButton("q-open")),
+                "picking an option must enable Save (the baseline behaviour this fix must not disturb)");
+
+            await page.ClickAsync(red);
+            await WaitForEventAsync(page, "answer-cleared");
+            Assert.False(
+                await page.IsCheckedAsync(red),
+                "Charter #63: clicking the already-selected option must clear it");
+            await AssertSaveDisabledAsync(page, "q-open");
+            Assert.Equal("Save answer", (await page.InnerTextAsync(SaveButton("q-open"))).Trim());
+
+            // Nothing was ever submitted — an accidental click that is taken back leaves no trace.
+            Assert.Equal(0, (await ListAnswersAsync(server.Address, session.Key.Value)).GetArrayLength());
+
+            // ---- the keyboard path: arrow keys MOVE the selection, Space clears it ----
+            // Arrow-key navigation fires a `click` on the newly selected radio just as a mouse does, so a
+            // deselect rule that trusted a stale "was it checked?" sample would clear the option the reviewer
+            // just moved onto — turning the keyboard into a way to answer nothing at all.
+            var green = Control("q-open", "input[type=radio][value=\"Green\"]");
+            var blue = Control("q-open", "input[type=radio][value=\"Blue\"]");
+            await page.ClickAsync(green);
+            Assert.True(await page.IsCheckedAsync(green));
+
+            await page.Keyboard.PressAsync("ArrowRight");
+            Assert.True(
+                await page.IsCheckedAsync(blue),
+                "ArrowRight must MOVE the selection to the next option, never clear it");
+            Assert.False(await page.IsCheckedAsync(green));
+            Assert.True(await page.IsEnabledAsync(SaveButton("q-open")));
+
+            await page.Keyboard.PressAsync("Space");
+            Assert.False(
+                await page.IsCheckedAsync(blue),
+                "Space on the already-selected option must clear it, like a click on it");
+            await AssertSaveDisabledAsync(page, "q-open");
+
+            // ---- a bool renders as radios too (Charter #43), so it clears the same way ----
+            var yes = Control("q-bool", "input[type=radio][value=\"true\"]");
+            await page.ClickAsync(yes);
+            Assert.True(await page.IsCheckedAsync(yes));
+            await page.ClickAsync(yes);
+            Assert.False(await page.IsCheckedAsync(yes), "a bool's radios must deselect like any other");
+            await AssertSaveDisabledAsync(page, "q-bool");
+
+            // ---- an ANSWERED question: deselect is a real, submittable retraction ----
+            var postgres = Control("q-settled", "input[type=radio][value=\"Postgres\"]");
+            Assert.True(await page.IsCheckedAsync(postgres), "the recorded answer must start pre-selected");
+            await AssertSaveDisabledAsync(page, "q-settled");
+
+            await page.ClickAsync(postgres);
+            Assert.False(await page.IsCheckedAsync(postgres));
+            Assert.True(
+                await page.IsEnabledAsync(SaveButton("q-settled")),
+                "clearing a RECORDED answer differs from what the markup holds, so it must be submittable");
+
+            // The control says what it will do before it is pressed — the UI must not be coy about a retraction.
+            Assert.Equal("Clear answer", (await page.InnerTextAsync(SaveButton("q-settled"))).Trim());
+            Assert.Contains(
+                "unanswered",
+                await page.GetAttributeAsync(SaveButton("q-settled"), "title") ?? string.Empty,
+                StringComparison.OrdinalIgnoreCase);
+
+            await page.ClickAsync(SaveButton("q-settled"));
+            Assert.Empty(await WaitForAnswerValuesAsync(server, session, "q-settled"));
+            Assert.Equal(
+                "single", (await WaitForAnswerAsync(server, session, "q-settled")).GetProperty("mode").GetString());
+
+            // Having landed, the cleared state IS the recorded state, so there is nothing left to submit.
+            await AssertSaveDisabledAsync(page, "q-settled");
+            Assert.Equal("Save answer", (await page.InnerTextAsync(SaveButton("q-settled"))).Trim());
+
+            // A 400 on the empty-values post would surface here (the server must accept a cleared answer).
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
     // ---- Charter #56: a text range's start/end must be in ONE reference frame ----------------------------
 
     /// <summary>

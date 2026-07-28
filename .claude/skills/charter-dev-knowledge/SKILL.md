@@ -119,6 +119,17 @@ pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --wit
   survived), then fails the moment a test genuinely waits. Use `WaitForSelectorAsync` (the selector engine is
   CSP-safe) or a bounded C# poll over `EvaluateAsync` (`ReviewLoopBrowserTests.WaitForEventAsync`). `evaluate`
   itself is fine — it goes over CDP, not `eval`.
+- **Inside a rendered `:::diagram`, only `pre.mermaid` carries a Charter id.** Mermaid stamps its own ids on
+  the `<svg>` and on every `g.node`, so the SDK's generic "nearest ancestor with an `id`" walk stops on one
+  of those unless it is short-circuited — which is exactly how a diagram-node note reached the agent with no
+  `sourceLine` (#48). `closestAnchored` resolves `pre.mermaid` explicitly; keep any new anchoring path going
+  through it rather than re-walking. Mermaid's theme CSS also rides in a `<style>` **inside** the `<svg>`, so
+  a "what am I annotating" label built from text nodes reads as a stylesheet unless `style`/`script` are
+  skipped — and note an SVG element's `tagName` is lower-case where an HTML element's is upper-case.
+- **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
+  (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
+  handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the
+  listener runs and will re-check a control the listener just cleared (#63).
 
 ## Status pointers
 
@@ -130,7 +141,7 @@ pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --wit
 - Current state: **shipping — v0.6.0**. Renderer, source-map, loopback review server, annotation loop,
   in-page review panel, answerable `:::question` forms, the **Send to agent** round hand-off, offline
   export, the living-document `--apply`/`resolve` fold, and team-review steps 2–4 are all built. Baseline
-  on a clean tree: **597 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) —
-  Core 355 · Server 178 · Cli 54 · Browser 10.
+  on a clean tree: **623 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) —
+  Core 355 · Server 196 · Cli 57 · Browser 15.
 - Product model, review-loop semantics, and the agent-facing consumption contract (poll exit codes,
   `drainError`, `reviewSubmitted`): skill `charter-domain-knowledge`.
