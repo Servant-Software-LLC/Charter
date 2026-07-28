@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Charter.Server;
 
 /// <summary>
@@ -61,6 +63,12 @@ public enum AnchorStatus
 /// <param name="Start">Text-range only: the selection's start offset within the block, or <c>null</c>.</param>
 /// <param name="End">Text-range only: the selection's end offset within the block, or <c>null</c>.</param>
 /// <param name="NodeId">Diagram-node only: the flagged node's identity within the diagram, or <c>null</c>.</param>
+/// <param name="Review">
+/// Present only on an annotation derived from the committed REVIEW LOG (a teammate's comment read by the
+/// server-less <c>charter poll</c> path): who wrote it, whether a human or an agent, and what state it
+/// settled into. Omitted entirely from the wire for a pending-queue annotation, so the shipped drain shape is
+/// byte-for-byte what it was.
+/// </param>
 public sealed record Annotation(
     string Id,
     AnnotationKind Kind,
@@ -70,7 +78,9 @@ public sealed record Annotation(
     string? Quote = null,
     int? Start = null,
     int? End = null,
-    string? NodeId = null)
+    string? NodeId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReviewAttribution? Review = null)
 {
     /// <summary>
     /// Whether <see cref="AnchorId"/> resolved when <see cref="SourceLine"/> was last computed. DERIVED from
@@ -81,3 +91,17 @@ public sealed record Annotation(
     /// </summary>
     public AnchorStatus AnchorStatus => SourceLine is null ? AnchorStatus.Orphaned : AnchorStatus.Resolved;
 }
+
+/// <summary>
+/// Who said a review-log comment and what became of it, carried on the <c>charter poll</c> envelope so an
+/// agent reading a teammate's committed comment knows both. <see cref="Status"/> is the load-bearing field:
+/// a <c>retracted</c> comment is one the author WITHDREW and a <c>contested</c> one is NOT resolved, so an
+/// agent that ignored the status would act on a withdrawal or close a live disagreement.
+/// </summary>
+/// <param name="AuthorName">The reviewer's display name.</param>
+/// <param name="AuthorEmail">Their identity, as the fold compares it.</param>
+/// <param name="Actor">Whether a human or an agent wrote it (§4).</param>
+/// <param name="Status">One of <see cref="ReviewStatusTokens"/>' comment states.</param>
+/// <param name="Ts">When they say they wrote it — presentation only, never causality (rule 3).</param>
+public sealed record ReviewAttribution(
+    string AuthorName, string AuthorEmail, string Actor, string Status, string? Ts);

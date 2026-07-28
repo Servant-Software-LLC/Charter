@@ -6,3 +6,11 @@
 # Vendored minified runtime (Mermaid): keep byte-exact — EOL/text normalization could
 # corrupt the pinned library. Treat as-is.
 src/Charter.Core/assets/mermaid.min.js -text
+
+# Per-author review logs (docs/plans/03-git-mediated-team-review.md §3). Both settings are built into git,
+# so there is nothing to install. `merge=union` is an OPTIMIZATION, never a correctness dependency: without
+# it a same-author-two-branches divergence degrades to a loud CONFLICT that a human resolves, which the fold
+# survives. `text eol=lf` is NOT cosmetic — without it a CRLF-writing teammate forks every line and union
+# keeps both copies (reproduced in the merge spike). The `**/` prefix is required: `*.charter.review/*.jsonl`
+# alone matches only at the repository root.
+**/*.charter.review/*.jsonl merge=union text eol=lf

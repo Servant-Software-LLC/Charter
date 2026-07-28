@@ -54,6 +54,10 @@ window.CharterAnnotate = (function () {
     events: null,        // EventSource for /events live reload
     handlers: [],        // local subscribers registered via on()
     annotations: [],     // the PENDING (pre-handoff) annotations, from GET /api/annotations
+    // The FOLDED review log of every author, from GET /api/review-log — this is what makes teammates'
+    // comments visible. The server reads and folds `<plan>.review/*.jsonl` itself; the browser only ever
+    // sees this projection, never a file.
+    log: { comments: [], diagnostics: [], unreadable: [], selfEmail: null },
     ui: null,            // the SDK-owned chrome: { style, panel, toggle, overlay, ... }
     // The review ROUND's hand-off state, mirrored from GET /api/review. `submitted` is true while the
     // reviewer's "Send to agent" click is pending (the agent has not been told yet); `pending` is the live
@@ -116,6 +120,12 @@ window.CharterAnnotate = (function () {
     }
     if (data.type === 'delete' && data.detail && data.detail.id) {
       deleteNote(data.detail.id);
+    }
+    // `{ channel, type: 'resolve', detail: { id } }` closes a comment in the review log — the
+    // programmatic twin of the panel's Resolve button. Distinct from 'send' below: resolve settles
+    // ONE comment durably in the log, send hands the whole ROUND to the agent.
+    if (data.type === 'resolve' && data.detail && data.detail.id) {
+      resolveNote(data.detail.id);
     }
     // `{ channel, type: 'send' }` hands the round off to the agent — the programmatic twin of the
     // panel's "Send to agent" button.
@@ -321,6 +331,10 @@ window.CharterAnnotate = (function () {
           showPanel();
           render();
           refreshRound();   // there is now something to hand off
+          // The same submission also became a durable `create` record in this author's log; re-read the fold
+          // so the entry the panel shows is the COMMITTED one (with its author, actor and status), not just
+          // the pending copy.
+          hydrateLog();
         }
         emit('submitted', { status: res.status, payload: payload, id: created ? created.id : null });
         return created;
@@ -363,6 +377,40 @@ window.CharterAnnotate = (function () {
     });
   }
 
+  // Re-read the FOLDED review log — every author's committed comments, not only this machine's pending
+  // queue. Called on load, after every write, and whenever the server reports that `.review/` changed
+  // (a `git pull` landing a teammate's log mid-session).
+  function hydrateLog() {
+    var url = '/api/review-log?key=' + encodeURIComponent(state.key || '');
+    return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
+      if (!res.ok) {
+        emit('review-log-error', { status: res.status });
+        return null;
+      }
+      return res.json().then(function (view) {
+        state.log = {
+          comments: (view && view.comments) || [],
+          diagnostics: (view && view.diagnostics) || [],
+          unreadable: (view && view.unreadable) || [],
+          selfEmail: (view && view.selfEmail) || null
+        };
+        render();
+        emit('review-log-loaded', {
+          count: state.log.comments.length,
+          diagnostics: state.log.diagnostics.length,
+          unreadable: state.log.unreadable.length
+        });
+        return state.log;
+      }, function () {
+        emit('review-log-error', { reason: 'malformed' });
+        return null;
+      });
+    }).catch(function () {
+      emit('review-log-error', { reason: 'network' });
+      return null;
+    });
+  }
+
   function annotationUrl(id, action) {
     return '/api/' + encodeURIComponent(state.key || '') + '/annotations/' + encodeURIComponent(id) +
       (action ? ('/' + action) : '');
@@ -387,6 +435,7 @@ window.CharterAnnotate = (function () {
         }
         setStatus('');
         render();
+        hydrateLog();
         emit('annotation-updated', { id: id });
         return true;
       }
@@ -408,6 +457,9 @@ window.CharterAnnotate = (function () {
         setStatus('');
         render();
         refreshRound();   // retracting the last note leaves nothing to hand off
+        // In the log a retract HIDES the body and KEEPS the thread — replies are other people's words and
+        // are never removed by someone else's retract — so re-read rather than assume the entry is gone.
+        hydrateLog();
         emit('annotation-deleted', { id: id });
         return true;
       }
@@ -418,6 +470,26 @@ window.CharterAnnotate = (function () {
     }).catch(function () {
       setStatus('Could not reach the review server.');
       emit('annotation-delete-error', { id: id, reason: 'network' });
+      return false;
+    });
+  }
+
+  // Close a comment in the review log. Open to ANYONE (review is collaborative) and always attributed —
+  // unlike retract, which only the comment's own author may write.
+  function resolveNote(id) {
+    return fetch(annotationUrl(id, 'resolve'), { method: 'POST' }).then(function (res) {
+      if (res.ok) {
+        setStatus('');
+        hydrateLog();
+        emit('annotation-resolved', { id: id });
+        return true;
+      }
+      setStatus('Could not resolve that comment (' + res.status + ').');
+      emit('annotation-resolve-error', { id: id, status: res.status });
+      return false;
+    }).catch(function () {
+      setStatus('Could not reach the review server.');
+      emit('annotation-resolve-error', { id: id, reason: 'network' });
       return false;
     });
   }
@@ -824,8 +896,23 @@ window.CharterAnnotate = (function () {
     '.charter-item-line { flex: 0 0 auto; border: 1px solid var(--charter-border); border-radius: 999px;',
     '  padding: 0 6px; }',
     '.charter-item-note { white-space: pre-wrap; overflow-wrap: break-word; margin-bottom: 6px; }',
-    '.charter-item-actions { display: flex; gap: 6px; }',
+    '.charter-item-actions { display: flex; gap: 6px; flex-wrap: wrap; }',
     '.charter-item[data-charter-orphan="true"] .charter-item-label { font-style: italic; }',
+
+    '.charter-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;',
+    '  margin-bottom: 6px; font-size: 11px; color: var(--charter-muted); }',
+    '.charter-item-author { font-weight: 600; color: var(--charter-fg); }',
+    '.charter-chip { border: 1px solid var(--charter-border); border-radius: 999px; padding: 0 6px;',
+    '  font-size: 11px; line-height: 1.6; }',
+    '.charter-chip-contested { border-color: var(--charter-warn-border); background: var(--charter-warn-bg); }',
+    '.charter-chip-orphaned { font-style: italic; }',
+    '.charter-item[data-charter-status="retracted"] .charter-item-note { font-style: italic;',
+    '  color: var(--charter-muted); }',
+    '.charter-item-orphan { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
+    '.charter-item-quote { font-style: italic; overflow-wrap: break-word; }',
+    '.charter-item-sides { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
+    '.charter-item-reply { font-size: 12px; border-left: 2px solid var(--charter-border);',
+    '  padding-left: 8px; margin: 0 0 6px 6px; overflow-wrap: break-word; }',
 
     '.charter-panel-toggle { position: fixed; right: 14px; bottom: 14px; z-index: 2147482500;',
     '  font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px; cursor: pointer;',
@@ -1096,12 +1183,74 @@ window.CharterAnnotate = (function () {
 
   // ---- the review panel: list / jump / edit / delete the PENDING notes (#42) ------------
 
+  // ---- one list from two sources -------------------------------------------------------------------
+  // The panel shows the FOLDED review log (every author's committed comments, with their status) plus any
+  // pending annotation the log does not already carry. The log record's id IS the annotation's id, so a
+  // comment this session just wrote appears exactly once — as its committed self. The pending fallback is
+  // what keeps a Charter with no author identity (no writer configured) working exactly as before.
+
+  function logRecord(comment) {
+    return {
+      id: comment.id,
+      anchorId: comment.anchorId,
+      kind: comment.kind || KIND.element,
+      quote: comment.quote || null,
+      note: comment.body || '',
+      sourceLine: comment.sourceLine || null,
+      authorName: comment.authorName || null,
+      authorEmail: comment.authorEmail || null,
+      actor: comment.actor || null,
+      status: comment.status || 'open',
+      anchorStatus: comment.anchorStatus || null,
+      mine: !!comment.mine,
+      sides: comment.sides || [],
+      replies: comment.replies || [],
+      committed: true
+    };
+  }
+
+  function pendingRecord(annotation) {
+    return {
+      id: annotation.id,
+      anchorId: annotation.anchorId,
+      kind: annotation.kind || KIND.element,
+      quote: annotation.quote || null,
+      note: annotation.note || '',
+      sourceLine: annotation.sourceLine || null,
+      authorName: null,
+      authorEmail: null,
+      actor: null,
+      status: 'open',
+      anchorStatus: null,
+      mine: true,
+      sides: [],
+      replies: [],
+      committed: false
+    };
+  }
+
+  function mergedRecords() {
+    var records = [];
+    var seen = Object.create(null);
+    var i;
+    for (i = 0; i < state.log.comments.length; i++) {
+      var committed = logRecord(state.log.comments[i]);
+      seen[committed.id] = true;
+      records.push(committed);
+    }
+    for (i = 0; i < state.annotations.length; i++) {
+      if (!seen[state.annotations[i].id]) records.push(pendingRecord(state.annotations[i]));
+    }
+    return records;
+  }
+
   // Document order, so the list reads top-to-bottom like the plan. Orphans (their block is gone
   // from the re-rendered plan) sort last and keep submit order — they are never dropped.
   function orderedEntries() {
     var entries = [];
-    for (var i = 0; i < state.annotations.length; i++) {
-      entries.push({ record: state.annotations[i], el: anchorElement(state.annotations[i].anchorId), index: i });
+    var records = mergedRecords();
+    for (var i = 0; i < records.length; i++) {
+      entries.push({ record: records[i], el: anchorElement(records[i].anchorId), index: i });
     }
     entries.sort(function (a, b) {
       if (!a.el && !b.el) return a.index - b.index;
@@ -1116,12 +1265,29 @@ window.CharterAnnotate = (function () {
     return entries;
   }
 
+  // How each settlement reads in the panel. A CONTESTED comment shows BOTH sides with their authors —
+  // the fold hands over both precisely so the disagreement is visible instead of being ordered away.
+  function sideLine(side) {
+    var verb = side.op === 'reopen' ? 'reopened' : 'resolved';
+    return verb + ' by ' + (side.authorName || side.authorEmail || 'someone');
+  }
+
   function buildItem(entry) {
     var record = entry.record;
+    // An anchor resolves by EXACT block-id match or it is orphaned (§4.3) — there is no fuzzy re-binding.
+    // The server's verdict wins when it has one; a pending-only note falls back to the live DOM.
+    var orphaned = record.anchorStatus ? (record.anchorStatus === 'orphaned') : !entry.el;
+    var retracted = record.status === 'retracted';
+
     var item = make('div', 'charter-item', 'item');
     item.setAttribute('data-annotation-id', record.id || '');
     item.setAttribute('data-anchor-id', record.anchorId || '');
-    item.setAttribute('data-charter-orphan', entry.el ? 'false' : 'true');
+    item.setAttribute('data-charter-orphan', orphaned ? 'true' : 'false');
+    item.setAttribute('data-charter-anchor-status', orphaned ? 'orphaned' : 'resolved');
+    item.setAttribute('data-charter-status', record.status || 'open');
+    item.setAttribute('data-charter-committed', record.committed ? 'true' : 'false');
+    if (record.authorEmail) item.setAttribute('data-charter-author-email', record.authorEmail);
+    if (record.actor) item.setAttribute('data-charter-actor', record.actor);
 
     var target = make('div', 'charter-item-target', 'item-target');
     target.appendChild(make('span', 'charter-item-label', 'item-label', recordLabel(record)));
@@ -1130,21 +1296,80 @@ window.CharterAnnotate = (function () {
     }
     item.appendChild(target);
 
-    item.appendChild(make('div', 'charter-item-note', 'item-note', record.note || ''));
+    // Who said it, whether a human or an agent said it, and what state it settled into. Only committed
+    // (review-log) entries carry attribution; a pending-only note is by definition this reviewer's own.
+    if (record.committed) {
+      var meta = make('div', 'charter-item-meta', 'item-meta');
+      meta.appendChild(make('span', 'charter-item-author', 'item-author', record.authorName || record.authorEmail || ''));
+      if (record.actor && record.actor !== 'human') {
+        meta.appendChild(make('span', 'charter-chip', 'item-actor', record.actor));
+      }
+      meta.appendChild(make('span', 'charter-chip charter-chip-' + record.status, 'item-status', record.status));
+      if (orphaned) {
+        meta.appendChild(make('span', 'charter-chip charter-chip-orphaned', 'item-orphan-chip', 'orphaned'));
+      }
+      item.appendChild(meta);
+    }
+
+    item.appendChild(make('div', 'charter-item-note', 'item-note',
+      retracted ? '(comment withdrawn by author)' : (record.note || '')));
+
+    // An orphan is never blind: the quote it was written against, plus the neutral FACT that the plan has
+    // changed. Deliberately not "addressed" — folding a :::question answer rewrites that block and orphans
+    // every comment on it though nobody addressed anything.
+    if (orphaned) {
+      var orphan = make('div', 'charter-item-orphan', 'item-orphan');
+      orphan.appendChild(make('div', null, 'item-orphan-note',
+        'The plan has changed since this comment was written.'));
+      if (record.quote) {
+        orphan.appendChild(make('div', 'charter-item-quote', 'item-quote',
+          '“' + truncate(record.quote, 160) + '”'));
+      }
+      item.appendChild(orphan);
+    }
+
+    if (record.sides && record.sides.length) {
+      var sides = make('div', 'charter-item-sides', 'item-sides');
+      for (var s = 0; s < record.sides.length; s++) {
+        sides.appendChild(make('div', 'charter-item-side', 'item-side', sideLine(record.sides[s])));
+      }
+      item.appendChild(sides);
+    }
+
+    for (var r = 0; r < record.replies.length; r++) {
+      var reply = record.replies[r];
+      var replyEl = make('div', 'charter-item-reply', 'item-reply',
+        (reply.authorName || reply.authorEmail || '') + ': ' +
+        (reply.retracted ? '(reply withdrawn by author)' : (reply.body || '')));
+      item.appendChild(replyEl);
+    }
 
     var actions = make('div', 'charter-item-actions', 'item-actions');
     var jump = button('charter-btn', 'item-jump', 'Jump');
-    jump.disabled = !entry.el;
+    jump.disabled = !entry.el || orphaned;
     jump.addEventListener('click', function () { jumpTo(record); }, false);
-    var edit = button('charter-btn', 'item-edit', 'Edit');
-    edit.addEventListener('click', function () { openComposerForEdit(record, item); }, false);
-    var remove = button('charter-btn', 'item-delete', 'Delete');
-    remove.addEventListener('click', function () { deleteNote(record.id); }, false);
     actions.appendChild(jump);
-    actions.appendChild(edit);
-    actions.appendChild(remove);
-    item.appendChild(actions);
 
+    // Edit and Delete are the AUTHOR's own: a retract by anyone else is retained and reported by the fold
+    // but never applied, so offering the button would only promise something the model refuses.
+    if (record.mine && !retracted) {
+      var edit = button('charter-btn', 'item-edit', 'Edit');
+      edit.addEventListener('click', function () { openComposerForEdit(record, item); }, false);
+      var remove = button('charter-btn', 'item-delete', 'Delete');
+      remove.addEventListener('click', function () { deleteNote(record.id); }, false);
+      actions.appendChild(edit);
+      actions.appendChild(remove);
+    }
+
+    // Resolve is open to anyone — review is collaborative — but only for a committed comment that is not
+    // already settled closed or withdrawn.
+    if (record.committed && !retracted && record.status !== 'resolved') {
+      var resolve = button('charter-btn', 'item-resolve', 'Resolve');
+      resolve.addEventListener('click', function () { resolveNote(record.id); }, false);
+      actions.appendChild(resolve);
+    }
+
+    item.appendChild(actions);
     return item;
   }
 
@@ -1187,7 +1412,9 @@ window.CharterAnnotate = (function () {
     var counts = Object.create(null);
     for (var i = 0; i < entries.length; i++) {
       var id = entries[i].record.anchorId;
-      if (!id || !entries[i].el) continue;
+      // A withdrawn comment must not keep badging its block — the thread survives in the panel, but the
+      // block no longer carries an open note.
+      if (!id || !entries[i].el || entries[i].record.status === 'retracted') continue;
       if (counts[id] === undefined) { counts[id] = 0; order.push(id); }
       counts[id]++;
     }
@@ -1444,6 +1671,9 @@ window.CharterAnnotate = (function () {
     try {
       var es = new EventSource(eventsUrl());
       es.addEventListener('reload', onReload);
+      // A teammate's log landing in `.review/` (a `git pull` mid-session) refreshes the PANEL only — never
+      // a page navigation, which would discard a half-typed note for someone else's comment.
+      es.addEventListener('review-log', function () { emit('review-log-changed', {}); hydrateLog(); });
       es.onmessage = function (m) { emit('event', { data: m && m.data }); };
       es.onerror = function () { emit('events-error', {}); };
       state.events = es;
@@ -1475,10 +1705,12 @@ window.CharterAnnotate = (function () {
     state.started = true;
     emit('ready', { hasKey: !!state.key });
 
-    // Hydrate the pending queue ONCE, here. A live reload is a full navigation, so init() runs
-    // again on the new document — re-fetching inside the reload handler would only race it. The round
-    // state comes from the server for the same reason: after a reload there is no local tally left.
+    // Hydrate the pending queue, the folded review log, and the round state ONCE, here. A live reload is a
+    // full navigation, so init() runs again on the new document — re-fetching inside the reload handler would
+    // only race it. The round state comes from the server for the same reason: after a reload there is no
+    // local tally left.
     hydrate();
+    hydrateLog();
     refreshRound();
     return api;
   }
@@ -1517,6 +1749,7 @@ window.CharterAnnotate = (function () {
     }
     state.handlers.length = 0;
     state.annotations = [];
+    state.log = { comments: [], diagnostics: [], unreadable: [], selfEmail: null };
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
     state.started = false;
   }
@@ -1529,8 +1762,10 @@ window.CharterAnnotate = (function () {
     annotate: submit,    // submit an annotation programmatically
     answer: postAnswer,  // submit a :::question answer programmatically
     list: hydrate,       // re-read the pending queue from the server
-    update: updateNote,  // edit a still-pending annotation's note
-    remove: deleteNote,  // retract a still-pending annotation
+    reviewLog: hydrateLog, // re-read the folded review log (every author's committed comments)
+    update: updateNote,  // edit a note
+    remove: deleteNote,  // retract a note (own author only, once committed)
+    resolve: resolveNote, // close a committed comment
     panel: togglePanel,  // show/hide the review panel
     send: sendRound,     // hand this round of feedback to the agent
     round: refreshRound, // re-read the round's hand-off state from the server

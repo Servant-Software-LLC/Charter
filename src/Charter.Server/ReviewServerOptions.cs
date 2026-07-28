@@ -30,4 +30,16 @@ public sealed class ReviewServerOptions
     /// Production (<c>charter review</c>) sets this to <see cref="StateDirectory.Sidecars"/>.
     /// </summary>
     public string? SidecarDirectory { get; set; }
+
+    /// <summary>
+    /// The per-author review-log writer (<c>docs/plans/03-git-mediated-team-review.md</c>). When set, the
+    /// server APPENDS a record beside the plan for every reviewer action — a <c>create</c> on a new comment,
+    /// an <c>edit</c>, a <c>retract</c>, a <c>resolve</c> — so the review travels by git and a teammate's panel
+    /// shows it. When <c>null</c> (the default), the review log is READ-ONLY: the panel still folds and shows
+    /// whatever logs already sit beside the plan, but this Charter contributes nothing. The writer is supplied
+    /// rather than derived so the author identity is resolved ONCE, by the caller (which is also what warns a
+    /// reviewer when git could not name them), and so a test can pin an author without depending on the
+    /// machine's git config.
+    /// </summary>
+    public ReviewLogWriter? ReviewLog { get; set; }
 }

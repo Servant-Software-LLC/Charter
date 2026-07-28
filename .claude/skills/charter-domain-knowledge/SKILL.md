@@ -95,9 +95,49 @@ marker + count badge, so the reviewer can see and manage what they have already 
 loopback routes over the same pending buffer — `GET /api/annotations` (non-destructive list, key on the
 query string), `POST /api/{key}/annotations/{id}` (edit the note) and
 `POST /api/{key}/annotations/{id}/delete` (retract it), both writes key-in-path + CSRF-gated. Once
-`charter poll` drains a note it belongs to the agent: edit/delete then answer **404**, which the UI reports
-as "already handed off", not as an error. The drain contract (`/api/poll`, `charter poll`, `PollEnvelope`)
-is unchanged, and the panel/markers/composer are runtime-only DOM — invariant 1 still holds.
+`charter poll` drains a note it belongs to the agent: with **no review-log writer** configured, edit/delete
+then answer **404**, which the UI reports as "already handed off", not as an error. (With a writer — the
+production `charter review` path — the durable log still knows the id, so the write succeeds and appends an
+`edit`/`retract` record instead; see the team-review section below, and note a live-session agent polling
+`/api/poll` does **not** read the log, so a retraction after the drain does not reach it.) The drain contract
+(`/api/poll`, `charter poll`, `PollEnvelope`) is unchanged, and the panel/markers/composer are runtime-only
+DOM — invariant 1 still holds.
+
+**The round HAND-OFF ("Send to agent").** The reviewer can say *"I am done with this round"* without leaving
+the page: `POST /api/{key}/review/submit` records a hand-off and wakes the long-poll, `GET /api/review`
+reports it plus the live pending counts, `POST /api/{key}/review/ack?sequence=N` clears it by
+compare-and-clear. It rides the poll envelope as the additive `reviewSubmitted` / `reviewSubmission` pair.
+It **signals only** — the drafting agent stays the single writer of the plan. The wake-signal invariant is
+stated ONCE, in `PendingSignal`: *the signal is completed iff the owning store has pending work*,
+re-established under the owner's lock after **every** mutation. All three review stores (annotations,
+answers, hand-off) use it and `ReviewServer.WaitForReviewWorkAsync` waits on all three; a store that skips
+the re-sync either hot-loops `poll --wait` or strands it until timeout.
+
+**Git-mediated team review (the durable half).** Comments also become **per-author append-only JSONL**
+records in `<plan>.review/<slug>.<hash8>.jsonl` beside the plan, so review travels by git instead of dying
+in a machine-local sidecar. Normative design: `docs/plans/03-git-mediated-team-review.md` — cite it, don't
+restate it. What the code surface is:
+
+- `GET /api/review-log` — every author's logs, folded and projected **server-side**. There is deliberately
+  **no static-file branch** for `.review/`: the confinement root is the plan's own directory, so one would
+  make every sibling file under `docs/plans/` a key-gated HTTP-readable resource.
+- `POST /api/{key}/annotations/{id}/resolve` — appends a `resolve` record. Open to anyone (review is
+  collaborative) and always attributed; `retract` (the existing `/delete`) is refused for anyone but the
+  comment's own author. Orthogonal to the round hand-off: a resolve settles one comment forever, a hand-off
+  marks one round of one live session.
+- The `/events` stream now names its frames: **`reload`** (the plan changed — navigate) vs **`review-log`**
+  (a teammate's log landed, e.g. a `git pull` — re-read the fold only). Keeping them distinct is what stops
+  a pulled log discarding a half-typed note or an unsaved answer.
+- Anchors resolve by **exact block-id match or `orphaned`** — no fuzzy ladder — and an orphan is a neutral
+  fact, never "addressed".
+- `charter poll <plan>` gained a **server-less read path**: with no live session it folds
+  `<plan>.review/*.jsonl` and emits the same envelope with the additive `source: "review-log"` and a
+  per-annotation `review { authorName, authorEmail, actor, status, ts }`. Consumption is tracked in a
+  **machine-local** ledger (`StateDirectory.Consumed()`), never as a log record — A's agent consuming must
+  not mark a comment handled for B.
+- Writing is **opt-in by construction**: `ReviewServerOptions.ReviewLog` defaults `null`, and with no writer
+  the server's behaviour is bit-identical to the pre-log server (the panel folds whatever logs already exist
+  and this Charter contributes nothing).
 
 ## The workflow
 
@@ -168,6 +208,7 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 | Block catalog + `:::question` schema (normative, drift-tested) | skill `charter-format` |
 | Architecture, milestones, decisions D1/D2 | `docs/plans/01-combine-lavish-and-visual-plan.md` |
 | Living-document / dual-handoff design (Architecture B) | `docs/plans/02-architecture-b-living-document.md` |
+| Git-mediated team review: log layout, record schema, the 8 fold rules, `prev`/contested, exact-hash-or-orphan | `docs/plans/03-git-mediated-team-review.md` |
 | Build / test / package / distribution / gotchas | skill `charter-dev-knowledge` |
 | Format rationale (vs alternatives) | plan D1 + the format-research verdict it cites |
 | Guardrails handoff shape | to be pinned as a fixture in M0 |

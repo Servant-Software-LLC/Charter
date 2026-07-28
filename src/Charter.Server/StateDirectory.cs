@@ -58,6 +58,21 @@ public static class StateDirectory
     }
 
     /// <summary>
+    /// The resolved review-log consumption directory: where THIS MACHINE records which review records its
+    /// agent has already been handed. It is deliberately machine-local and deliberately NOT a log record —
+    /// N agents run on N machines, and A's agent consuming a comment must not mark it handled for B
+    /// (<c>docs/plans/03-git-mediated-team-review.md</c> §5). Same override/layout rules as
+    /// <see cref="Sidecars"/>; pure path resolution — no I/O.
+    /// </summary>
+    public static string Consumed()
+    {
+        var overridden = Environment.GetEnvironmentVariable(OverrideEnvironmentVariable);
+        return !string.IsNullOrEmpty(overridden)
+            ? Path.Combine(overridden, "consumed")
+            : Path.Combine(BaseStateDirectory(), "consumed");
+    }
+
+    /// <summary>
     /// Ensure <paramref name="directory"/> exists, tightening it to <c>0700</c> on POSIX. Returns the same
     /// path. Kept as an explicit-directory helper (not just <see cref="Sessions"/>) so the perms behaviour is
     /// unit-testable against a temp directory with no reliance on the process-global override variable.

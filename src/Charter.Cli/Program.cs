@@ -559,7 +559,12 @@ static RootCommand BuildReviewRoot()
         // answers survive to be applied later by `charter resolve`.
         var session = ReviewSession.Create(inputPath);
         using var server = ReviewServer.Start(
-            session, new ReviewServerOptions { SidecarDirectory = StateDirectory.Sidecars() });
+            session,
+            new ReviewServerOptions
+            {
+                SidecarDirectory = StateDirectory.Sidecars(),
+                ReviewLog = OpenReviewLog(session.SourcePath),
+            });
 
         // Register this running session in the per-user state dir so `charter poll` can discover it (address
         // + capability key + source path) WITHOUT the key ever crossing a command line. Written AFTER Start
@@ -620,6 +625,43 @@ static RootCommand BuildReviewRoot()
     {
         review,
     };
+}
+
+// Open (or decline to open) the per-author review log beside the plan — the git-mediated team review's write
+// half. Charter READS git for the author identity (never writes git state: §5.1 permits the read and forbids
+// the mutation), falls back to a clearly-marked machine-local identity when git cannot name the reviewer, and
+// states plainly — once, on stderr — where records go and that they are meant to be committed (§7). A review
+// must NEVER fail for want of a log, so an unwritable .review/ directory only warns and returns null, leaving
+// `charter review` exactly as it behaves today: local-only, single-reviewer, nothing committed.
+static ReviewLogWriter? OpenReviewLog(string planPath)
+{
+    try
+    {
+        var identity = GitIdentity.Resolve(Path.GetDirectoryName(planPath) ?? Directory.GetCurrentDirectory());
+        var writer = new ReviewLogWriter(planPath, identity.Author);
+        writer.EnsureDirectory();
+
+        if (!identity.FromGit)
+        {
+            Console.Error.WriteLine(
+                $"charter review: warning: {identity.Reason}; your comments will be attributed to the local "
+                    + $"identity {identity.Author.Email}, which means nothing on a teammate's machine. Set "
+                    + "`git config user.email` (and user.name) before reviewing as part of a team.");
+        }
+
+        Console.Error.WriteLine(
+            $"charter review: review comments are written to {writer.LogPath} and are intended to be COMMITTED "
+                + "-- they travel to your teammates by git, and are permanent in history. For local-only "
+                + $"review, add '*{ReviewLogPaths.DirectorySuffix}/' to .gitignore.");
+        return writer;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(
+            $"charter review: could not open the review log beside the plan ({ex.Message}); reviewing "
+                + "local-only, and your comments will not travel to teammates.");
+        return null;
+    }
 }
 
 // Builds the root command hosting the `poll` subcommand wired to Charter.Cli.PollCommand (which orchestrates

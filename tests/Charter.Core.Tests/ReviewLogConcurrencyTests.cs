@@ -225,6 +225,77 @@ public class ReviewLogConcurrencyTests
         Assert.Empty(state.OfKind(ReviewDiagnosticKind.ChainCycle));
     }
 
+    // ---- StateHeads: the WRITER's half of the prev contract --------------------------------------------
+
+    /// <summary>
+    /// A comment nobody has acted on has no heads, so a first state record honestly claims <c>prev: null</c>.
+    /// </summary>
+    [Fact]
+    public void AnUntouchedCommentHasNoStateHeads()
+        => Assert.Empty(Rec.Fold(Rec.Create("c1", Rec.Alice)).OnlyComment().StateHeads);
+
+    /// <summary>
+    /// The heads are the records NOTHING else observed — exactly what a new state record must point its
+    /// <c>prev</c> at. An observed chain collapses to its single head, across every dimension: the fold votes
+    /// per-dimension, but the chain is one.
+    /// </summary>
+    [Fact]
+    public void AnObservedChainHasExactlyOneStateHead()
+    {
+        var state = Rec.Fold(
+            Rec.Create("c1", Rec.Alice),
+            Rec.Edit("e1", "c1", Rec.Alice, "second body"),
+            Rec.Edit("e2", "c1", Rec.Alice, "third body", prev: "e1"),
+            Rec.Resolve("r1", "c1", Rec.Bob, prev: "e2"));
+
+        Assert.Equal("r1", Assert.Single(state.OnlyComment().StateHeads).Id);
+    }
+
+    /// <summary>
+    /// Genuine concurrency yields several heads, ordered by id so the writer's choice among them — and
+    /// therefore the record it appends — never depends on which order git merged the logs in.
+    /// </summary>
+    [Fact]
+    public void ConcurrentBranchesEachYieldAStateHead_OrderedById()
+    {
+        var forward = Rec.Fold(
+            Rec.Create("c1", Rec.Alice),
+            Rec.Resolve("r1", "c1", Rec.Bob),
+            Rec.Reopen("o1", "c1", Rec.Carol));
+        var reversed = Rec.Fold(
+            Rec.Reopen("o1", "c1", Rec.Carol),
+            Rec.Resolve("r1", "c1", Rec.Bob),
+            Rec.Create("c1", Rec.Alice));
+
+        Assert.Equal(new[] { "o1", "r1" }, forward.OnlyComment().StateHeads.Select(r => r.Id));
+        Assert.Equal(new[] { "o1", "r1" }, reversed.OnlyComment().StateHeads.Select(r => r.Id));
+    }
+
+    /// <summary>
+    /// Why <c>StateHeads</c> exists: a writer that could only send <c>prev: null</c> would make a second edit
+    /// by ONE author read as a concurrent edit — reverting the body to the last agreed one and reporting a
+    /// disagreement that never happened.
+    /// </summary>
+    [Fact]
+    public void WithoutObservingTheFirstEdit_ASecondEditByTheSameAuthorLooksConcurrent()
+    {
+        var unobserved = Rec.Fold(
+            Rec.Create("c1", Rec.Alice, body: "first body"),
+            Rec.Edit("e1", "c1", Rec.Alice, "second body"),
+            Rec.Edit("e2", "c1", Rec.Alice, "third body"));
+
+        Assert.Equal("first body", unobserved.OnlyComment().Body);
+        Assert.Single(unobserved.OfKind(ReviewDiagnosticKind.ConcurrentEdit));
+
+        var observed = Rec.Fold(
+            Rec.Create("c1", Rec.Alice, body: "first body"),
+            Rec.Edit("e1", "c1", Rec.Alice, "second body"),
+            Rec.Edit("e2", "c1", Rec.Alice, "third body", prev: "e1"));
+
+        Assert.Equal("third body", observed.OnlyComment().Body);
+        Assert.Empty(observed.OfKind(ReviewDiagnosticKind.ConcurrentEdit));
+    }
+
     [Fact]
     public void EachCommentSettlesIndependently()
     {
