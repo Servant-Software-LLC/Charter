@@ -447,6 +447,305 @@ public sealed class ReviewLoopBrowserTests
         }
     }
 
+    // ---- Charter #68: a wide table must be REACHABLE, not clipped ----------------------------------------
+
+    /// <summary>
+    /// A plan whose first table is deliberately wider than any realistic review column — three columns of long
+    /// unbreakable identifier tokens (underscores, so UAX#14 gives the browser no break opportunity inside a
+    /// cell and the table's MIN-content width genuinely exceeds the container). The second table is narrow and
+    /// must stay visually unharmed. The paragraph is the width baseline the narrow table is measured against.
+    /// </summary>
+    private const string WideTablePlan =
+        "# A plan with a wide table\n\n" +
+        "Prose above the table, at the content column's full width.\n\n" +
+        "| Source | Symbol | Guardrail |\n" +
+        "| --- | --- | --- |\n" +
+        "| `src_Charter_Core_CharterContainerRenderer_cs` " +
+        "| `WriteQuestionControls_HtmlRenderer_QuestionSpec` " +
+        "| `Renderer_Wraps_Every_Table_In_A_Scroll_Container` |\n" +
+        "| `src_Charter_Server_AnchorResolution_cs` " +
+        "| `ResolveAtDrainTime_PollEnvelope_AnchorStatus` " +
+        "| `Server_Drain_Rebinds_Every_Anchor_To_The_Current_Plan` |\n\n" +
+        "A narrow table, which must stay visually unharmed:\n\n" +
+        "| A | B |\n" +
+        "| --- | --- |\n" +
+        "| 1 | 2 |\n";
+
+    /// <summary>
+    /// Charter #68, reproduced exactly as the reporter measured it and then proven fixed.
+    ///
+    /// The issue's probe at a 1000px viewport found the table declaring itself scrollable
+    /// (<c>scrollWidth 928 &gt; clientWidth 832</c>, <c>canScroll: true</c>) while a REAL
+    /// <c>page.mouse.wheel(500, 0)</c> over it left <c>scrollLeft</c> at <c>0</c> — 96px of content a reviewer
+    /// could see was cut off but could not reach. That happened because <c>overflow-x</c> sat on the
+    /// <c>&lt;table&gt;</c> element itself; the fix moves it to a wrapping <c>.table-scroll</c> container.
+    ///
+    /// This test re-runs that probe and asserts the wheel now MOVES it — at the issue's own 1000px viewport,
+    /// and again at 660px, which is what is left of a 1000px window beside the 340px review-notes panel (the
+    /// issue's "the sidebar makes it worse" condition, and the realistic reviewing width). It also pins the
+    /// two things a wrapper could quietly break: the annotation anchor (a note on a table cell must still
+    /// resolve to the TABLE's stable id, all the way through to the server's pre-drain queue) and a narrow
+    /// table's layout.
+    /// </summary>
+    [SkippableFact]
+    public async Task Wide_table_scrolls_in_its_wrapper_at_a_narrow_viewport_without_breaking_anchoring()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-wide-table-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, WideTablePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            // Scrollbars VISIBLE: the discoverability half of this fix is a persistent scrollbar, and
+            // Playwright's default --hide-scrollbars would zero every one of them.
+            var launched = await TryLaunchAsync(showScrollbars: true);
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            // The issue's own viewport. body is `max-width: 52rem` (832px) content-box, so the content column
+            // is exactly the 832px the reporter measured.
+            await page.SetViewportSizeAsync(1000, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // ---- the markup shape: a wrapping scroll container, with the anchor still on the table ----
+            Assert.Equal(2, await page.Locator(ScrollContainer).CountAsync());
+
+            var shape = await ProbeAsync(page, Wide);
+            Assert.Equal("DIV", shape.GetProperty("tag").GetString());
+            Assert.Equal("auto", shape.GetProperty("overflowX").GetString());
+
+            // The wrapper is ANCHOR-INVISIBLE: the stable id is on the <table>, never on the container.
+            var tableId = shape.GetProperty("tableId").GetString();
+            Assert.False(string.IsNullOrEmpty(tableId), "the renderer must stamp a stable block id on the table");
+            Assert.Equal(string.Empty, shape.GetProperty("containerId").GetString());
+
+            // Keyboard reachability: a scroll region only a mouse can enter still hides the columns.
+            Assert.Equal(0, shape.GetProperty("tabIndex").GetInt32());
+            Assert.Equal("region", shape.GetProperty("role").GetString());
+            Assert.False(
+                string.IsNullOrEmpty(shape.GetProperty("ariaLabel").GetString()),
+                "the scroll region needs an accessible name or it announces as nothing");
+
+            // ---- the issue's probe, at the issue's viewport ----
+            Assert.True(
+                shape.GetProperty("canScroll").GetBoolean(),
+                "the wide table must genuinely overflow at 1000px — otherwise this test proves nothing: " + shape);
+            Assert.Equal(0, shape.GetProperty("scrollLeft").GetDouble());
+
+            // ---- discoverability: an overflowing region shows a PERSISTENT scrollbar ----
+            // A silently-scrollable region is nearly as bad as a clipped one. The gutter is asserted at the
+            // exact 10px the stylesheet declares, not merely "> 0": the platform default in this environment
+            // is 26px, so an exact match is what attributes the affordance to charter.css's
+            // ::-webkit-scrollbar rule rather than to whatever the browser would have drawn anyway.
+            Assert.Equal(10, shape.GetProperty("gutterPx").GetInt32());
+
+            // ---- the defect itself: a real horizontal wheel gesture over it must MOVE it ----
+            var afterWheel = await WheelOverAsync(page, Wide);
+            Assert.True(
+                afterWheel > 0,
+                "Charter #68: mouse.wheel(500, 0) over the table left scrollLeft at " + afterWheel +
+                " — the clipped columns are still unreachable.");
+
+            // ---- and the keyboard path reaches them too ----
+            await ResetScrollAsync(page, Wide);
+            await page.Locator(ScrollContainer).Nth(Wide).FocusAsync();
+            Assert.True(
+                await page.EvaluateAsync<bool>(
+                    "i => document.activeElement === document.querySelectorAll('.table-scroll')[i]", Wide),
+                "the scroll container must be focusable (tabindex) or keyboard-only reviewers cannot reach it");
+
+            for (var i = 0; i < 12; i++)
+            {
+                await page.Keyboard.PressAsync("ArrowRight");
+            }
+
+            Assert.True(
+                await PollScrollLeftAsync(page, Wide) > 0,
+                "ArrowRight on the focused scroll container did not move it");
+
+            // ---- the anchor still resolves to the TABLE, end to end through the server ----
+            await page.Locator(ScrollContainer).Nth(Wide).Locator("td").First
+                .ClickAsync(new LocatorClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer"));
+            await page.FillAsync(Ui("composer-input"), "This column is the one that was unreachable.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(1, listed.GetArrayLength());
+            Assert.Equal(tableId, listed[0].GetProperty("anchorId").GetString());
+
+            // ---- the narrow table is not visually harmed: it neither scrolls nor shifts ----
+            var narrow = await ProbeAsync(page, Narrow);
+            Assert.False(
+                narrow.GetProperty("canScroll").GetBoolean(),
+                "a table that fits must not become a scroll region: " + narrow);
+
+            // No scrollbar, no gutter, no false "there is more here" signal on a table that fits.
+            Assert.Equal(0, narrow.GetProperty("gutterPx").GetInt32());
+            Assert.True(
+                Math.Abs(narrow.GetProperty("tableLeft").GetDouble() - narrow.GetProperty("proseLeft").GetDouble()) <= 1,
+                "the wrapper must not indent the table: " + narrow);
+            Assert.True(
+                Math.Abs(narrow.GetProperty("tableWidth").GetDouble() - narrow.GetProperty("proseWidth").GetDouble()) <= 2,
+                "the wrapper must not narrow the table: " + narrow);
+
+            // ---- the sidebar condition: 660px is what is left beside the 340px review-notes panel ----
+            await page.SetViewportSizeAsync(660, 800);
+            var narrowed = await ProbeAsync(page, Wide);
+            Assert.True(
+                narrowed.GetProperty("canScroll").GetBoolean(),
+                "the wide table must still overflow once the content column is narrowed: " + narrowed);
+            Assert.True(
+                await WheelOverAsync(page, Wide) > 0,
+                "Charter #68 at the realistic reviewing width: the table still does not scroll.");
+
+            // ---- the OFFLINE artifact behaves identically: no server, no SDK, still scrollable ----
+            // The saved/exported file carries no annotation SDK (invariant 1) and a strict CSP, so a fix that
+            // leaned on script would work only while `charter review` was running. Loaded straight off disk
+            // over file://, the same gesture must still reach the same columns.
+            var exportPath = Path.ChangeExtension(planPath, ".export.html");
+            await File.WriteAllTextAsync(
+                exportPath, ArtifactExporter.Export(WideTablePlan, Path.GetDirectoryName(planPath)!));
+            try
+            {
+                await page.GotoAsync(
+                    new Uri(exportPath).AbsoluteUri, new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+
+                Assert.False(
+                    await page.EvaluateAsync<bool>("() => typeof window.CharterAnnotate !== 'undefined'"),
+                    "the exported artifact must ship WITHOUT the annotation SDK");
+
+                var offline = await ProbeAsync(page, Wide);
+                Assert.True(
+                    offline.GetProperty("canScroll").GetBoolean(),
+                    "the exported artifact's wide table must still overflow: " + offline);
+                Assert.True(
+                    await WheelOverAsync(page, Wide) > 0,
+                    "the exported artifact does not scroll — the fix depends on the review server.");
+            }
+            finally
+            {
+                File.Delete(exportPath);
+            }
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every table scroll container, in document order. Addressed by INDEX rather than by a positional CSS
+    /// pseudo-class: the SDK appends its own <c>&lt;div&gt;</c> chrome to <c>&lt;body&gt;</c> at runtime, so
+    /// <c>:last-of-type</c> would silently stop matching a table once the review panel exists.
+    /// </summary>
+    private const string ScrollContainer = ".table-scroll";
+
+    /// <summary>The deliberately over-wide table, and the narrow one that must stay unharmed.</summary>
+    private const int Wide = 0;
+
+    private const int Narrow = 1;
+
+    /// <summary>An arrow function over the <paramref name="body"/>-th table scroll container.</summary>
+    private static string ForContainer(string body)
+        => "i => { const el = document.querySelectorAll('.table-scroll')[i]; if (!el) return null; " + body + " }";
+
+    /// <summary>
+    /// The issue's probe, verbatim in spirit: the container's own scroll geometry plus the structural facts a
+    /// wrapper could break. Returned as JSON so the whole shape lands in any assertion message.
+    /// </summary>
+    private static async Task<JsonElement> ProbeAsync(IPage page, int index)
+    {
+        var json = await page.EvaluateAsync<string>(
+            ForContainer(
+                "const t = el.querySelector('table');" +
+                "const p = document.querySelector('body > p');" +
+                "const tr = t.getBoundingClientRect(); const pr = p.getBoundingClientRect();" +
+                "return JSON.stringify({" +
+                "  tag: el.tagName," +
+                "  containerId: el.id," +
+                "  tableId: t.id," +
+                "  tabIndex: el.tabIndex," +
+                "  role: el.getAttribute('role')," +
+                "  ariaLabel: el.getAttribute('aria-label')," +
+                "  overflowX: getComputedStyle(el).overflowX," +
+                // The scrollbar's own layout footprint: 0 means no bar is drawn at all.
+                "  gutterPx: el.offsetHeight - el.clientHeight," +
+                "  scrollWidth: el.scrollWidth," +
+                "  clientWidth: el.clientWidth," +
+                "  canScroll: el.scrollWidth > el.clientWidth," +
+                "  scrollLeft: el.scrollLeft," +
+                "  tableLeft: tr.left, tableWidth: tr.width," +
+                "  proseLeft: pr.left, proseWidth: pr.width" +
+                "});"),
+            index);
+
+        using var doc = JsonDocument.Parse(json!);
+        return doc.RootElement.Clone();
+    }
+
+    private static Task ResetScrollAsync(IPage page, int index)
+        => page.EvaluateAsync(ForContainer("el.scrollLeft = 0; return null;"), index);
+
+    /// <summary>
+    /// Reset the container to its left edge, put the real mouse pointer over it, and send a real horizontal
+    /// wheel — the exact gesture from the issue (<c>page.mouse.wheel(500, 0)</c>) — then poll for the
+    /// resulting <c>scrollLeft</c>. The pointer is placed in the container's LEFT quarter so the
+    /// narrowed-viewport leg cannot land under the fixed review-notes panel and scroll that instead.
+    /// </summary>
+    private static async Task<double> WheelOverAsync(IPage page, int index)
+    {
+        await ResetScrollAsync(page, index);
+
+        var box = await page.Locator(ScrollContainer).Nth(index).BoundingBoxAsync();
+        Assert.NotNull(box);
+        await page.Mouse.MoveAsync(box!.X + (box.Width / 4), box.Y + (box.Height / 2));
+        await page.Mouse.WheelAsync(500, 0);
+
+        return await PollScrollLeftAsync(page, index);
+    }
+
+    /// <summary>
+    /// Poll <c>scrollLeft</c> until it moves off zero, or give up. Wheel scrolling is asynchronous (the
+    /// compositor applies it), so it cannot be read back synchronously — and it must be a bounded
+    /// <c>EvaluateAsync</c> poll, never <c>WaitForFunctionAsync</c>, whose in-page <c>eval</c> the served-page
+    /// CSP correctly refuses.
+    /// </summary>
+    private static async Task<double> PollScrollLeftAsync(IPage page, int index, int timeoutMs = 5_000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        double scrollLeft = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            scrollLeft = await page.EvaluateAsync<double>(
+                "i => { const el = document.querySelectorAll('.table-scroll')[i]; return el ? el.scrollLeft : -1; }",
+                index);
+            if (scrollLeft > 0)
+            {
+                return scrollLeft;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return scrollLeft;
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
@@ -1298,12 +1597,24 @@ public sealed class ReviewLoopBrowserTests
     /// <summary>A launched Playwright + browser pair, or <see langword="null"/> where Chromium is absent.</summary>
     private sealed record Launched(IPlaywright Playwright, IBrowser Browser);
 
-    private static async Task<Launched?> TryLaunchAsync()
+    /// <param name="showScrollbars">
+    /// Drop Chromium's default <c>--hide-scrollbars</c> flag, which Playwright passes for headless runs and
+    /// which forces EVERY scrollbar to zero width. A test that measures a scroll affordance (Charter #68)
+    /// must opt out of it or it measures the flag, not the stylesheet. Every other test keeps the default, so
+    /// no existing layout assertion shifts.
+    /// </param>
+    private static async Task<Launched?> TryLaunchAsync(bool showScrollbars = false)
     {
         try
         {
             var playwright = await Playwright.CreateAsync();
-            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+            var options = new BrowserTypeLaunchOptions { Headless = true };
+            if (showScrollbars)
+            {
+                options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" };
+            }
+
+            var browser = await playwright.Chromium.LaunchAsync(options);
             return new Launched(playwright, browser);
         }
         catch (Exception)

@@ -1,4 +1,5 @@
 using Markdig.Extensions.CustomContainers;
+using Markdig.Extensions.Tables;
 using Markdig.Renderers;
 using Markdig.Renderers.Html;
 using Markdig.Syntax;
@@ -112,6 +113,10 @@ public static class CharterRenderer
         // add/del class. Every other container (:::note, :::warn, :::comparison) falls through to the
         // default rendering this subclass delegates to.
         renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterContainerRenderer(markdown, assignment));
+
+        // A wide table must stay REACHABLE, so every table is emitted inside its own scroll container
+        // (Charter #68). The wrapper is anchor-invisible by construction — see CharterTableRenderer.
+        renderer.ObjectRenderers.Replace<HtmlTableRenderer>(new CharterTableRenderer());
 
         renderer.Render(document);
         writer.Flush();
@@ -668,6 +673,59 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         start = Math.Clamp(start, 0, _markdown.Length - 1);
         end = Math.Clamp(end, start, _markdown.Length - 1);
         return _markdown.Substring(start, end - start + 1);
+    }
+}
+
+/// <summary>
+/// Renders a GFM pipe table INSIDE a horizontal scroll container:
+/// <c>&lt;div class="table-scroll" tabindex="0" role="region" aria-label="Table"&gt;&lt;table id="..."&gt;…</c>.
+/// The table markup itself is the stock Markdig rendering, delegated to unchanged.
+/// </summary>
+/// <remarks>
+/// <para>
+/// WHY a wrapper (Charter #68). A plan's tables carry exactly the content that is wide and must not be
+/// truncated — file paths, method signatures — so they overflow the review column, and the review-notes panel
+/// narrows that column further. The stylesheet used to put <c>overflow-x</c> on the <c>&lt;table&gt;</c>
+/// element itself; that shape gave the reviewer nothing to act on (Chromium draws its scrollbar as a fading
+/// OVERLAY, so the measured gutter is 0px — text visibly cut off, no signal it can move) and no keyboard way
+/// in at all. Only a real element can be given a persistent scrollbar, a focus ring and a tab stop, so the
+/// renderer emits one.
+/// </para>
+/// <para>
+/// The wrapper is ANCHOR-INVISIBLE, which is the load-bearing constraint. The annotation SDK walks up from
+/// the clicked node to the nearest ancestor carrying an <c>id</c>/<c>data-anchor</c>
+/// (<c>closestAnchored</c>), so a wrapper holding an id of its own would silently re-target every note on a
+/// table — and, for a table nested in a <c>:::comparison</c>, would shadow the card that is the real anchor.
+/// It therefore carries NO <c>id</c> and NO anchor attribute: the block's stable id stays on the
+/// <c>&lt;table&gt;</c> (written by the delegated base renderer from the block's attributes), the
+/// <see cref="SourceMap"/> never sees the wrapper at all, and sub-anchors are untouched.
+/// </para>
+/// <para>
+/// <c>tabindex="0"</c> plus <c>role="region"</c> and an accessible name is the established pattern for a
+/// scrollable region: without the tab stop a keyboard-only reviewer cannot scroll it (Chromium's
+/// focusable-scrollers behaviour is version-dependent and leaves <c>tabIndex</c> at -1), and a focusable
+/// <c>&lt;div&gt;</c> with no role or name announces as nothing. The cost is a tab stop and a landmark even
+/// on a table that fits, which is the accepted trade — CSS cannot make either conditional on overflow, and
+/// doing it in script would break the SDK-free saved artifact (invariant 1).
+/// </para>
+/// </remarks>
+internal sealed class CharterTableRenderer : HtmlTableRenderer
+{
+    private const string Open =
+        "<div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Table\">";
+
+    protected override void Write(HtmlRenderer renderer, Table table)
+    {
+        if (!renderer.EnableHtmlForBlock)
+        {
+            base.Write(renderer, table);
+            return;
+        }
+
+        renderer.EnsureLine();
+        renderer.WriteLine(Open);
+        base.Write(renderer, table);
+        renderer.WriteLine("</div>");
     }
 }
 
