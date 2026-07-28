@@ -24,8 +24,11 @@ src/
     assets/mermaid.min.js       # vendored Mermaid v11.16.0 (MIT), embedded → Charter.Core.mermaid.min.js
     assets/charter.css          # bundled stylesheet, embedded → Charter.Core.charter.css (CharterStyles/CharterDocument)
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
+    HeadlessRecord.cs / PlanWalk.cs  # the `headless` forensic record (source map + questions + notes); one joined walk
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
+    HeadlessExitCodes.cs        # the SEPARATE 0/2 contract for `headless` — NOT the drain vocabulary
+    HeadlessCommand.cs          # `headless` = ArtifactExporter + HeadlessRecord + the derived-path convention
     CharterVersion.cs           # the version SSOT (informational version, +build stripped)
   Charter.Server/               # loopback review server + annotation API; embeds ../../sdk/charter-annotate.js
     AnchorResolution.cs         # the ONE drain-time anchor→line kernel
@@ -51,6 +54,8 @@ until the dependency set is real — add it the Guardrails way when ready.
 cspMeta: null)`. `render`, `review`, and `export` all wrap the same `RenderBody` output in the same shell
 (doctype/html/head/body + one inline `<style>`); only `export` stamps a CSP meta, and the review server
 supplies the served-page CSP as an HTTP header. **Never re-add a bare-fragment render path** (#38).
+`headless` writes the **exporter's** bytes, not its own render — `HeadlessCommandTests
+.Headless_Artifact_IsByteIdenticalToTheExportVerbsArtifact` goes red the day a second render path appears.
 
 ## Commands
 
