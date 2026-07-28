@@ -200,6 +200,25 @@ window.CharterAnnotate = (function () {
     return { kind: KIND.element, anchorId: anchorIdOf(el) };
   }
 
+  // The block's own text nodes in document order, with every [data-charter-ui] subtree skipped, plus their
+  // values. Concatenating `texts` gives the block's text content — the SINGLE reference frame that both the
+  // recorded start/end offsets and the panel's quote lookup are expressed in. SDK chrome injected into a
+  // block (a marker, a count badge) can therefore never shift an offset or contribute to a quote.
+  function blockTextNodes(block) {
+    var nodes = [];
+    var texts = [];
+    (function walk(node) {
+      if (!node) return;
+      if (node.nodeType === 1) {
+        if (node.hasAttribute && node.hasAttribute(UI_ATTR)) return;
+        for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+        return;
+      }
+      if (node.nodeType === 3) { nodes.push(node); texts.push(node.nodeValue || ''); }
+    })(block);
+    return { nodes: nodes, texts: texts };
+  }
+
   // (b) text-range: anchor a note to a selection within a block.
   function textRangeAnchor(selection) {
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
@@ -207,13 +226,83 @@ window.CharterAnnotate = (function () {
     if (!quote) return null;
     var block = closestAnchored(selection.anchorNode);
     if (!block) return null;
+    var range = null;
+    try { range = selection.getRangeAt(0); } catch (e) { range = null; }
+    var span = blockSpan(block, range);
     return {
       kind: KIND.textRange,
       anchorId: anchorIdOf(block),
       quote: quote,
-      start: selection.anchorOffset,
-      end: selection.focusOffset
+      // Offsets into the ANCHORED BLOCK's own text, or nulls. Never a pair from two frames (#56).
+      start: span ? span.start : null,
+      end: span ? span.end : null
     };
+  }
+
+  // Map a selection Range onto a [start, end) pair of offsets into the anchored BLOCK's text — the one
+  // reference frame blockTextNodes defines, and the same one findQuoteRange searches — so the two numbers
+  // are comparable and `end > start` always holds for a selection with visible text.
+  //
+  // Charter #56: this used to record `selection.anchorOffset` / `selection.focusOffset`, which are offsets
+  // WITHIN their own text nodes. Across a multi-node selection they are not in the same frame at all (the
+  // focus node's offset 0 is the start of the LAST node), and a real multi-line selection drained as
+  // `start: 146, end: 0` over a ~150-character quote.
+  //
+  // A Range's boundaries are always in document order — unlike anchor/focus, which follow the drag direction
+  // — so start <= end by construction. A selection that spills outside the block clamps to the block, and
+  // leading/trailing whitespace is trimmed so the span measures the same text the trimmed `quote` names.
+  // When no honest offset can be computed the result is null and the caller emits NULLS: a wrong range is
+  // worse than an absent one, and `quote` already carries the human-readable target.
+  function blockSpan(block, range) {
+    if (!block || !range || typeof document.createRange !== 'function') return null;
+    var walked = blockTextNodes(block);
+    var text = walked.texts.join('');
+    if (!text) return null;
+
+    var start = boundaryOffset(walked, range.startContainer, range.startOffset);
+    var end = boundaryOffset(walked, range.endContainer, range.endOffset);
+    if (start === null || end === null) return null;
+    if (end < start) { var swap = start; start = end; end = swap; }
+
+    while (start < end && /\s/.test(text.charAt(start))) start++;
+    while (end > start && /\s/.test(text.charAt(end - 1))) end--;
+    return end > start ? { start: start, end: end } : null;
+  }
+
+  // Where one Range boundary falls in the block's concatenated text. A collapsed probe Range plus
+  // comparePoint is what makes an ELEMENT container work: such a boundary sits BETWEEN child nodes and
+  // carries no text offset of its own, so it cannot simply be looked up in the walked node list.
+  function boundaryOffset(walked, container, offset) {
+    if (!container) return null;
+
+    var probe;
+    try {
+      probe = document.createRange();
+      probe.setStart(container, offset);
+      probe.setEnd(container, offset);
+    } catch (e) {
+      return null;
+    }
+
+    var total = 0;
+    for (var i = 0; i < walked.nodes.length; i++) {
+      var node = walked.nodes[i];
+      var len = walked.texts[i].length;
+      var atEnd;
+      try { atEnd = probe.comparePoint(node, len); } catch (e) { return null; }
+
+      // -1: this node ENDS before the boundary, so all of it precedes the boundary.
+      if (atEnd < 0) { total += len; continue; }
+      // 0: the node's end IS the boundary.
+      if (atEnd === 0) return total + len;
+      // 1: the boundary is at or before this node's end. A text container gives the offset directly; an
+      // element container can only be sitting at this node's start.
+      if (container === node) return total + Math.min(Math.max(offset, 0), len);
+      return total;
+    }
+
+    // The boundary lies after every text node the block contributes (or inside SDK chrome the walk skips).
+    return total;
   }
 
   // (c) diagram-node: anchor a note to a node inside a :::diagram Mermaid render, keyed by
@@ -1491,16 +1580,9 @@ window.CharterAnnotate = (function () {
   // splits a text node, so the offsets later text-range annotations record stay valid.
   function findQuoteRange(block, quote) {
     if (!block || !quote || typeof document.createRange !== 'function') return null;
-    var nodes = [];
-    var texts = [];
-    (function walk(node) {
-      if (node.nodeType === 1) {
-        if (node.hasAttribute && node.hasAttribute(UI_ATTR)) return;
-        for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
-        return;
-      }
-      if (node.nodeType === 3) { nodes.push(node); texts.push(node.nodeValue || ''); }
-    })(block);
+    var walked = blockTextNodes(block);
+    var nodes = walked.nodes;
+    var texts = walked.texts;
 
     var at = texts.join('').indexOf(quote);
     if (at < 0) return null;

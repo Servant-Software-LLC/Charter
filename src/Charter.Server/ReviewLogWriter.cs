@@ -75,10 +75,15 @@ public sealed class ReviewLogWriter
     // Cross-process and cross-instance exclusion is the file lock's job, not this one's.
     private readonly object _gate = new();
 
+    // Whether this writer has already appended a record (and therefore already fired OnFirstRecordWritten).
+    // Guarded by _gate.
+    private bool _written;
+
     /// <summary>
     /// Bind a writer to <paramref name="author"/>'s log for the plan at <paramref name="planPath"/>. Creates
-    /// nothing — the <c>.review/</c> directory is created on demand by the first append (or explicitly by
-    /// <see cref="EnsureDirectory"/>).
+    /// nothing: the <c>.review/</c> directory comes into existence only when a record is actually appended.
+    /// That laziness is binding, not incidental — §5.0 of the design of record keeps solo the primary use case,
+    /// and a reviewer who opens a plan and writes nothing must leave no trace beside their file.
     /// </summary>
     public ReviewLogWriter(string planPath, ReviewAuthor author)
     {
@@ -101,14 +106,13 @@ public sealed class ReviewLogWriter
     public string LogPath { get; }
 
     /// <summary>
-    /// Create the <c>.review/</c> directory if it is missing, so a watcher can be armed on it before anyone
-    /// has commented. Returns the directory. Idempotent.
+    /// Invoked exactly once per writer, immediately after its FIRST successful append — the moment the
+    /// <c>.review/</c> directory and this author's log actually come into existence. It exists so the CLI can
+    /// state §7's permanence notice <b>when it becomes relevant</b> rather than as a per-session banner: before
+    /// the first record there is nothing permanent to warn about, and for a solo reviewer who writes nothing
+    /// there never is. Never invoked when an append fails.
     /// </summary>
-    public string EnsureDirectory()
-    {
-        Directory.CreateDirectory(ReviewDirectory);
-        return ReviewDirectory;
-    }
+    public Action? OnFirstRecordWritten { get; set; }
 
     /// <summary>A fresh, globally-unique record id for <paramref name="op"/>.</summary>
     public static string NewId(ReviewOpKind op)
@@ -162,10 +166,21 @@ public sealed class ReviewLogWriter
         var line = record.ToJson();
         GuardLine(line);
 
+        bool announce;
         lock (_gate)
         {
             Directory.CreateDirectory(ReviewDirectory);
             AppendLine(LogPath, line);
+
+            // Only after the append actually landed, and only the first time: this is what makes the CLI's
+            // permanence notice a one-line fact about a file that now exists rather than a per-session banner.
+            announce = !_written;
+            _written = true;
+        }
+
+        if (announce)
+        {
+            OnFirstRecordWritten?.Invoke();
         }
 
         return record;

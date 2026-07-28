@@ -42,4 +42,13 @@ public sealed class ReviewServerOptions
     /// machine's git config.
     /// </summary>
     public ReviewLogWriter? ReviewLog { get; set; }
+
+    /// <summary>
+    /// Rehydrate a queue that <see cref="ReviewSidecar.IsStale"/> judges to belong to a different document,
+    /// instead of quarantining it (Charter #67). <see langword="false"/> by default: a plan replaced at a path
+    /// must not silently inherit the previous plan's notes. The reviewer sets it — <c>charter review
+    /// --keep-annotations</c> — to say "this really is the same document, give them back", which is the explicit
+    /// half of the keep-or-discard choice.
+    /// </summary>
+    public bool KeepStaleAnnotations { get; set; }
 }

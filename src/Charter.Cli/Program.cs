@@ -529,17 +529,25 @@ static RootCommand BuildReviewRoot()
     {
         Description = "Serve the plan but do not open it in the default browser.",
     };
+    var keepAnnotationsOption = new Option<bool>("--keep-annotations")
+    {
+        Description =
+            "Restore queued annotations Charter judged to belong to a different document at this path "
+            + "(none of their anchors resolve). Without it they are set aside and reported, never delivered.",
+    };
 
     var review = new Command("review", "Serve a Charter plan (.charter.md) read-only over the loopback review server.")
     {
         inputArgument,
         noOpenOption,
+        keepAnnotationsOption,
     };
 
     review.SetAction(parseResult => RunVerb("review", () =>
     {
         string inputPath = parseResult.GetValue(inputArgument)!;
         bool noOpen = parseResult.GetValue(noOpenOption);
+        bool keepAnnotations = parseResult.GetValue(keepAnnotationsOption);
 
         if (!File.Exists(inputPath))
         {
@@ -564,7 +572,10 @@ static RootCommand BuildReviewRoot()
             {
                 SidecarDirectory = StateDirectory.Sidecars(),
                 ReviewLog = OpenReviewLog(session.SourcePath),
+                KeepStaleAnnotations = keepAnnotations,
             });
+
+        ReportStaleAnnotations(server.StaleAnnotations);
 
         // Register this running session in the per-user state dir so `charter poll` can discover it (address
         // + capability key + source path) WITHOUT the key ever crossing a command line. Written AFTER Start
@@ -627,21 +638,52 @@ static RootCommand BuildReviewRoot()
     };
 }
 
+// Tell the reviewer, plainly, when a queued set of annotations was NOT rehydrated because it belongs to a
+// different document that used to live at this path (Charter #67 — the sidecar is keyed by path, so deleting a
+// plan and authoring a new one at the same name used to resurrect the dead document's notes, including ones
+// Charter's own anchor resolution had already marked orphaned). Nothing was destroyed: the queue is named, and
+// the reviewer chooses — restore it with --keep-annotations, or delete the file to be done with it.
+static void ReportStaleAnnotations(StaleAnnotationQueue? stale)
+{
+    if (stale is null)
+    {
+        return;
+    }
+
+    Console.Error.WriteLine(
+        $"charter review: {stale.Count} queued annotation(s) at this path were written against a different "
+            + "document -- not one of their anchors resolves in this plan -- so they are NOT being served or "
+            + "handed off.");
+    Console.Error.WriteLine(
+        stale.DurabilityDisabled
+            ? $"charter review: they remain at {stale.PreservedAt}, which Charter could not copy aside, so this "
+                + "session runs WITHOUT durability rather than overwriting them. Move or delete that file, or "
+                + "re-run with --keep-annotations to restore them."
+            : $"charter review: they are kept at {stale.PreservedAt}. Re-run with --keep-annotations to restore "
+                + "them into this session, or delete that file to discard them.");
+}
+
 // Open (or decline to open) the per-author review log beside the plan — the git-mediated team review's write
 // half. Charter READS git for the author identity (never writes git state: §5.1 permits the read and forbids
-// the mutation), falls back to a clearly-marked machine-local identity when git cannot name the reviewer, and
-// states plainly — once, on stderr — where records go and that they are meant to be committed (§7). A review
-// must NEVER fail for want of a log, so an unwritable .review/ directory only warns and returns null, leaving
-// `charter review` exactly as it behaves today: local-only, single-reviewer, nothing committed.
+// the mutation) and falls back to a clearly-marked machine-local identity when git cannot name the reviewer.
+//
+// SOLO IS THE PRIMARY USE CASE (§5.0), and that is binding here in two ways. It creates NOTHING: the .review/
+// directory comes into existence only if a record is actually written, so a reviewer who opens a plan and
+// writes nothing leaves no trace beside their file. And it says NOTHING: both the §7 permanence notice and the
+// identity warning fire only when the review directory is actually TRACKED by git — i.e. the reviewer has opted
+// into sharing. Untracked, gitignored, or not a repo means silent, and `charter review` behaves exactly as it
+// did before the review log existed. A review must NEVER fail for want of a log, so any failure only warns and
+// returns null.
 static ReviewLogWriter? OpenReviewLog(string planPath)
 {
     try
     {
         var identity = GitIdentity.Resolve(Path.GetDirectoryName(planPath) ?? Directory.GetCurrentDirectory());
         var writer = new ReviewLogWriter(planPath, identity.Author);
-        writer.EnsureDirectory();
 
-        if (!identity.FromGit)
+        // A directory git already tracks means teammates' records are here and this reviewer is joining a
+        // shared review — the only case in which "your identity means nothing to a teammate" is a real problem.
+        if (!identity.FromGit && GitTracking.IsTracked(writer.ReviewDirectory))
         {
             Console.Error.WriteLine(
                 $"charter review: warning: {identity.Reason}; your comments will be attributed to the local "
@@ -649,10 +691,22 @@ static ReviewLogWriter? OpenReviewLog(string planPath)
                     + "`git config user.email` (and user.name) before reviewing as part of a team.");
         }
 
-        Console.Error.WriteLine(
-            $"charter review: review comments are written to {writer.LogPath} and are intended to be COMMITTED "
-                + "-- they travel to your teammates by git, and are permanent in history. For local-only "
-                + $"review, add '*{ReviewLogPaths.DirectorySuffix}/' to .gitignore.");
+        // §7, stated when it becomes true rather than on every session: at the moment the FIRST record lands,
+        // and only if that record is landing somewhere git tracks. Before the first write there is nothing
+        // permanent to warn about; for a solo reviewer there never is.
+        writer.OnFirstRecordWritten = () =>
+        {
+            if (!GitTracking.IsTracked(writer.ReviewDirectory))
+            {
+                return;
+            }
+
+            Console.Error.WriteLine(
+                $"charter review: review comments are written to {writer.LogPath}, which git tracks -- they "
+                    + "travel to your teammates by git and are permanent in history. For local-only review, add "
+                    + $"'*{ReviewLogPaths.DirectorySuffix}/' to .gitignore.");
+        };
+
         return writer;
     }
     catch (Exception ex)
@@ -666,12 +720,14 @@ static ReviewLogWriter? OpenReviewLog(string planPath)
 
 // Builds the root command hosting the `poll` subcommand wired to Charter.Cli.PollCommand (which orchestrates
 // Charter.Server's ReviewClient / SessionRegistry / PollEnvelope). The plan argument is OPTIONAL: omitted, poll
-// auto-selects the single live session.
+// auto-selects the single live session. With a plan named and NO live session, poll falls back to the committed
+// review log beside it — the server-less read that lets an agent which is executing (not reviewing) pick up a
+// teammate's comments.
 static RootCommand BuildPollRoot()
 {
     var inputArgument = new Argument<string?>("input")
     {
-        Description = "Optional path to the Charter plan (.charter.md) whose review session to drain. Omitted: auto-select the single live session.",
+        Description = "Optional path to the Charter plan (.charter.md) to drain. Omitted: auto-select the single live session. Named: falls back to the plan's committed review log when no session is live.",
         Arity = ArgumentArity.ZeroOrOne,
     };
     var sessionOption = new Option<string?>("--session")
@@ -684,14 +740,18 @@ static RootCommand BuildPollRoot()
     };
     var waitOption = new Option<bool>("--wait")
     {
-        Description = "Run one native long-poll cycle for annotations before draining, instead of a non-blocking immediate drain.",
+        Description = "Run one native long-poll cycle for annotations before draining, instead of a non-blocking immediate drain. Live sessions only.",
     };
     var applyOption = new Option<bool>("--apply")
     {
         Description = "Write the drained answers INLINE into the plan's :::question blocks (atomic in-place write), resolving them.",
     };
 
-    var poll = new Command("poll", "Drain queued review feedback (annotations + answers) from a running review session.")
+    var poll = new Command(
+        "poll",
+        "Drain queued review feedback (annotations + answers) from a live review session, or -- with no live "
+            + "session -- read the plan's committed review log. Exit 0 drained, 2 nothing queued, 3 neither a "
+            + "session nor a readable log, 4 drain state unknown, 5 --apply refused.")
     {
         inputArgument,
         sessionOption,

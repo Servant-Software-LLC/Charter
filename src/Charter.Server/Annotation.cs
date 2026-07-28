@@ -60,8 +60,20 @@ public enum AnchorStatus
 /// <param name="Note">The reviewer's free-text note.</param>
 /// <param name="SourceLine">Resolved 1-based markdown source line, or <c>null</c> when unresolved.</param>
 /// <param name="Quote">Text-range only: the selected text within the block, or <c>null</c>.</param>
-/// <param name="Start">Text-range only: the selection's start offset within the block, or <c>null</c>.</param>
-/// <param name="End">Text-range only: the selection's end offset within the block, or <c>null</c>.</param>
+/// <param name="Start">
+/// Text-range only: the selection's start offset, or <c>null</c>. <b>The frame is the anchored block's own text
+/// content</b> with SDK chrome (<c>[data-charter-ui]</c> subtrees) excluded — the same text
+/// <paramref name="Quote"/> is a slice of — so <paramref name="Start"/> and <paramref name="End"/> are directly
+/// comparable and <c>End &gt; Start</c> holds for any non-empty selection. Charter #56: the SDK used to send
+/// each endpoint's offset within its OWN text node, which across a multi-node selection put the two in
+/// different frames entirely (a real selection drained as <c>start: 146, end: 0</c>).
+/// </param>
+/// <param name="End">
+/// Text-range only: the selection's end offset in the same frame as <paramref name="Start"/>, or <c>null</c>.
+/// The pair is emitted as <c>null</c>/<c>null</c> — never half-computed, never out of order — when no honest
+/// offset can be derived; a wrong range is worse than an absent one, and <paramref name="Quote"/> still names
+/// the target in human-readable form.
+/// </param>
 /// <param name="NodeId">Diagram-node only: the flagged node's identity within the diagram, or <c>null</c>.</param>
 /// <param name="Review">
 /// Present only on an annotation derived from the committed REVIEW LOG (a teammate's comment read by the

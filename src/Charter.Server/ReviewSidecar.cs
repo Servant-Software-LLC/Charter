@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Charter.Core;
 
 namespace Charter.Server;
 
@@ -22,7 +24,15 @@ namespace Charter.Server;
 /// </remarks>
 public sealed class ReviewSidecar
 {
-    private const int CurrentSchema = 1;
+    // Schema 2 adds planHash — the fingerprint of the plan as it was when the queue was last written, which is
+    // what lets a rehydrate tell "this document was edited" from "a different document was put at this path"
+    // (Charter #67). A schema-1 sidecar simply has no hash and falls through to the anchor test, which is the
+    // actual rule; the hash is only a fast, exact "definitely the same document" exemption.
+    private const int CurrentSchema = 2;
+
+    // The suffix a quarantined queue is moved aside under. It stays in the sidecar directory, beside the live
+    // sidecar, so the notice can name a path the reviewer can actually open.
+    private const string QuarantineMarker = ".stale-";
 
     // 0600 — the owning user may read/write the sidecar; nobody else. It mirrors queued review state.
     private const UnixFileMode OwnerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
@@ -52,7 +62,14 @@ public sealed class ReviewSidecar
     }
 
     /// <summary>The current queued annotations and answers rehydrated from a sidecar (empty when none).</summary>
-    public sealed record State(IReadOnlyList<Annotation> Annotations, IReadOnlyList<Answer> Answers)
+    /// <param name="Annotations">The queued, not-yet-drained annotations.</param>
+    /// <param name="Answers">The queued, not-yet-applied question answers.</param>
+    /// <param name="PlanHash">
+    /// The plan's content fingerprint as of the last write, or <see langword="null"/> for a sidecar written
+    /// before schema 2. See <see cref="IsStale"/> for what it is (and is not) used for.
+    /// </param>
+    public sealed record State(
+        IReadOnlyList<Annotation> Annotations, IReadOnlyList<Answer> Answers, string? PlanHash = null)
     {
         /// <summary>An empty rehydration result — the sidecar was missing, empty, or unreadable.</summary>
         public static State Empty { get; } = new(Array.Empty<Annotation>(), Array.Empty<Answer>());
@@ -113,7 +130,8 @@ public sealed class ReviewSidecar
 
             return new State(
                 document.Annotations ?? Array.Empty<Annotation>(),
-                document.Answers ?? Array.Empty<Answer>());
+                document.Answers ?? Array.Empty<Answer>(),
+                document.PlanHash);
         }
         catch (Exception)
         {
@@ -149,7 +167,10 @@ public sealed class ReviewSidecar
             StateDirectory.EnsureOwnerOnlyDirectory(directory);
         }
 
-        var document = new SidecarDocument(CurrentSchema, sourcePath, annotations, answers);
+        // Fingerprint the plan as it is at this write. Best-effort by design: a plan that cannot be read yields
+        // no hash, and IsStale then falls back to the anchor test, which is the rule that actually decides.
+        var document = new SidecarDocument(
+            CurrentSchema, sourcePath, annotations, answers, HashOfFile(sourcePath));
         var json = JsonSerializer.Serialize(document, SidecarJson);
 
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -170,6 +191,210 @@ public sealed class ReviewSidecar
         }
     }
 
+    /// <summary>
+    /// Whether <paramref name="state"/>'s queued annotations belong to a <b>different document</b> than the one
+    /// now at the plan's path — the Charter #67 case, where a <c>.charter.md</c> was deleted and a substantially
+    /// different plan was authored at the same path, and the path-keyed sidecar rehydrated the dead queue into
+    /// the new document's review.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule, exactly:</b> the sidecar holds at least one annotation, the plan is not byte-identical to
+    /// the revision the queue was last written against, and <b>not one</b> of those annotations' anchors
+    /// resolves in the plan as it is now.
+    /// </para>
+    /// <para>
+    /// Orphaning after an edit is normal and expected — that is the living-document model, and a queue where
+    /// <i>some</i> anchors still resolve is an edited plan, never a replaced one, so it is delivered untouched.
+    /// It takes the total absence of any surviving anchor to conclude "this is not the document these notes
+    /// were written on", which is the weakest claim that still catches the reported bug.
+    /// </para>
+    /// <para>
+    /// <b>The hash is an exemption, not the test.</b> A plan byte-identical to the one the queue was written
+    /// against is definitionally the same document, so it can never be stale — which is what keeps an
+    /// annotation that could never resolve (an empty or unknown anchor id) from quarantining an untouched plan.
+    /// A schema-1 sidecar carries no hash and simply falls through to the anchor test.
+    /// </para>
+    /// <para>
+    /// <b>False positive:</b> a reviewer's notes all target blocks the agent then rewrites in one pass, so no
+    /// anchor survives. Nothing is destroyed — the queue is moved aside by <see cref="Quarantine"/>, named, and
+    /// restorable — but it is not handed off until the reviewer says so.
+    /// <b>False negative:</b> the replacement happens to contain a block whose content-derived id matches one of
+    /// the old anchors (an identical heading, a boilerplate status line). One survivor is enough to make the
+    /// whole queue look live, and it is delivered exactly as before.
+    /// </para>
+    /// </remarks>
+    public static bool IsStale(State state, string currentMarkdown)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (state.Annotations.Count == 0)
+        {
+            return false;
+        }
+
+        if (state.PlanHash is not null &&
+            string.Equals(state.PlanHash, Hash(currentMarkdown ?? string.Empty), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var map = SourceMap.Build(currentMarkdown ?? string.Empty);
+        return state.Annotations.All(annotation => map.LineForAnchor(annotation.AnchorId) is null);
+    }
+
+    /// <summary>
+    /// Move a stale queue aside: copy the whole sidecar to a timestamped sibling and rewrite the live sidecar
+    /// carrying only <paramref name="state"/>'s answers. Returns the path the old queue was preserved at, or
+    /// <see langword="null"/> when it could not be preserved.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Nothing is deleted.</b> Silently destroying a reviewer's notes is the failure mode this project has
+    /// been bitten by before, so the queue is preserved as a file the notice can name and the reviewer can
+    /// restore from. The copy happens FIRST and the live sidecar is rewritten only if it succeeded — a caller
+    /// that gets <see langword="null"/> must leave the sidecar alone entirely (see
+    /// <c>ReviewServer.StartCore</c>, which then runs the session with durability off rather than overwriting
+    /// notes it could not save).
+    /// </para>
+    /// <para>
+    /// <b>Answers are not quarantined.</b> An answer is keyed by <c>:::question</c> id, not by an anchor, so the
+    /// evidence that decided the annotations says nothing about it; it stays queued and is still applied by
+    /// <c>charter resolve</c> / <c>poll --apply</c> when its question still exists.
+    /// </para>
+    /// </remarks>
+    public static string? Quarantine(string path, string sourcePath, State state)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        ArgumentNullException.ThrowIfNull(state);
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            var preserved = QuarantinePath(path);
+            File.Copy(path, preserved, overwrite: false);
+            WriteState(path, sourcePath, Array.Empty<Annotation>(), state.Answers);
+            return preserved;
+        }
+        catch (Exception)
+        {
+            // Could not preserve the queue (permissions, a full disk, a racing writer). Report the failure by
+            // returning null; the caller must NOT clear a queue it could not save.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The reviewer's explicit KEEP: fold every queue <see cref="Quarantine"/> preserved beside the sidecar at
+    /// <paramref name="path"/> back into <paramref name="live"/>, and name the files it read so the caller can
+    /// retire them <b>after</b> persisting the merged queue.
+    /// </summary>
+    /// <remarks>
+    /// Annotations already present in the live queue (by id) are not duplicated, so keeping twice is a no-op.
+    /// Answers are taken from the live sidecar only — <see cref="Quarantine"/> never took any away. Unreadable
+    /// preserved files are skipped and left on disk rather than reported as empty.
+    /// </remarks>
+    public static (State Merged, IReadOnlyList<string> Sources) Reclaim(string path, State live)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        ArgumentNullException.ThrowIfNull(live);
+
+        var merged = new List<Annotation>(live.Annotations);
+        var seen = new HashSet<string>(merged.Select(a => a.Id), StringComparer.Ordinal);
+        var sources = new List<string>();
+
+        foreach (var preserved in Quarantined(path))
+        {
+            var state = Rehydrate(preserved);
+            if (state.Annotations.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var annotation in state.Annotations.Where(a => seen.Add(a.Id)))
+            {
+                merged.Add(annotation);
+            }
+
+            sources.Add(preserved);
+        }
+
+        return sources.Count == 0
+            ? (live, Array.Empty<string>())
+            : (live with { Annotations = merged }, sources);
+    }
+
+    /// <summary>
+    /// Best-effort removal of preserved queues whose contents have been folded back in and persisted. Called
+    /// only after the merged queue is durable, so this can never be the step that loses a note.
+    /// </summary>
+    public static void RetireQuarantined(IEnumerable<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        foreach (var path in paths)
+        {
+            Delete(path);
+        }
+    }
+
+    // Every preserved queue beside the sidecar at `path`, in a stable order (the names are timestamped, so
+    // ordinal order is chronological).
+    private static IReadOnlyList<string> Quarantined(string path)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            {
+                return Array.Empty<string>();
+            }
+
+            var stem = Path.GetFileName(path);
+            stem = stem.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? stem[..^5] : stem;
+            var found = Directory.GetFiles(directory, stem + QuarantineMarker + "*.json");
+            Array.Sort(found, StringComparer.Ordinal);
+            return found;
+        }
+        catch (Exception)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    // A free sibling path for the preserved queue: <sidecar>.stale-<utc timestamp>.json, disambiguated with a
+    // short random suffix on the (rare) same-second collision so a second quarantine never overwrites a first.
+    private static string QuarantinePath(string path)
+    {
+        var stem = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? path[..^5] : path;
+        var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        var candidate = stem + QuarantineMarker + stamp + ".json";
+        return File.Exists(candidate)
+            ? stem + QuarantineMarker + stamp + "-" + Guid.NewGuid().ToString("N")[..8] + ".json"
+            : candidate;
+    }
+
+    /// <summary>The plan fingerprint: <c>sha256</c> of the markdown, lowercase hex.</summary>
+    private static string Hash(string markdown)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(markdown))).ToLowerInvariant();
+
+    /// <summary>The fingerprint of the plan at <paramref name="sourcePath"/>, or null when it cannot be read.</summary>
+    private static string? HashOfFile(string sourcePath)
+    {
+        try
+        {
+            return string.IsNullOrEmpty(sourcePath) ? null : Hash(File.ReadAllText(sourcePath));
+        }
+        catch (Exception)
+        {
+            // An unreadable plan simply has no fingerprint this write; IsStale falls back to the anchor test.
+            return null;
+        }
+    }
+
     /// <summary>Best-effort delete of the sidecar (or a leftover temp) at <paramref name="path"/>.</summary>
     private static void Delete(string path)
     {
@@ -186,10 +411,14 @@ public sealed class ReviewSidecar
         }
     }
 
-    /// <summary>The on-disk sidecar shape: schema, the plan it belongs to, and the two queues.</summary>
+    /// <summary>
+    /// The on-disk sidecar shape: schema, the plan it belongs to, the two queues, and the plan's content
+    /// fingerprint at the time of the write (schema 2; absent and deserialized as null on a schema-1 file).
+    /// </summary>
     private sealed record SidecarDocument(
         int Schema,
         string SourcePath,
         IReadOnlyList<Annotation> Annotations,
-        IReadOnlyList<Answer> Answers);
+        IReadOnlyList<Answer> Answers,
+        string? PlanHash = null);
 }
