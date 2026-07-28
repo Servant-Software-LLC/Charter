@@ -68,6 +68,10 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
     (plus the length of its run of adjacent identical siblings) — so inserting an identical block elsewhere no
     longer renumbers the existing ones onto each other's notes. Cost: a duplicate's id can change when a
     *neighbour* changes, which orphans (detectable) rather than misattributes (not).
+  - **Chrome around a block must stay anchor-invisible.** A wide table renders inside
+    `<div class="table-scroll" tabindex="0" role="region" aria-label="Table">` (was Charter #68), and that
+    wrapper deliberately carries **no** anchor id — the `<table id="…">` keeps it, so annotation targeting is
+    unchanged. Any future wrapper must follow the same rule.
 - **Session:** keyed by canonicalized artifact path; holds queued prompts + annotations. Loopback-only,
   guarded by a per-session capability key.
 
@@ -111,7 +115,27 @@ It **signals only** — the drafting agent stays the single writer of the plan. 
 stated ONCE, in `PendingSignal`: *the signal is completed iff the owning store has pending work*,
 re-established under the owner's lock after **every** mutation. All three review stores (annotations,
 answers, hand-off) use it and `ReviewServer.WaitForReviewWorkAsync` waits on all three; a store that skips
-the re-sync either hot-loops `poll --wait` or strands it until timeout.
+the re-sync either hot-loops `poll --wait` or strands it until timeout. That is what makes **answers wake
+`poll --wait`** (was Charter #62): waiting on the annotation store alone made the reviewer's *decisions* —
+the highest-value signal Charter carries — its slowest, sitting queued until the ~30 s timeout.
+
+**What the AGENT must do with all this** (the consumption contract, and the part most easily missed):
+
+- **Branch on `charter poll`'s exit code, never on an empty array.** `0` drained · `2` clean-empty ·
+  `3` no live session *and* no readable review log (also the ambiguous >1-session refusal) · `4` a drain
+  **could not complete** — queue state UNKNOWN · `5` `--apply` refused (answers preserved, never
+  committed). `1` is the generic verb error. Normative in `src/Charter.Cli/ReviewExitCodes.cs`;
+  `charter resolve` shares them. **A `4` still emits `"annotations": []`** — the envelope's `drainError`
+  (non-null) is what distinguishes "nothing queued" from "we don't know", and treating them alike is how an
+  agent hands off a plan nobody approved.
+- **Check `reviewSubmitted` on every poll.** `true` = the human clicked **Send to agent**: *this round is
+  complete, do the substantial revision*. `false` = you woke on incremental feedback and the reviewer is
+  still working. Onboarding that skips this leaves an agent unable to tell the two apart, which is the whole
+  point of the hand-off.
+- The marker is **peek + ack**: reported once, acked after the envelope is written, and acked **only on a
+  clean drain** (a non-null `drainError` leaves it standing). Delivery is at-least-once — a repeated
+  `sequence` is the same round, not a second one.
+- **`anchorStatus: "orphaned"` is neutral, not an error and not proof the note was addressed** (§4.3).
 
 **Git-mediated team review (the durable half).** Comments also become **per-author append-only JSONL**
 records in `<plan>.review/<slug>.<hash8>.jsonl` beside the plan, so review travels by git instead of dying
@@ -131,13 +155,32 @@ restate it. What the code surface is:
 - Anchors resolve by **exact block-id match or `orphaned`** — no fuzzy ladder — and an orphan is a neutral
   fact, never "addressed".
 - `charter poll <plan>` gained a **server-less read path**: with no live session it folds
-  `<plan>.review/*.jsonl` and emits the same envelope with the additive `source: "review-log"` and a
-  per-annotation `review { authorName, authorEmail, actor, status, ts }`. Consumption is tracked in a
-  **machine-local** ledger (`StateDirectory.Consumed()`), never as a log record — A's agent consuming must
-  not mark a comment handled for B.
-- Writing is **opt-in by construction**: `ReviewServerOptions.ReviewLog` defaults `null`, and with no writer
-  the server's behaviour is bit-identical to the pre-log server (the panel folds whatever logs already exist
-  and this Charter contributes nothing).
+  `<plan>.review/*.jsonl` and emits the same envelope with the additive `source: "review-log"` (else
+  `"session"`) and a per-annotation `review { authorName, authorEmail, actor, status, ts }`. Consumption is
+  tracked in a **machine-local** ledger (`StateDirectory.Consumed()`), never as a log record — A's agent
+  consuming must not mark a comment handled for B. **A live session always takes precedence**; the log is
+  read only when none is live, and only when a `<plan>` is named (bare `poll`, `--url` and `--session` are
+  session-discovery paths and never read it). `--apply` is inert here — a log has comments, not an answer
+  queue. Exit codes are the same 0/2/4, so this path **returns 0/2/4 where it used to return 3**.
+- **`status` (`ReviewStatusTokens`) is load-bearing on the wire:** `open` · `resolved` · `contested` ·
+  `retracted`. **`contested` is NOT resolved** — concurrent resolve+reopen, neither having observed the
+  other — and execution must treat it as open (§4.2); `retracted` is a withdrawal whose body reads
+  `(comment withdrawn by author)`. Note **`charter handoff` does not read the review log at all**: honouring
+  "a contested comment blocks handoff" is currently the *agent's* responsibility, not a code gate.
+- A later `edit`/`reply`/`resolve`/`reopen`/`retract` mints a new record id, so a comment already delivered
+  becomes **deliverable again** with its new status — intended (something new is being said about it), and a
+  consumer must not treat the repeat as a duplicate to suppress.
+- **Who writes, precisely** (do not conflate the two): the *library* option `ReviewServerOptions.ReviewLog`
+  defaults `null`, and with no writer the server behaves bit-identically to the pre-log server. But the
+  **`charter review` CLI always supplies one** (`Program.OpenReviewLog`) — it resolves the author from
+  `git config user.name`/`user.email` (read-only; falling back to a marked `@localhost` identity with a
+  warning), **creates `<plan>.review/` eagerly** via `EnsureDirectory()` before any comment exists, and
+  prints one stderr line naming the log and stating the records are meant to be COMMITTED and are permanent.
+  An unwritable directory only warns and reviews local-only — a review never fails for want of a log. So
+  "opt-in" describes the API, **not** the shipped user experience; the user-facing opt-out is gitignoring
+  `*.review/` (§7).
+- Per **§5.0 the solo path must not regress**: the §5.1 nag warnings are to fire only when `.review/` is
+  actually *tracked*. Those warnings are **step 5 and not built yet** — see Status.
 
 ## The workflow
 
@@ -216,5 +259,7 @@ Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 ## Status (update as milestones complete)
 
 - **Released — v0.2.0 GA** on all channels (Homebrew, NuGet `dotnet` tool, native binaries): the Architecture B living-document release. Ships the renderer + source-map, loopback review server, in-place annotation loop, offline export, and the full **living-document loop** — `.charter.md` format + `charter-format` skill + `charter-format-version` marker; `charter skills install`; `charter poll --apply` / `charter resolve` fold reviewer answers back **into the `.charter.md`** (durable sidecar + peek→apply→commit, nothing lost); `charter handoff` (flatten); and **`charter convert`** (#17), the mechanical Markdown→`.charter.md` seed the agent-driven `authoring-from-source` on-ramp enriches (the rich "any source → plan" path is a **skill**, not a CLI — the LLM stays out of the binary). (v0.1.0 was the prior GA, pre-Architecture-B.)
+- **Current version — 0.6.0** (`charter --version`). Landed since 0.2.0: the in-page **review panel** (#42) with pre-drain edit/retract; **answerable `:::question` forms** (#57/#58 — a real `Save answer` submit, `data-question-mode`, `free-text`/`number` no longer 400); **answers wake `poll --wait`** (#62); the in-page **Send to agent** round hand-off (#64); wide tables in a **scroll wrapper** (#68); and **git-mediated team review steps 2–4** — the per-author JSONL writer, `GET /api/review-log` + the panel's author/actor/contested/orphaned rendering, `POST /api/{key}/annotations/{id}/resolve`, and the server-less `charter poll` read path.
+- **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9): steps 1–4 are in. **Step 5 is NOT** — there is **no `charter review verify` verb**, no stale-plan/upstream warning, no uncommitted-records reminder, and no orphan diff (an orphan shows its `quote`, never a diff). Steps 6 (agent `reply`) and 7 (the two-author browser test) are also outstanding. Do not describe any of these as shipped.
 - **Pending** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393, their team; targeted for Guardrails `1.0.0-preview.48` — Charter's producer side is complete, so this is unblocked on their schedule); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

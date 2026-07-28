@@ -23,8 +23,11 @@ src/
   Charter.Core/                 # renderer, block catalog, session model, exporter, shared doc shell (net8.0 lib)
     assets/mermaid.min.js       # vendored Mermaid v11.16.0 (MIT), embedded → Charter.Core.mermaid.min.js
     assets/charter.css          # bundled stylesheet, embedded → Charter.Core.charter.css (CharterStyles/CharterDocument)
+    ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
+    ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
   Charter.Server/               # loopback review server + annotation API; embeds ../../sdk/charter-annotate.js
+    ReviewLog*.cs               # all the review-log I/O: writer, store, ledger, server-less drain, panel view
 sdk/charter-annotate.js         # the ONLY browser JS (annotation SDK, adapted from Lavish, MIT); serve-time only
 tests/
   Charter.Core.Tests/           # xunit (net8.0) — renderer/exporter/format golden + security tests
@@ -102,6 +105,13 @@ pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --wit
   so `WaitUntil = NetworkIdle` never settles — use `WaitUntilState.Load` + `WaitForSelector`/`WaitForFunction`.
   The test SKIPS cleanly (Xunit.SkippableFact) when Chromium is unavailable; the deterministic served-doc-shell
   guards (Core + Server tests) cover the same symptoms on every OS.
+- **Playwright passes `--hide-scrollbars` to headless Chromium by DEFAULT, forcing every scrollbar to 0
+  width.** So a test that measures a scroll affordance (Charter #68) measures the *flag*, not the
+  stylesheet — it passes while proving nothing (passes-but-blind). Opt out per-launch with
+  `options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" }`
+  (`ReviewLoopBrowserTests.TryLaunchAsync(showScrollbars: true)`), and **only** for the tests that need it,
+  so no existing layout assertion shifts. The same trap applies to any `scrollWidth`/`clientWidth`/
+  `offsetWidth` delta or scrollbar-gutter assertion.
 - **`page.WaitForFunctionAsync` is unusable on the served page once it has to POLL.** Playwright's polling
   loop `eval`s its predicate inside the page, and the served-page CSP is `script-src 'unsafe-inline'` with no
   `'unsafe-eval'` — so the browser refuses it (`EvalError: Refused to evaluate a string as JavaScript`). It
@@ -112,6 +122,15 @@ pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --wit
 
 ## Status pointers
 
-- Design of record / roadmap: `docs/plans/` (currently `01-combine-lavish-and-visual-plan.md`).
+- Design of record / roadmap: `docs/plans/` — `01-combine-lavish-and-visual-plan.md` (architecture,
+  decisions D1/D2), `02-architecture-b-living-document.md` (dual handoff), and
+  `03-git-mediated-team-review.md` (per-author JSONL logs, the fold rules; **normative**, and its §9 build
+  order says which steps exist — 1–4 are built, 5–7 are not).
 - Distribution + CI: `.github/workflows/`, mirrored from Guardrails' validated pipeline.
-- Current state: **scaffold** — renderer, server, and annotation loop are not yet built.
+- Current state: **shipping — v0.6.0**. Renderer, source-map, loopback review server, annotation loop,
+  in-page review panel, answerable `:::question` forms, the **Send to agent** round hand-off, offline
+  export, the living-document `--apply`/`resolve` fold, and team-review steps 2–4 are all built. Baseline
+  on a clean tree: **597 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) —
+  Core 355 · Server 178 · Cli 54 · Browser 10.
+- Product model, review-loop semantics, and the agent-facing consumption contract (poll exit codes,
+  `drainError`, `reviewSubmitted`): skill `charter-domain-knowledge`.
