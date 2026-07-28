@@ -142,6 +142,27 @@ window.CharterAnnotate = (function () {
   // produce an anchor — click, selection, or a future one — is covered by construction.
   var UNANCHORABLE = '[' + UI_ATTR + '], input, textarea, select, button, option, form.question';
 
+  // A rendered :::diagram block. The renderer stamps the block's content-derived stable Charter id on the
+  // <pre class="mermaid"> root; the Mermaid runtime then REPLACES that element's content with an <svg> and
+  // stamps ITS OWN generated ids on the svg and on every node inside it. Those ids are not Charter anchors:
+  // SourceMap.LineForAnchor cannot map one to a markdown line (so the agent is handed no sourceLine), and
+  // they are regenerated on every render (so the annotation orphans). Charter #48.
+  var DIAGRAM_BLOCK = 'pre.mermaid';
+
+  // The Mermaid node selectors — the ONLY sub-part of a diagram Charter addresses.
+  var DIAGRAM_NODE = '.node, [data-node-id], g.node';
+
+  // The enclosing :::diagram block of `node`, or null. Text nodes resolve through their parent.
+  function diagramBlock(node) {
+    var el = (node && node.nodeType === 3) ? node.parentElement : node;
+    if (!el || el.nodeType !== 1 || typeof el.closest !== 'function') return null;
+    return el.closest(DIAGRAM_BLOCK);
+  }
+
+  function isDiagramBlock(el) {
+    return !!(el && el.nodeType === 1 && typeof el.matches === 'function' && el.matches(DIAGRAM_BLOCK));
+  }
+
   // Walk up to the nearest ancestor that carries a stable anchor: the renderer stamps each
   // block's content-derived stable id on its root element (and may also expose an explicit
   // data-charter-anchor / data-anchor attribute). Text nodes resolve to their parent.
@@ -152,6 +173,12 @@ window.CharterAnnotate = (function () {
     // Without it a selection that ends inside the panel would anchor to the panel and post a
     // bogus annotation — carrying a quote copied out of another reviewer's note — to the agent.
     if (el.closest(UNANCHORABLE)) return null;
+    // The same guard, one layer down: INSIDE a rendered diagram the only Charter anchor is the block
+    // itself, so resolve it explicitly rather than letting the generic id walk stop on whichever Mermaid
+    // id it meets first. Doing it here rather than in each caller means no path — click, selection, or a
+    // future one — can walk out carrying a Mermaid id, by construction (Charter #48).
+    var diagram = diagramBlock(el);
+    if (diagram) return diagram;
     while (el && el.nodeType === 1) {
       if (el.id ||
           el.hasAttribute('data-charter-anchor') ||
@@ -193,11 +220,11 @@ window.CharterAnnotate = (function () {
     return !!(el && el.nodeType === 1 && typeof el.closest === 'function' && el.closest('[' + UI_ATTR + ']'));
   }
 
-  // (a) element: anchor a note to a whole rendered block by its stable block id.
-  function elementAnchor(target) {
-    var el = closestAnchored(target);
-    if (!el) return null;
-    return { kind: KIND.element, anchorId: anchorIdOf(el) };
+  // (a) element: anchor a note to a whole rendered block by its stable block id. `block` is the element
+  // closestAnchored already resolved, so this is the same shape for every block type — a :::diagram
+  // commented on as a whole included (Charter #60).
+  function elementAnchor(block) {
+    return { kind: KIND.element, anchorId: anchorIdOf(block) };
   }
 
   // The block's own text nodes in document order, with every [data-charter-ui] subtree skipped, plus their
@@ -220,14 +247,26 @@ window.CharterAnnotate = (function () {
   }
 
   // (b) text-range: anchor a note to a selection within a block.
-  function textRangeAnchor(selection) {
+  //
+  // `gestureTarget` is what the reviewer's pointer was actually over when the gesture ended. A selection is
+  // only INTENT when it includes that: double-clicking a spot the browser cannot select — a rendered
+  // diagram's background — makes Chromium fall back to selecting the nearest word instead, which is real,
+  // non-empty and inside a perfectly good block, and is still not what the reviewer pointed at. Turning
+  // that into a text-range annotation is how a diagram double-click opened a composer over unrelated text
+  // elsewhere on the page (Charter #61).
+  function textRangeAnchor(selection, gestureTarget) {
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
     var quote = String(selection).trim();
     if (!quote) return null;
-    var block = closestAnchored(selection.anchorNode);
-    if (!block) return null;
     var range = null;
     try { range = selection.getRangeAt(0); } catch (e) { range = null; }
+    if (!coversGesture(range, gestureTarget)) return null;
+    var block = closestAnchored(selection.anchorNode);
+    if (!block) return null;
+    // A rendered diagram carries no annotatable prose — its granularities are the NODE and the WHOLE block
+    // — so a selection landing inside one is never a text range, however it got there. This is the half of
+    // the #61 fix that does not depend on the stylesheet reaching the browser.
+    if (isDiagramBlock(block)) return null;
     var span = blockSpan(block, range);
     return {
       kind: KIND.textRange,
@@ -237,6 +276,19 @@ window.CharterAnnotate = (function () {
       start: span ? span.start : null,
       end: span ? span.end : null
     };
+  }
+
+  // Does `range` include the element the reviewer's gesture ended on? An UNKNOWN gesture (a programmatic
+  // mouseup dispatched on the document, an engine without intersectsNode) is ACCEPTED: this guard exists to
+  // reject a demonstrably unrelated selection, not to demand proof of a related one — over-rejecting would
+  // cost legitimate prose selections, which is the worse failure.
+  function coversGesture(range, target) {
+    if (!range || !target || typeof range.intersectsNode !== 'function') return true;
+    try {
+      return range.intersectsNode(target);
+    } catch (e) {
+      return true;
+    }
   }
 
   // Map a selection Range onto a [start, end) pair of offsets into the anchored BLOCK's text — the one
@@ -305,22 +357,38 @@ window.CharterAnnotate = (function () {
     return total;
   }
 
-  // (c) diagram-node: anchor a note to a node inside a :::diagram Mermaid render, keyed by
-  // the node's own identity, plus the enclosing diagram block's stable id.
-  function diagramNodeAnchor(target) {
-    var node = (target && target.closest)
-      ? target.closest('.node, [data-node-id], g.node')
-      : null;
-    if (!node || isSdkUi(node)) return null;
-    var block = closestAnchored(node);
+  // The Mermaid node under `target` within `block`, or null when the pointer is on the diagram's
+  // BACKGROUND (the svg's empty space, the block's padding, an edge) — or when `block` is not a diagram at
+  // all. This is the ONE place node-vs-background is decided, so the two can never both fire or both miss.
+  function diagramNodeOf(target, block) {
+    if (!isDiagramBlock(block) || !target || typeof target.closest !== 'function') return null;
+    var node = target.closest(DIAGRAM_NODE);
+    return (node && !isSdkUi(node)) ? node : null;
+  }
+
+  // (c) diagram-node: anchor a note to a node inside a :::diagram Mermaid render. `anchorId` is the BLOCK
+  // (source-mappable and stable across a re-render) and the Mermaid node's own identifier stays in
+  // `nodeId`, which is exactly what that field is for — Charter #48, where the anchor used to be the
+  // Mermaid node id and the agent therefore received no sourceLine at all.
+  function diagramNodeAnchor(block, node) {
     return {
       kind: KIND.diagramNode,
-      anchorId: block ? anchorIdOf(block) : null,
+      anchorId: anchorIdOf(block),
       nodeId: node.getAttribute('data-node-id') || node.id || null
     };
   }
 
   // ---- human-readable labels ----------------------------------------------------------
+
+  // Elements whose text nodes are MACHINERY, not words a human reads — a <style> or <script> inside a block
+  // (Mermaid ships its theme CSS in a <style> INSIDE the rendered <svg>; :::custom-html may carry either).
+  // Matched case-insensitively because an SVG element's tagName keeps its lower-case local name while an
+  // HTML element's is upper-cased.
+  var NON_VISIBLE_TAGS = { STYLE: true, SCRIPT: true };
+
+  function isNonVisible(el) {
+    return NON_VISIBLE_TAGS[String(el.tagName || '').toUpperCase()] === true;
+  }
 
   // The text a human sees INSIDE a block, with every SDK-owned subtree excluded — otherwise a
   // count badge injected into the block would pollute the composer's "what am I annotating" line
@@ -332,6 +400,7 @@ window.CharterAnnotate = (function () {
       if (!node) return;
       if (node.nodeType === 1) {
         if (node.hasAttribute && node.hasAttribute(UI_ATTR)) return;
+        if (isNonVisible(node)) return;
         for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
         return;
       }
@@ -355,6 +424,10 @@ window.CharterAnnotate = (function () {
     return tag ? ('the ' + tag + ' block') : 'this block';
   }
 
+  // A whole-diagram note and a diagram-node note anchor to the SAME block id, so the words are the only
+  // thing telling the reviewer which of the two they are about to write. They must never read alike.
+  var WHOLE_DIAGRAM = 'the whole diagram \u2014 not a single node';
+
   // The composer's context line: what the reviewer is about to comment on, in words.
   function contextLine(anchor, targetEl) {
     if (anchor.kind === KIND.textRange && anchor.quote) {
@@ -364,7 +437,9 @@ window.CharterAnnotate = (function () {
       var label = visibleText(targetEl) || anchor.nodeId || 'an unnamed node';
       return 'Commenting on diagram node: ' + truncate(label, 64);
     }
-    return 'Commenting on: ' + targetLabel(targetEl || anchorElement(anchor.anchorId));
+    var el = targetEl || anchorElement(anchor.anchorId);
+    if (isDiagramBlock(el)) return 'Commenting on ' + WHOLE_DIAGRAM;
+    return 'Commenting on: ' + targetLabel(el);
   }
 
   // The same label for a stored annotation, used by the panel.
@@ -376,6 +451,7 @@ window.CharterAnnotate = (function () {
     if (record.kind === KIND.diagramNode && record.nodeId) {
       return 'diagram node ' + truncate(record.nodeId, 40);
     }
+    if (isDiagramBlock(el)) return WHOLE_DIAGRAM;
     return targetLabel(el);
   }
 
@@ -827,8 +903,17 @@ window.CharterAnnotate = (function () {
   // enables the moment the reviewer picks something else: revising a decision is the whole point of a
   // second review round, and it is never blocked. After a successful submit the baseline moves to what
   // was just saved, so Save settles back to disabled rather than inviting a duplicate post.
+  //
+  // Charter #63 adds ONE case to that rule rather than an exception to it: an emptied form. On an open
+  // question the emptied form equals the (empty) baseline, so Save simply returns to disabled — nothing to
+  // save. On a RESOLVED one the emptied form differs from the recorded answer, so Save enables and posting
+  // it clears that answer (values: [], which charter-format reads as open again). The control renames
+  // itself for that case so a retraction is never pressed by mistake.
 
   var SUBMIT_SELECTOR = 'button[type="submit"]';
+
+  // The signature of "no answer at all" — collectValues' empty array, as answerSignature stringifies it.
+  var EMPTY_ANSWER = '[]';
 
   // The reviewer's current answer as a comparable string. Built from collectValues, so the comparison
   // and the payload can never disagree about what counts as an answer.
@@ -848,11 +933,21 @@ window.CharterAnnotate = (function () {
   function syncSubmitState(form, root) {
     var button = form.querySelector(SUBMIT_SELECTOR);
     if (!button) return;
-    var changed = answerSignature(form, root) !== ensureWired(form, root);
+    if (!button.charterSaveLabel) button.charterSaveLabel = button.textContent;
+
+    var current = answerSignature(form, root);
+    var changed = current !== ensureWired(form, root);
+    // A submit that would EMPTY a recorded answer is a retraction, not a save, and the button says so
+    // before it is pressed — the reviewer must not discover which one they did afterwards.
+    var clearing = changed && current === EMPTY_ANSWER;
+
     button.disabled = !changed;
-    button.title = changed
-      ? 'Save this answer to the Charter review session'
-      : 'Choose or change an answer to enable saving';
+    button.textContent = clearing ? 'Clear answer' : button.charterSaveLabel;
+    button.title = clearing
+      ? 'Clear the recorded answer \u2014 this question goes back to unanswered'
+      : (changed
+        ? 'Save this answer to the Charter review session'
+        : 'Choose or change an answer to enable saving');
   }
 
   function wireQuestionForms() {
@@ -871,12 +966,74 @@ window.CharterAnnotate = (function () {
     if (root) syncSubmitState(form, root);
   }
 
+  // ---- clearing an accidental answer (Charter #63) --------------------------------------
+  // A native radio cannot be deselected, so one mis-click leaves a decision the reviewer never made with no
+  // way back to "unanswered" — which for a :::question is a real, distinct state, not the absence of one
+  // (charter-format: a question with no non-empty `answer` IS open). Clicking the ALREADY-SELECTED option
+  // therefore clears it. Applies to `bool` too, which renders as two radios (Charter #43).
+  //
+  // The radio's state has to be sampled BEFORE the browser's activation behaviour runs: by `click` time an
+  // already-checked radio and a just-checked one are indistinguishable. `armedRadio` is that sample, taken
+  // on mousedown and consumed by the very next click. Every keydown clears it, so arrow-key navigation
+  // (which also fires a click, on the option it moves ONTO) can never be read as a clear.
+  var armedRadio = null;
+
+  // The <input type=radio> in `target`, if it belongs to a rendered :::question form; else null.
+  function questionRadio(target) {
+    if (!target || target.nodeType !== 1 || target.tagName !== 'INPUT') return null;
+    if (String(target.type).toLowerCase() !== 'radio') return null;
+    return questionRoot(target.form) ? target : null;
+  }
+
+  function armRadio(target) {
+    var radio = questionRadio(target);
+    armedRadio = (radio && radio.checked) ? radio : null;
+  }
+
+  function onQuestionPointerDown(ev) {
+    armRadio(ev && ev.target);
+  }
+
+  function onQuestionClick(ev) {
+    var armed = armedRadio;
+    armedRadio = null;
+    var radio = questionRadio(ev && ev.target);
+    if (radio && radio === armed) clearRadio(radio);
+  }
+
+  // The KEYBOARD's own path to the same rule. Chromium deliberately dispatches NO click when Space is
+  // pressed on an ALREADY-CHECKED radio (Blink's RadioInputType::HandleKeyupEvent returns early for a
+  // checked control), so the click rule above is unreachable from the keyboard and Space would silently do
+  // nothing — leaving a keyboard reviewer with the very dead end this fix exists to remove. Keyup is where
+  // the browser would have activated the control, so it is where the clear belongs.
+  function onQuestionKeyup(ev) {
+    if (!ev || (ev.key !== ' ' && ev.key !== 'Spacebar')) return;
+    var radio = questionRadio(ev.target);
+    if (!radio || !radio.checked) return;
+    // Take the key's default action over: Blink decides whether to simulate a click by re-reading
+    // `checked` AFTER this listener has run, so clearing without also preventing the default lets it
+    // observe the now-unchecked control and re-check it — the clear would undo itself.
+    ev.preventDefault();
+    clearRadio(radio);
+  }
+
+  function clearRadio(radio) {
+    radio.checked = false;
+    var root = questionRoot(radio.form);
+    syncSubmitState(radio.form, root);
+    emit('answer-cleared', { questionId: root ? root.getAttribute('data-question-id') : null });
+  }
+
   // Enter submits where the control makes that natural: a radio/checkbox/number/text control triggers
   // the form's IMPLICIT submission natively — and because the default button is the disabled-until-
   // changed Save button, that path obeys the same rule for free. A <textarea> must keep Enter as a
   // NEWLINE (a free-text answer is prose), so free-text submits on Ctrl/Cmd+Enter.
   function onQuestionKeydown(ev) {
-    if (!ev || ev.key !== 'Enter' || !(ev.ctrlKey || ev.metaKey)) return;
+    if (!ev) return;
+    // Any key DISARMS the pending mouse gesture. Arrow-key navigation within a radio group fires a `click`
+    // on the option it moves ONTO, so a stale sample would clear the very option the reviewer just chose.
+    armedRadio = null;
+    if (ev.key !== 'Enter' || !(ev.ctrlKey || ev.metaKey)) return;
     var form = ev.target && ev.target.form;
     var root = questionRoot(form);
     if (!root) return;
@@ -908,7 +1065,12 @@ window.CharterAnnotate = (function () {
     return postAnswer(answer).then(function (res) {
       if (res) {
         form.charterAnswerBaseline = JSON.stringify(answer.values);
-        answerStatus(form, 'Answer saved.', false);
+        answerStatus(
+          form,
+          answer.values.length === 0
+            ? 'Answer cleared \u2014 this question is unanswered again.'
+            : 'Answer saved.',
+          false);
       } else {
         answerStatus(form, 'Could not save this answer.', true);
       }
@@ -928,9 +1090,19 @@ window.CharterAnnotate = (function () {
       var status = form.querySelector('[' + UI_ATTR + '="answer-status"]');
       if (status && status.parentNode) status.parentNode.removeChild(status);
       var button = form.querySelector(SUBMIT_SELECTOR);
-      if (button) { button.disabled = true; button.removeAttribute('title'); }
+      if (button) {
+        button.disabled = true;
+        button.removeAttribute('title');
+        // Return the label the renderer emitted, so a disposed SDK leaves the artifact's own markup behind
+        // rather than a button still offering to clear an answer nothing can now post.
+        if (button.charterSaveLabel) button.textContent = button.charterSaveLabel;
+        button.charterSaveLabel = null;
+      }
+
       form.charterAnswerBaseline = null;
     }
+
+    armedRadio = null;
   }
 
   // ---- SDK chrome: one inline <style> + the panel + the transient highlight overlay -----
@@ -1017,6 +1189,14 @@ window.CharterAnnotate = (function () {
     '  pointer-events: none; }',
     '.charter-overlay-rect { position: fixed; border-radius: 2px; background: var(--charter-accent);',
     '  opacity: 0.24; pointer-events: none; }',
+
+    // Suppress the native selection gesture where it has nothing to act on: a rendered :::diagram is an SVG
+    // with no prose, so a double-click there means "select a word" to the browser and Chromium answers by
+    // grabbing whatever text is NEAREST — often somewhere else entirely (Charter #61). Declared in the SDK's
+    // serve-time style rather than in charter.css so the SAVED artifact stays byte-identical (invariant 1)
+    // and a reader of the offline file can still select a diagram's labels; the accident this prevents only
+    // exists where the annotation gestures do.
+    '.mermaid { -webkit-user-select: none; user-select: none; }',
 
     '.charter-has-annotations { position: relative; box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
     '.charter-annotation-badge { position: absolute; top: 2px; right: 2px; z-index: 3; font: inherit;',
@@ -1655,25 +1835,30 @@ window.CharterAnnotate = (function () {
       return;
     }
 
-    var dn = diagramNodeAnchor(ev.target);
-    if (dn && dn.anchorId) {
-      ev.preventDefault();
-      openComposerForAnchor(dn, ev.target.closest('.node, [data-node-id], g.node'));
+    // One walk decides the block, and the block is always what the note anchors to.
+    var block = closestAnchored(ev.target);
+    if (!block || !anchorIdOf(block)) return;
+    ev.preventDefault();
+
+    // A rendered :::diagram is ONE block with TWO annotatable granularities, and which one the reviewer
+    // gets is decided here, once: pointer on a Mermaid node ⇒ a `diagram-node` note carrying that node's
+    // id; pointer anywhere else in the block (the svg background, the padding, an edge) ⇒ the same plain
+    // `element` note every other block produces (Charter #60). Both anchor to the BLOCK (Charter #48), so
+    // only the composer's context line distinguishes them for the reviewer — see contextLine.
+    var node = diagramNodeOf(ev.target, block);
+    if (node) {
+      openComposerForAnchor(diagramNodeAnchor(block, node), node);
       return;
     }
 
-    var el = elementAnchor(ev.target);
-    if (el) {
-      ev.preventDefault();
-      openComposerForAnchor(el, anchorElement(el.anchorId));
-    }
+    openComposerForAnchor(elementAnchor(block), block);
   }
 
   function onMouseUp(ev) {
     if (ev && isSdkUi(ev.target)) return;
     if (hasDraft()) return;   // never clobber a note in progress
     var sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
-    var tr = textRangeAnchor(sel);
+    var tr = textRangeAnchor(sel, ev && ev.target);
     if (!tr) return;
 
     // Snapshot the live selection BEFORE focusing the composer's textarea collapses it — the
@@ -1774,11 +1959,16 @@ window.CharterAnnotate = (function () {
       window.addEventListener('scroll', onViewportChange, true);
       window.addEventListener('resize', onViewportChange, false);
       document.addEventListener('click', onClick, true);
+      // The radio-deselect pair (Charter #63). mousedown samples the pre-activation state; the click that
+      // follows acts on it. Registered AFTER onClick so the annotation gesture still sees the click first.
+      document.addEventListener('mousedown', onQuestionPointerDown, true);
+      document.addEventListener('click', onQuestionClick, true);
       document.addEventListener('mouseup', onMouseUp, false);
       document.addEventListener('submit', onSubmit, true);
       document.addEventListener('input', onQuestionInput, true);
       document.addEventListener('change', onQuestionInput, true);
       document.addEventListener('keydown', onQuestionKeydown, true);
+      document.addEventListener('keyup', onQuestionKeyup, true);
     }
     ensureUi();
     wireQuestionForms();
@@ -1809,11 +1999,14 @@ window.CharterAnnotate = (function () {
       window.removeEventListener('scroll', onViewportChange, true);
       window.removeEventListener('resize', onViewportChange, false);
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('mousedown', onQuestionPointerDown, true);
+      document.removeEventListener('click', onQuestionClick, true);
       document.removeEventListener('mouseup', onMouseUp, false);
       document.removeEventListener('submit', onSubmit, true);
       document.removeEventListener('input', onQuestionInput, true);
       document.removeEventListener('change', onQuestionInput, true);
       document.removeEventListener('keydown', onQuestionKeydown, true);
+      document.removeEventListener('keyup', onQuestionKeyup, true);
     }
     unwireQuestionForms();
     if (state.events) {
