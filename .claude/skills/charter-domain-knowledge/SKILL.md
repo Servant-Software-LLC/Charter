@@ -338,6 +338,19 @@ the plan, so review travels by git instead of dying in a machine-local sidecar. 
   B. **A live session always takes precedence**; the log is read only when none is live and a `<plan>` is named
   (bare `poll`, `--url`, `--session` never read it). `--apply` is inert here. This path returns **0/2/4 where
   it used to return 3**.
+- **`base` + `baseStatus` — the #74 resolution (`ReviewBaseStatus`, §4.3.1).** Every review-log comment carries
+  the plan's content hash **when it was recorded** (`base`) and whether the plan is still that text
+  (`baseStatus`: `current` / `different` / `unknown`). **Review-log only** — both are omitted from a
+  live-session annotation, and both readers of the log carry them (`ReviewLogDrain` → the `poll` wire,
+  `ReviewLogView` → the panel). **It LABELS; it never suppresses**: the #67 quarantine deliberately does not
+  cross over, because there is no local remedy for someone else's committed record and "not one anchor
+  resolves" has a high benign base rate over a shared log. `current` is a **sound positive**; `different`
+  proves only "not exactly this text" and is the modal state of a living document — never "ignore this".
+  `unknown` = no `base` on the record, or the plan was unreadable/empty. Read it as a **pair** with
+  `anchorStatus`: `(orphaned, current)` is the one anomalous reading; `(resolved, different)` is *both* the
+  ordinary post-edit state *and* #67's replaced-document anchor collision, and **the two are not separable**.
+  Line endings are not content — the plan is hashed in every newline form so a mixed Win/Linux team does not
+  read `different` on every comment at the same revision.
 - **`status` (`ReviewStatusTokens`) is load-bearing on the wire:** `open` · `resolved` · `contested` ·
   `retracted`. `contested` = concurrent resolve+reopen, neither having observed the other. **`charter handoff`
   does not read the review log at all** — honouring "a contested comment blocks handoff" is the *agent's*
@@ -434,15 +447,16 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 - **Current version — `0.7.0`, release PENDING.** `<Version>` in `src/Charter.Cli/Charter.Cli.csproj` is
   `0.7.0` and `charter --version` reports it, but **there is no `v0.7.0` tag** — it was cut, unwound to take
   more fixes, and will be re-cut. The newest published tag is `v0.6.0`. Do not describe 0.7.0 as released.
-- **Master baseline:** 623 tests green, 0 warnings — Core 355 · Server 196 · Cli 57 · Browser 15. On
-  `fix/panel-drain-parity` (unmerged): **679** — Core 370 · Server 230 · Cli 63 · Browser 16.
+- **Master baseline:** **735** tests green, 0 warnings — Core 389 · Server 244 · Cli 81 · Browser 21.
 - **Landed since v0.6.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
   tracked-gate; the #67 replaced-plan quarantine + `--keep-annotations`; text-range offsets in the block's own
   frame (#56); the browser-flake fix (#66); diagram-node anchors to the block (#48); whole-diagram annotation
   (#60); no accidental text-range from a diagram gesture (#61); radio deselect (#63).
-- **On `fix/panel-drain-parity`, not yet merged:** panel/drain anchor parity (#78); an unrecognised annotation
-  `kind` refused with 400 rather than coerced to `element` (#79); the three #75 quarantine follow-ups (panel
-  surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention).
+- **Also landed (all merged to master):** panel/drain anchor parity (#78); an unrecognised annotation `kind`
+  refused with 400 rather than coerced to `element` (#79); the three #75 quarantine follow-ups (panel
+  surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention) — PR #82. The
+  unattended `charter headless` verb (#7) — PR #83. Pan/zoom for an oversized `:::diagram` (#51), SDK-only —
+  PR #84. The #74 review-log staleness resolution (`base` + `baseStatus` on every review-log comment) — PR #80.
 - **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9):
   - **Built:** 1 (record + fold), 2 (writer), 3 (server-side fold + panel), 4 (server-less `poll` read path),
     7 (the two-author browser test — `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
@@ -453,11 +467,7 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
   - **Step 6 (agent voice) is not built.** `ReviewOpKind.Reply` and `Reopen` are understood by the fold and by
     `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
     `reopen` can only reach a log from outside Charter.
-- **Known-open follow-ups:** #74 (the review-log drain has the same stale-queue exposure as #67 — awaiting an
-  architect call), #46 (annotation lifecycle v2), #5 (layout-audit gate).
-- **On `feat/diagram-pan-zoom`, not yet merged:** #51 — pan/zoom for an oversized `:::diagram` (see the
-  `:::diagram` granularities section above). SDK-only; the renderer, `charter.css` and the export path are
-  untouched.
+- **Known-open follow-ups:** #46 (annotation lifecycle v2), #5 (layout-audit gate).
 - **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
   their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

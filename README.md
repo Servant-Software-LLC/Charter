@@ -9,9 +9,9 @@ Your answers fold back **into the plan file itself**, and the approved plan is t
 **[Guardrails]** to be broken down into an executable, verified task DAG.
 
 > **Status:** shipping on all channels. The renderer, loopback review server, in-place annotation loop
-> with answers folded back into the plan, offline export, the `charter convert` seed, and Guardrails
-> handoff are all implemented in the binary — released via Homebrew, NuGet (`dotnet` tool), and native
-> binaries.
+> with answers folded back into the plan, git-mediated team review, offline export, unattended runs, the
+> `charter convert` seed, and Guardrails handoff are all implemented in the binary — released via Homebrew,
+> NuGet (`dotnet` tool), and native binaries.
 
 ## Why
 
@@ -56,11 +56,18 @@ review it in the browser.
   running review session's annotations and `:::question` answers, folding each answer **inline into the
   `.charter.md`** (agent-in-the-loop `poll --apply`, or `resolve` for a solo human review). The plan is
   a living document that accumulates your decisions before handoff.
+- `charter headless <plan.charter.md> [--out-dir <dir>]` — the **unattended** path, for a run with no human
+  present. Writes the same offline artifact `export` does plus a forensic JSON record — the plan's hash, every
+  question and whether it was answered, and an anchor→source-line map so an element in the artifact can be
+  traced back to the markdown **after the fact**. Serves nothing and waits for nothing; exits **2**, not in
+  error, when a human still has to decide or fix something.
 - `charter export <plan.charter.md> -o <out.html>` — writes a self-contained, **offline** artifact with
   every local asset inlined as a `data:` URI — no server, no runtime, portable anywhere.
 - `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` — emits plain CommonMark for
   Guardrails, resolving each `:::question` against the optional `--answers` JSON file (open
   questions that have no answer are handed off flagged).
+- `charter skills install [--project]` — installs the bundled agent skills so your agent (and Guardrails)
+  can discover them.
 - `charter --version` — prints the version.
 
 A typical author → review → handoff pass:
