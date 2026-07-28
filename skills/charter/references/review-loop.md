@@ -305,3 +305,36 @@ curl "http://127.0.0.1:53201/api/review-log?key=Yb3…" # every author's committ
 Add `&wait=0` to `/api/poll` to skip the long-poll and drain whatever is queued right now.
 
 Once the plan is approved, capture and hand it off — see `references/handoff.md`.
+
+## When a plan is replaced at the same path
+
+An annotation queue survives across `charter review` sessions, keyed to the plan's path. That is right for
+the normal case — you edit the plan, the reviewer's earlier notes are still waiting. But **deleting a plan
+and authoring a different one at the same path** used to hand the new document the old document's notes.
+
+Charter now detects that and **sets the queue aside rather than delivering it**. The test is deliberately
+conservative: the queue is quarantined only when the plan is not byte-identical to the revision it was
+written against **and _not one_ of its annotations' anchors still resolves. One surviving anchor means the
+queue is treated as live.** Over-eager quarantine would risk discarding real review work, which is the
+worse failure — so the rule is the weakest one that still catches a genuine replacement.
+
+**Nothing is ever destroyed.** The queue is copied to a `.stale-<utc>.json` file beside the sidecar, and
+Charter names the path on stderr:
+
+```
+charter review: this plan looks replaced — 8 queued annotation(s) no longer match any block.
+charter review: they are kept at <path>. Re-run with --keep-annotations to restore them.
+```
+
+So when you drive a review and see that line, **tell the human** — they have not lost their notes, and
+`charter review <plan> --keep-annotations` brings them back. Do not silently proceed as though the queue
+was empty.
+
+Two limits worth knowing:
+
+- **Answers are never quarantined.** A `:::question` answer is keyed by the question's `id`, not by an
+  anchor, so anchor evidence says nothing about it. If a replaced plan reuses a question id, an answer
+  from the old document can still fold into the new one.
+- **This applies to the machine-local queue, not the committed review log.** A log record whose anchor no
+  longer resolves is still delivered, deliberately — an orphan there is a neutral fact carrying its
+  `quote`, not an error. See the review-log section above.
