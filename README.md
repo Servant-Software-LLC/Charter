@@ -91,10 +91,18 @@ A few capabilities are deliberately **out of v1**, each tracked as its own issue
 plan:
 
 - **Recap mode** — building a plan from a diff (`charter recap`), a v2 addition.
-- **Hosted share / publish** — v1 produces local artifacts only; nothing is hosted or published for
-  you.
 - **Telemetry** — v1 ships **none**: zero analytics dependency, zero data egress. Any future
   telemetry would be strictly opt-in and vendor-neutral, never Lavish's default-on model.
+
+And two things that were on this list and **won't be built**, because the answer turned out to be
+something Charter already has:
+
+- **Hosted share / publish** — *git is the share.* A plan and its per-author review logs are committed
+  files: a teammate pulls the commit and sees the rendered plan with everyone's comments folded in.
+  Hosting would also cut against loopback-only and zero-egress. For someone outside the repo,
+  `charter export` produces a genuinely self-contained offline artifact.
+- **Review rounds / diff between rounds** — *git supplies rounds.* A round is a commit, the diff is
+  `git diff`, and every review record carries the plan hash it was written against.
 
 ## Install
 
