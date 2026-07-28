@@ -364,17 +364,6 @@ public static class QuestionResolution
     private static string? ReadQuestionId(string rawContent)
         => QuestionBody(rawContent) is { } body ? ReadId(ParseBody(body)) : null;
 
-    /// <summary>
-    /// The raw JSON body of a <c>:::question</c> container — the text BETWEEN its fences — or <c>null</c> when
-    /// <paramref name="rawContent"/> is not a well-formed fenced container. Exposed so any caller that must
-    /// read a question's body goes through the ONE body locator this class already owns
-    /// (<see cref="TryLocateJsonBody"/>) rather than growing a third fence-stripper beside it.
-    /// </summary>
-    internal static string? QuestionBody(string rawContent)
-        => TryLocateJsonBody(rawContent, out var bodyStart, out var bodyEnd)
-            ? rawContent.Substring(bodyStart, bodyEnd - bodyStart)
-            : null;
-
     /// <summary>Parse a JSON body to a <see cref="JsonObject"/>, or <c>null</c> when it is not a JSON object.</summary>
     private static JsonObject? ParseBody(string body)
     {
