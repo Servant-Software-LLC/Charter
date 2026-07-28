@@ -71,6 +71,13 @@ window.CharterAnnotate = (function () {
     staleQueue: null,
     staleQueueShown: false,
     composer: null,      // the open composer, or null
+    // The pan/zoom views for the rendered :::diagram blocks that are shown SMALLER than they were drawn
+    // (Charter #51), plus the MutationObservers waiting on Mermaid to produce each block's <svg>. A diagram
+    // that fits gets neither, so it keeps exactly the behaviour the exported artifact has.
+    diagrams: [],
+    diagramObservers: [],
+    pan: null,           // the in-flight pan drag, or null
+    panLatch: 0,         // the bounded timer that retires a pan's click-swallowing latch
     ignoreNextClick: false,
     reloadPending: false, // a reload arrived while a draft was open (see onReload)
     overlayRange: null,   // the Range the transient text highlight is drawn from
@@ -1256,6 +1263,30 @@ window.CharterAnnotate = (function () {
     // exists where the annotation gestures do.
     '.mermaid { -webkit-user-select: none; user-select: none; }',
 
+    // The :::diagram pan/zoom chrome (Charter #51). Serve-time only, for the same reason as the selection
+    // guard above: the SAVED artifact keeps the diagram exactly as the exporter wrote it (invariant 1),
+    // and every rule here is scoped to a class the SDK adds at runtime and removes on dispose().
+    '.charter-zoomable { position: relative; }',
+    // A horizontal gesture that runs out of diagram must not become browser back-navigation; vertical
+    // chaining is deliberately LEFT alone so the page still scrolls once the diagram reaches its edge.
+    '.charter-zoomed { overscroll-behavior-x: contain; }',
+    '.charter-zoomed:not(.charter-panning) { cursor: grab; }',
+    '.charter-panning { cursor: grabbing; }',
+    '.charter-zoomable:focus-visible { outline: 2px solid var(--charter-accent); outline-offset: 2px; }',
+    // The same persistent-scrollbar affordance a wide table gets (#68): a silently scrollable region is
+    // nearly as bad as a clipped one. It costs an unzoomed diagram nothing — with no overflow, no bar is
+    // drawn and no gutter is taken.
+    '.charter-zoomable::-webkit-scrollbar { height: 10px; width: 10px; }',
+    '.charter-zoomable::-webkit-scrollbar-track { background: var(--charter-code-bg); border-radius: 999px; }',
+    '.charter-zoomable::-webkit-scrollbar-thumb { background: var(--charter-scroll-thumb); border-radius: 999px; }',
+    '.charter-zoom-bar { position: absolute; top: 6px; left: 6px; z-index: 3; display: flex;',
+    '  align-items: center; gap: 4px; padding: 3px 6px; border-radius: 999px; white-space: nowrap;',
+    '  background: var(--charter-bg); border: 1px solid var(--charter-border); opacity: 0.94; }',
+    '.charter-zoom-btn { min-width: 24px; padding: 1px 7px; }',
+    '.charter-zoom-level { font-size: 11px; color: var(--charter-muted); min-width: 36px;',
+    '  text-align: center; }',
+    '.charter-zoom-hint { font-size: 11px; color: var(--charter-muted); }',
+
     '.charter-has-annotations { position: relative; box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
     '.charter-annotation-badge { position: absolute; top: 2px; right: 2px; z-index: 3; font: inherit;',
     '  font-size: 11px; line-height: 1; min-width: 18px; padding: 3px 6px; border-radius: 999px;',
@@ -1773,6 +1804,10 @@ window.CharterAnnotate = (function () {
       if (BADGE_DENIED.indexOf(el.tagName) < 0) el.appendChild(makeBadge(anchorId, counts[anchorId]));
     }
 
+    // A badge inside a PANNED diagram is a fresh element with no scroll compensation on it yet, so it
+    // would render at the content's offset instead of pinned to the block's corner (Charter #51).
+    for (var v = 0; v < state.diagrams.length; v++) pinDiagramChrome(state.diagrams[v]);
+
     emit('markers-rendered', { blocks: order.length });
   }
 
@@ -1896,6 +1931,464 @@ window.CharterAnnotate = (function () {
   // The overlay is drawn in viewport coordinates, so it must follow scroll/resize.
   function onViewportChange() {
     if (state.overlayRange) drawOverlay(state.overlayRange);
+  }
+
+  // ---- :::diagram pan/zoom (Charter #51) ------------------------------------------------
+  //
+  // A real architecture diagram routinely exceeds the review column, and Mermaid renders with
+  // `useMaxWidth`: the <svg> is scaled DOWN to fit its container, so nothing is clipped and nothing is
+  // legible either. A reviewer cannot read a node's label — let alone decide whether to annotate it.
+  //
+  // This is a REVIEW-TIME affordance and lives entirely in the SDK (invariant 1): the saved/exported
+  // artifact renders the same diagram statically, with none of this markup and none of these styles.
+  //
+  // The mechanism is deliberately the one Charter already uses for a wide table (#68) rather than a CSS
+  // transform: zooming WIDENS the <svg> itself (`width: <base x scale>px; max-width: none`) and the block
+  // becomes an ordinary scroll container. That buys, with no coordinate frame of our own:
+  //   * crisp VECTOR text at every zoom level — `transform: scale()` rasterizes, and a blurry label is
+  //     exactly the thing this feature exists to fix;
+  //   * hit-testing and getBoundingClientRect() that are simply CORRECT, so Alt+click still resolves the
+  //     Mermaid node under the pointer and the annotation overlay needs no new maths;
+  //   * arrow-key panning for free — a focusable scroll container already does it (the #68 shape);
+  //   * the overlay following a PAN through the SDK's EXISTING capture-phase 'scroll' listener, since a
+  //     pan here is a real element scroll rather than a transform the listener cannot see.
+  //
+  // The gesture set, chosen so nothing collides with a gesture the reviewer already has:
+  //   * the control bar (-, %, +, Reset) — the discoverable, keyboard-reachable, touch-usable path, and
+  //     the only one a reviewer has to find;
+  //   * Ctrl/Cmd + wheel zooms about the pointer (a trackpad pinch reaches Chromium as exactly that). A
+  //     PLAIN wheel is never intercepted: hijacking page scroll is hostile;
+  //   * a primary-button DRAG pans, but only once there is something to pan to. A drag is not a click —
+  //     past a small threshold the gesture swallows the click that follows it, so panning can never open
+  //     a composer;
+  //   * Alt stays the ANNOTATE modifier at every zoom level, unchanged. Alt+drag pans and annotates
+  //     nothing, which is the safe reading of an ambiguous gesture.
+  //
+  // Touch keeps its native gestures (page scroll, pinch): the bar is reachable by tap, and stealing a
+  // touch-drag would take page scrolling away from the one input that has nothing else.
+  var DIAGRAM_ZOOM = Object.freeze({
+    min: 1,               // 1 == "fit", the resting state the exported artifact also shows
+    step: 1.25,
+    ceiling: 8,
+    // How much wider than its rendered box a diagram must be before it is worth any chrome at all.
+    slack: 8,
+    // Movement (CSS px) past which a press-drag-release is a PAN and not a click.
+    dragThreshold: 4,
+    // A zoomed diagram's reading window, never shorter than its own resting height.
+    window: 640,
+    windowFraction: 0.75,
+    // How long the pan's click-swallowing latch may stand if no click ever arrives (a drag released
+    // outside the window). Without this bound a stray latch would eat the reviewer's NEXT Alt+click.
+    latchMs: 400
+  });
+
+  // The intrinsic width Mermaid drew the diagram at, in CSS px. The viewBox is authoritative (Mermaid
+  // always emits one); getBBox is the fallback for a build that ever stops.
+  function intrinsicWidth(svg) {
+    var box = svg.viewBox && svg.viewBox.baseVal;
+    if (box && box.width > 0) return box.width;
+    try {
+      var bbox = svg.getBBox();
+      return (bbox && bbox.width > 0) ? bbox.width : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Is this diagram being SHOWN SMALLER than it was drawn? That — not "does it overflow" — is the real
+  // condition: useMaxWidth means an oversized diagram never overflows, it just shrinks until unreadable.
+  // A diagram that fits gains no chrome, no tab stop and no behaviour change.
+  function isZoomable(svg) {
+    var rendered = svg.getBoundingClientRect().width;
+    return rendered > 0 && intrinsicWidth(svg) > rendered + DIAGRAM_ZOOM.slack;
+  }
+
+  function viewFor(block) {
+    for (var i = 0; i < state.diagrams.length; i++) {
+      if (state.diagrams[i].el === block) return state.diagrams[i];
+    }
+    return null;
+  }
+
+  // Watch every rendered :::diagram until Mermaid has replaced its source text with an <svg> —
+  // `mermaid.run()` is asynchronous and normally finishes AFTER the SDK's init(). The observer stays
+  // connected so a re-render (a FRESH <svg>) re-evaluates rather than leaving a view pointing at a
+  // detached element; it ignores the childList mutations the SDK makes itself (this bar, the annotation
+  // count badge) because those do not change which <svg> the block holds.
+  function scanDiagrams() {
+    if (typeof document.querySelectorAll !== 'function') return;
+    var blocks = document.querySelectorAll(DIAGRAM_BLOCK);
+    for (var i = 0; i < blocks.length; i++) watchDiagram(blocks[i]);
+  }
+
+  function watchDiagram(block) {
+    syncDiagram(block);
+    if (typeof MutationObserver !== 'function' || block.charterDiagramObserver) return;
+    var observer = new MutationObserver(function () { syncDiagram(block); });
+    try { observer.observe(block, { childList: true }); } catch (e) { return; }
+    block.charterDiagramObserver = observer;
+    state.diagramObservers.push(observer);
+  }
+
+  // Create, refresh or tear down the view for ONE :::diagram. Idempotent: the initial scan, the
+  // MutationObserver and the resize handler all call exactly this.
+  function syncDiagram(block) {
+    var svg = block.querySelector('svg');
+    var view = viewFor(block);
+
+    if (!svg) { if (view) releaseDiagram(view); return; }
+    if (view && view.svg !== svg) { releaseDiagram(view); view = null; }
+
+    if (view) {
+      // A LIVE zoom is the reviewer's, not ours to revoke because the window changed size — and the
+      // zoomed <svg> is deliberately wider than intrinsic, so isZoomable() would say "no" and tear down
+      // the very view being used.
+      if (view.scale > 1) return;
+      view.baseWidth = svg.getBoundingClientRect().width || view.baseWidth;
+      view.restingHeight = block.getBoundingClientRect().height || view.restingHeight;
+      if (isZoomable(svg)) { view.maxScale = ceilingFor(svg, view.baseWidth); syncZoomBar(view); return; }
+      releaseDiagram(view);
+      return;
+    }
+
+    if (isZoomable(svg)) activateDiagram(block, svg);
+  }
+
+  // Zooming past 1:1 buys nothing, so the ceiling is whatever makes the diagram life-size — with a floor
+  // of 2 (a barely-oversized diagram still deserves a usable step) and a hard cap.
+  function ceilingFor(svg, baseWidth) {
+    if (!(baseWidth > 0)) return 2;
+    return Math.min(
+      DIAGRAM_ZOOM.ceiling,
+      Math.max(2, Math.ceil((intrinsicWidth(svg) / baseWidth) * 100) / 100));
+  }
+
+  function activateDiagram(block, svg) {
+    var view = {
+      el: block,
+      svg: svg,
+      scale: 1,
+      baseWidth: svg.getBoundingClientRect().width,
+      restingHeight: block.getBoundingClientRect().height,
+      ownsTabIndex: false,
+      bar: null, level: null, hint: null, zoomOut: null, zoomIn: null, reset: null,
+      onWheel: null, onKeyDown: null, onPointerDown: null, onScroll: null
+    };
+    view.maxScale = ceilingFor(svg, view.baseWidth);
+
+    block.classList.add('charter-zoomable');
+    // Keyboard reach, exactly the shape #68 gave a wide table: a region only a mouse can enter hides half
+    // the diagram from a keyboard-only reviewer just as effectively as shrinking it did.
+    if (!block.hasAttribute('tabindex')) {
+      block.setAttribute('tabindex', '0');
+      view.ownsTabIndex = true;
+    }
+    block.setAttribute('role', 'group');
+    block.setAttribute(
+      'aria-label', 'Diagram, zoomable — use the zoom controls, arrow keys to pan');
+
+    buildZoomBar(view);
+
+    view.onWheel = function (ev) { onDiagramWheel(view, ev); };
+    view.onKeyDown = function (ev) { onDiagramKeyDown(view, ev); };
+    view.onPointerDown = function (ev) { onDiagramPointerDown(view, ev); };
+    // Its own chrome has to ride along when the reviewer pans, or the zoom controls scroll off the block.
+    view.onScroll = function () { pinDiagramChrome(view); };
+    block.addEventListener('wheel', view.onWheel, { passive: false });
+    block.addEventListener('keydown', view.onKeyDown, false);
+    block.addEventListener('pointerdown', view.onPointerDown, false);
+    block.addEventListener('scroll', view.onScroll, false);
+
+    state.diagrams.push(view);
+    syncZoomBar(view);
+    emit('diagram-zoomable', { anchorId: anchorIdOf(block), maxScale: view.maxScale });
+  }
+
+  // The bar lives INSIDE the <pre> (so it travels with the diagram) at the TOP-LEFT — the top-RIGHT
+  // corner already belongs to the annotation count badge. It is ordinary SDK chrome: `data-charter-ui`,
+  // no ids, so closestAnchored refuses it as a target and blockTextNodes / visibleText skip it whole.
+  function buildZoomBar(view) {
+    var bar = make('div', 'charter-zoom-bar', 'diagram-zoom');
+
+    // U+2212 MINUS SIGN (not a hyphen), so it optically balances the '+'. This file reaches the browser as
+    // an EMBEDDED RESOURCE, so the glyph makes an encoding hop the source never sees — the browser test
+    // asserts the character that arrives, rather than trusting the pipeline.
+    view.zoomOut = button('charter-btn charter-zoom-btn', 'diagram-zoom-out', '−');
+    view.zoomOut.setAttribute('aria-label', 'Zoom the diagram out');
+    view.level = make('span', 'charter-zoom-level', 'diagram-zoom-level', '100%');
+    view.zoomIn = button('charter-btn charter-zoom-btn', 'diagram-zoom-in', '+');
+    view.zoomIn.setAttribute('aria-label', 'Zoom the diagram in');
+    view.reset = button('charter-btn charter-zoom-btn', 'diagram-zoom-reset', 'Reset');
+    view.reset.setAttribute('aria-label', 'Reset the diagram to fit');
+    view.hint = make('span', 'charter-zoom-hint', 'diagram-zoom-hint', '');
+
+    view.zoomOut.addEventListener('click', function (ev) {
+      ev.preventDefault(); zoomBy(view, 1 / DIAGRAM_ZOOM.step);
+    }, false);
+    view.zoomIn.addEventListener('click', function (ev) {
+      ev.preventDefault(); zoomBy(view, DIAGRAM_ZOOM.step);
+    }, false);
+    view.reset.addEventListener('click', function (ev) {
+      ev.preventDefault(); resetZoom(view);
+    }, false);
+
+    bar.appendChild(view.zoomOut);
+    bar.appendChild(view.level);
+    bar.appendChild(view.zoomIn);
+    bar.appendChild(view.reset);
+    bar.appendChild(view.hint);
+
+    view.el.appendChild(bar);
+    view.bar = bar;
+  }
+
+  function syncZoomBar(view) {
+    if (!view.bar) return;
+    var atFit = view.scale <= DIAGRAM_ZOOM.min + 0.001;
+    view.level.textContent = Math.round(view.scale * 100) + '%';
+    view.zoomOut.disabled = atFit;
+    view.reset.disabled = atFit;
+    view.zoomIn.disabled = view.scale >= view.maxScale - 0.001;
+    // Progressive disclosure: name the gesture that is USEFUL right now, not the whole vocabulary.
+    view.hint.textContent = atFit ? 'Ctrl+scroll to zoom' : 'drag or arrow keys to pan';
+    pinDiagramChrome(view);
+  }
+
+  // An absolutely-positioned child of a scroll container scrolls WITH the content, so the bar (and the
+  // annotation count badge beside it) have to be pushed back by the scroll offset to stay pinned.
+  function pinDiagramChrome(view) {
+    var offset = 'translate(' + view.el.scrollLeft + 'px, ' + view.el.scrollTop + 'px)';
+    if (view.bar) view.bar.style.transform = offset;
+    var badges = view.el.querySelectorAll('.charter-annotation-badge');
+    for (var i = 0; i < badges.length; i++) badges[i].style.transform = offset;
+  }
+
+  function clampScale(view, next) {
+    if (!isFinite(next)) return view.scale;
+    return Math.min(view.maxScale, Math.max(DIAGRAM_ZOOM.min, next));
+  }
+
+  function zoomBy(view, factor, focusX, focusY) {
+    setZoom(view, view.scale * factor, focusX, focusY);
+  }
+
+  function resetZoom(view) {
+    if (view.scale === DIAGRAM_ZOOM.min) return;
+    view.scale = DIAGRAM_ZOOM.min;
+    applyZoom(view);
+  }
+
+  // Zoom about a focal point, keeping whatever sits under it under it. Expressed as the focal point's
+  // FRACTION of the <svg>'s own box, so it needs no coordinate frame beyond two rect reads and the
+  // browser clamps the resulting scroll offsets for us.
+  function setZoom(view, next, focusX, focusY) {
+    next = clampScale(view, next);
+    if (Math.abs(next - view.scale) < 0.0005) return;
+
+    var before = view.svg.getBoundingClientRect();
+    if (focusX === undefined || focusX === null) {
+      var box = view.el.getBoundingClientRect();
+      focusX = box.left + (box.width / 2);
+      focusY = box.top + (box.height / 2);
+    }
+    var ratioX = before.width > 0 ? (focusX - before.left) / before.width : 0.5;
+    var ratioY = before.height > 0 ? (focusY - before.top) / before.height : 0.5;
+
+    view.scale = next;
+    applyZoom(view);
+
+    var after = view.svg.getBoundingClientRect();
+    view.el.scrollLeft += after.left - (focusX - (ratioX * after.width));
+    view.el.scrollTop += after.top - (focusY - (ratioY * after.height));
+    pinDiagramChrome(view);
+  }
+
+  // Write the zoom to the DOM. At fit (scale 1) EVERY property this touches is removed rather than set to
+  // a computed equivalent, so a reset leaves the block exactly as the renderer emitted it.
+  function applyZoom(view) {
+    var block = view.el;
+    var svg = view.svg;
+
+    if (view.scale <= DIAGRAM_ZOOM.min) {
+      view.scale = DIAGRAM_ZOOM.min;
+      svg.style.width = '';
+      svg.style.maxWidth = '';
+      block.style.maxHeight = '';
+      block.style.overflow = '';
+      block.classList.remove('charter-zoomed');
+      block.scrollLeft = 0;
+      block.scrollTop = 0;
+      view.baseWidth = svg.getBoundingClientRect().width || view.baseWidth;
+    } else {
+      // The reading window: never shorter than the diagram's own resting height (shrinking it on the
+      // first zoom would be a step backwards), never taller than most of the viewport.
+      var reading = Math.max(
+        view.restingHeight,
+        Math.min(
+          Math.round((window.innerHeight || 800) * DIAGRAM_ZOOM.windowFraction),
+          DIAGRAM_ZOOM.window));
+      svg.style.maxWidth = 'none';
+      svg.style.width = (view.baseWidth * view.scale) + 'px';
+      block.style.maxHeight = reading + 'px';
+      block.style.overflow = 'auto';
+      block.classList.add('charter-zoomed');
+    }
+
+    syncZoomBar(view);
+    // A zoom changes the block's own height, so everything below it moves. The transient text highlight is
+    // painted in viewport coordinates from a Range and has to be repainted for exactly the reason a scroll
+    // or a resize repaints it.
+    onViewportChange();
+    emit('diagram-zoom', { anchorId: anchorIdOf(block), scale: view.scale });
+  }
+
+  function onDiagramWheel(view, ev) {
+    // ONLY the zoom gesture is intercepted. A plain wheel keeps doing whatever the browser does with it:
+    // over a diagram at fit that is the page, over a zoomed one it is the diagram's own scroll.
+    if (!ev.ctrlKey && !ev.metaKey) return;
+    ev.preventDefault();
+    var mode = ev.deltaMode === 1 ? 16 : (ev.deltaMode === 2 ? 400 : 1);
+    var factor = Math.exp(-(ev.deltaY || 0) * mode * 0.0025);
+    zoomBy(view, Math.min(2, Math.max(0.5, factor)), ev.clientX, ev.clientY);
+  }
+
+  function onDiagramKeyDown(view, ev) {
+    if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    // The bar's own buttons keep their native Enter/Space activation.
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') return;
+    if (ev.key === '+' || ev.key === '=') { ev.preventDefault(); zoomBy(view, DIAGRAM_ZOOM.step); return; }
+    if (ev.key === '-' || ev.key === '_') { ev.preventDefault(); zoomBy(view, 1 / DIAGRAM_ZOOM.step); return; }
+    if (ev.key === '0') { ev.preventDefault(); resetZoom(view); }
+    // Arrow keys are deliberately NOT handled: the block is a focusable scroll container, so the browser
+    // already pans it, with the platform's own key repeat and reduced-motion behaviour (#68's shape).
+  }
+
+  // Is there anything to pan to? Asked of the live scroll geometry rather than of the scale, so a drag on
+  // a diagram at fit stays completely inert — and cannot swallow the click that follows it.
+  function canPan(view) {
+    var el = view.el;
+    return el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+  }
+
+  function onDiagramPointerDown(view, ev) {
+    if (ev.button !== 0 || ev.pointerType === 'touch') return;
+    if (isSdkUi(ev.target)) return;
+    if (!canPan(view)) return;
+
+    // Deliberately NO setPointerCapture: capture retargets the compatibility `click` at the captured
+    // element, which is precisely how a diagram-NODE annotation would silently decay into a whole-block
+    // one (Charter #48's failure, reintroduced by the back door).
+    state.pan = {
+      view: view, id: ev.pointerId,
+      startX: ev.clientX, startY: ev.clientY,
+      scrollLeft: view.el.scrollLeft, scrollTop: view.el.scrollTop,
+      moved: false
+    };
+    document.addEventListener('pointermove', onDiagramPointerMove, true);
+    document.addEventListener('pointerup', onDiagramPointerUp, true);
+    document.addEventListener('pointercancel', onDiagramPointerUp, true);
+  }
+
+  function onDiagramPointerMove(ev) {
+    var pan = state.pan;
+    if (!pan || ev.pointerId !== pan.id) return;
+
+    var dx = ev.clientX - pan.startX;
+    var dy = ev.clientY - pan.startY;
+    if (!pan.moved &&
+        Math.abs(dx) < DIAGRAM_ZOOM.dragThreshold &&
+        Math.abs(dy) < DIAGRAM_ZOOM.dragThreshold) {
+      return;
+    }
+    if (!pan.moved) {
+      pan.moved = true;
+      pan.view.el.classList.add('charter-panning');
+    }
+
+    ev.preventDefault();
+    pan.view.el.scrollLeft = pan.scrollLeft - dx;
+    pan.view.el.scrollTop = pan.scrollTop - dy;
+  }
+
+  function onDiagramPointerUp(ev) {
+    var pan = state.pan;
+    if (!pan || (ev && ev.pointerId !== undefined && ev.pointerId !== pan.id)) return;
+    endPan();
+  }
+
+  function endPan() {
+    var pan = state.pan;
+    state.pan = null;
+    document.removeEventListener('pointermove', onDiagramPointerMove, true);
+    document.removeEventListener('pointerup', onDiagramPointerUp, true);
+    document.removeEventListener('pointercancel', onDiagramPointerUp, true);
+    if (!pan) return;
+
+    pan.view.el.classList.remove('charter-panning');
+    if (!pan.moved) return;
+
+    // A PAN is not a click. Swallow the click Chromium synthesizes at the end of the drag, using the same
+    // one-shot latch a text-selection drag already uses — and bound it, because a drag released outside
+    // the window produces no click at all and a standing latch would eat the reviewer's next Alt+click.
+    state.ignoreNextClick = true;
+    if (state.panLatch) window.clearTimeout(state.panLatch);
+    state.panLatch = window.setTimeout(function () {
+      state.ignoreNextClick = false;
+      state.panLatch = 0;
+    }, DIAGRAM_ZOOM.latchMs);
+
+    emit('diagram-panned', {
+      anchorId: anchorIdOf(pan.view.el),
+      scrollLeft: pan.view.el.scrollLeft,
+      scrollTop: pan.view.el.scrollTop
+    });
+  }
+
+  // A resize can make a diagram fit that did not, or the reverse. Kept off onViewportChange, which is also
+  // the scroll handler and must stay cheap.
+  function onDiagramResize() {
+    scanDiagrams();
+  }
+
+  function releaseDiagram(view) {
+    var at = state.diagrams.indexOf(view);
+    if (at >= 0) state.diagrams.splice(at, 1);
+    if (state.pan && state.pan.view === view) endPan();
+
+    view.el.removeEventListener('wheel', view.onWheel, false);
+    view.el.removeEventListener('keydown', view.onKeyDown, false);
+    view.el.removeEventListener('pointerdown', view.onPointerDown, false);
+    view.el.removeEventListener('scroll', view.onScroll, false);
+
+    view.scale = DIAGRAM_ZOOM.min;
+    view.svg.style.width = '';
+    view.svg.style.maxWidth = '';
+    view.el.style.maxHeight = '';
+    view.el.style.overflow = '';
+    view.el.scrollLeft = 0;
+    view.el.scrollTop = 0;
+    view.el.classList.remove('charter-zoomable');
+    view.el.classList.remove('charter-zoomed');
+    view.el.classList.remove('charter-panning');
+    if (view.ownsTabIndex) view.el.removeAttribute('tabindex');
+    view.el.removeAttribute('role');
+    view.el.removeAttribute('aria-label');
+    if (view.bar && view.bar.parentNode) view.bar.parentNode.removeChild(view.bar);
+    view.bar = null;
+
+    var badges = view.el.querySelectorAll('.charter-annotation-badge');
+    for (var i = 0; i < badges.length; i++) badges[i].style.transform = '';
+  }
+
+  function disposeDiagrams() {
+    while (state.diagrams.length) releaseDiagram(state.diagrams[state.diagrams.length - 1]);
+    for (var i = 0; i < state.diagramObservers.length; i++) {
+      try { state.diagramObservers[i].disconnect(); } catch (e) { /* ignore */ }
+    }
+    state.diagramObservers = [];
+    var blocks = document.querySelectorAll(DIAGRAM_BLOCK);
+    for (var j = 0; j < blocks.length; j++) blocks[j].charterDiagramObserver = null;
+    if (state.panLatch) { window.clearTimeout(state.panLatch); state.panLatch = 0; }
   }
 
   // ---- capture UI: Alt+click to anchor an element / diagram-node; select text to anchor a
@@ -2034,6 +2527,9 @@ window.CharterAnnotate = (function () {
       window.addEventListener('message', onMessage, false);
       window.addEventListener('scroll', onViewportChange, true);
       window.addEventListener('resize', onViewportChange, false);
+      // Separate from onViewportChange, which is also the (hot) scroll handler: a resize can make a
+      // diagram fit that did not, or the reverse, and that re-evaluation must not run on every scroll.
+      window.addEventListener('resize', onDiagramResize, false);
       document.addEventListener('click', onClick, true);
       // The radio-deselect pair (Charter #63). mousedown samples the pre-activation state; the click that
       // follows acts on it. Registered AFTER onClick so the annotation gesture still sees the click first.
@@ -2048,6 +2544,9 @@ window.CharterAnnotate = (function () {
     }
     ensureUi();
     wireQuestionForms();
+    // Mermaid renders asynchronously and normally has not finished yet, so this installs the watchers and
+    // the views appear as each <svg> lands.
+    scanDiagrams();
     openEvents();
 
     state.started = true;
@@ -2074,6 +2573,7 @@ window.CharterAnnotate = (function () {
       window.removeEventListener('message', onMessage, false);
       window.removeEventListener('scroll', onViewportChange, true);
       window.removeEventListener('resize', onViewportChange, false);
+      window.removeEventListener('resize', onDiagramResize, false);
       document.removeEventListener('click', onClick, true);
       document.removeEventListener('mousedown', onQuestionPointerDown, true);
       document.removeEventListener('click', onQuestionClick, true);
@@ -2085,6 +2585,10 @@ window.CharterAnnotate = (function () {
       document.removeEventListener('keyup', onQuestionKeyup, true);
     }
     unwireQuestionForms();
+    // Every pan/zoom view is torn down to the markup the renderer emitted — inline styles cleared, classes,
+    // tab stop, role and label removed — so a disposed SDK leaves the block indistinguishable from the
+    // exported artifact's.
+    disposeDiagrams();
     if (state.events) {
       try { state.events.close(); } catch (e) { /* ignore */ }
       state.events = null;
@@ -2099,6 +2603,8 @@ window.CharterAnnotate = (function () {
       state.ui = null;
     }
     state.handlers.length = 0;
+    state.diagrams = [];
+    state.pan = null;
     state.annotations = [];
     state.log = { comments: [], diagnostics: [], unreadable: [], selfEmail: null };
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };

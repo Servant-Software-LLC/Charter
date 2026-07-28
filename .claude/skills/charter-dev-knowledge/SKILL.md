@@ -143,6 +143,19 @@ update run `charter skills install --force` too.
   `SetDefaultNavigationTimeout(90_000)`; a test calling `browser.NewContextAsync()` directly bypasses it and
   can reintroduce the #66 flake on a contended `windows-latest` runner. Only *navigation* is relaxed — every
   assertion keeps its own tight deadline, so a genuine hang still fails.
+- **A whole-body string scan over rendered output measures the 3.5 MB VENDORED MERMAID BLOB, not Charter.**
+  `CharterRenderer.RenderBody` appends the inlined library whenever the plan has a `:::diagram`, and that
+  minified build contains plenty of ordinary English tokens — `tabindex` among them. A
+  `DoesNotContain("tabindex", body)` guard therefore fails on arrival and *looks* like a real defect. Scope
+  the assertion to the element's own opening tag (the `WrapperTag` / `DiagramPreTag` regex shape) or strip
+  `<script>…</script>` first (the `ServedDocumentShellTests` shape). Only scan whole-document for markers you
+  have checked do **not** occur in `assets/mermaid.min.js`.
+- **`setPointerCapture` re-targets the compatibility `click`.** A drag gesture that captures the pointer on
+  a container makes the click Chromium synthesizes afterwards land on the *container*, not on the element
+  under the cursor. In `:::diagram` that silently downgrades a `diagram-node` annotation to a whole-block
+  one — Charter #48 through the back door, with no error anywhere. Track a drag with document-level
+  `pointermove`/`pointerup` listeners instead. (Falsified: adding the capture call turns
+  `Diagram_node_and_background_still_anchor_to_the_block_after_a_zoom_and_a_pan` red.)
 - **Wait on selectors/events, not network-idle.** The served page holds an open SSE `/events` stream, so
   `WaitUntil = NetworkIdle` never settles. Use `WaitUntilState.Load` + a selector/event wait. The suite
   SKIPS cleanly (`Xunit.SkippableFact`) when Chromium is unavailable; the deterministic served-doc-shell
@@ -169,6 +182,14 @@ update run `charter skills install --force` too.
   sequences when inlining (`CharterRenderer.MermaidRuntimeMarkup`), and init Mermaid with
   `securityLevel: 'antiscript'` so it renders inline SVG (no sandboxed iframe / `frame-src`) under the strict
   CSP.
+- **A rendered `:::diagram`'s review-time pan/zoom lives ONLY in `sdk/charter-annotate.js`** (#51). It
+  widens the `<svg>` (`width: base × scale; max-width: none`) and lets the `<pre>` be a scroll container —
+  never a CSS transform, which would rasterize the labels the feature exists to make readable and move every
+  rect the annotation overlay is painted from. `charter.css`, `CharterRenderer` and `ArtifactExporter` are
+  deliberately untouched, so the exported artifact stays byte-identical; if you find yourself adding a
+  `.charter-zoom*` rule to `assets/charter.css`, you have just broken invariant 1 and
+  `DiagramPanZoomArtifactTests` will say so. Chrome absolutely positioned inside a scroll container must be
+  pushed back by `scrollLeft`/`scrollTop` or it rides away with the content.
 - **Inside a rendered `:::diagram`, only `pre.mermaid` carries a Charter id.** Mermaid stamps its own ids on
   the `<svg>` and every `g.node`, so a generic "nearest ancestor with an `id`" walk stops on one of those
   unless short-circuited — which is how a diagram-node note reached the agent with no `sourceLine` (#48).
