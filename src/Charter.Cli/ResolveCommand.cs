@@ -17,9 +17,17 @@ internal static class ResolveCommand
     private static readonly TimeSpan DrainDeadline = TimeSpan.FromSeconds(15);
 
     /// <summary>Run the verb synchronously. <paramref name="planPath"/> is an existing plan (Program checks).</summary>
-    public static int Execute(string planPath) => ExecuteAsync(planPath).GetAwaiter().GetResult();
+    /// <param name="planPath">The plan whose queued answers to apply.</param>
+    /// <param name="applyStaleAnswers">
+    /// The reviewer's explicit <b>"yes, apply them anyway"</b> for answers whose <c>:::question</c> has changed
+    /// shape since they were given (Charter #75 item 3). Deliberately only on this verb — <c>charter resolve</c>
+    /// is the human's verb, and an agent looping <c>poll --apply</c> must not be able to force a stale decision
+    /// into the plan on its own say-so.
+    /// </param>
+    public static int Execute(string planPath, bool applyStaleAnswers = false)
+        => ExecuteAsync(planPath, applyStaleAnswers).GetAwaiter().GetResult();
 
-    private static async Task<int> ExecuteAsync(string planPath)
+    private static async Task<int> ExecuteAsync(string planPath, bool applyStaleAnswers)
     {
         var canonical = Path.GetFullPath(planPath);
 
@@ -31,14 +39,16 @@ internal static class ResolveCommand
         {
             using (live.Value.Client)
             {
-                return await ResolveViaServerAsync(live.Value.Client, live.Value.Session, planPath).ConfigureAwait(false);
+                return await ResolveViaServerAsync(
+                    live.Value.Client, live.Value.Session, planPath, applyStaleAnswers).ConfigureAwait(false);
             }
         }
 
-        return ResolveViaSidecar(canonical, planPath);
+        return ResolveViaSidecar(canonical, planPath, applyStaleAnswers);
     }
 
-    private static async Task<int> ResolveViaServerAsync(ReviewClient client, PollSession session, string planPath)
+    private static async Task<int> ResolveViaServerAsync(
+        ReviewClient client, PollSession session, string planPath, bool applyStaleAnswers)
     {
         using var drainCts = new CancellationTokenSource(DrainDeadline);
         var answers = await client.PeekAnswersAsync(drainCts.Token).ConfigureAwait(false);
@@ -55,13 +65,18 @@ internal static class ResolveCommand
             return ReviewExitCodes.CleanEmpty;
         }
 
+        if (RefuseStale(session.SourcePath, answers.Items, applyStaleAnswers, planPath))
+        {
+            return ReviewExitCodes.ApplyFailed;
+        }
+
         var result = await AnswerApplication
             .ApplyAndCommitAsync(client, session, answers.Items, drainCts.Token)
             .ConfigureAwait(false);
         return ReportApply(result, planPath, answers.Items.Count, "the review store");
     }
 
-    private static int ResolveViaSidecar(string canonical, string planPath)
+    private static int ResolveViaSidecar(string canonical, string planPath, bool applyStaleAnswers)
     {
         var sidecarPath = ReviewSidecar.PathForPlan(StateDirectory.Sidecars(), canonical);
         var state = ReviewSidecar.Rehydrate(sidecarPath);
@@ -70,6 +85,11 @@ internal static class ResolveCommand
             Console.Error.WriteLine(
                 $"charter resolve: no queued answers for {planPath} (no live review session, and the sidecar is empty or absent).");
             return ReviewExitCodes.CleanEmpty;
+        }
+
+        if (RefuseStale(canonical, state.Answers, applyStaleAnswers, planPath))
+        {
+            return ReviewExitCodes.ApplyFailed;
         }
 
         var result = AnswerApplication.ApplyToPlan(canonical, state.Answers);
@@ -83,6 +103,34 @@ internal static class ResolveCommand
         ReviewSidecar.WriteState(sidecarPath, canonical, state.Annotations, Array.Empty<Answer>());
         Console.WriteLine($"Resolved {state.Answers.Count} answer(s) into {planPath}");
         return ReviewExitCodes.Drained;
+    }
+
+    /// <summary>
+    /// Whether to refuse this batch because some answer's <c>:::question</c> is no longer the one the reviewer
+    /// was asked (Charter #75 item 3), reporting WHY and how to proceed. Refusal is all-or-nothing on purpose:
+    /// the live store commits a peeked PREFIX (<c>AnswerStore.CommitFront</c>), so applying "the good ones" and
+    /// skipping one in the middle would commit the skipped one anyway. Refusing the batch leaves every answer
+    /// queued and re-reported until the reviewer settles it — the "nothing lost" guarantee, unchanged.
+    /// </summary>
+    private static bool RefuseStale(
+        string sourcePath, IReadOnlyList<Answer> answers, bool applyStaleAnswers, string planPath)
+    {
+        if (applyStaleAnswers)
+        {
+            return false;
+        }
+
+        var stale = AnswerApplication.FindStale(sourcePath, answers);
+        if (stale.Count == 0)
+        {
+            return false;
+        }
+
+        Console.Error.WriteLine($"charter resolve: {AnswerApplication.StaleAnswerReason(stale)}");
+        Console.Error.WriteLine(
+            $"charter resolve: re-answer them in 'charter review {planPath}', or re-run with "
+            + "--apply-stale-answers to apply them as they stand.");
+        return true;
     }
 
     private static int ReportApply(AnswerApplication.ApplyResult result, string planPath, int count, string store)

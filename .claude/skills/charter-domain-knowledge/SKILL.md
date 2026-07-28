@@ -116,23 +116,27 @@ commented on has changed*; the stored `quote`/`nodeId`/note are the recovery hin
 orphaned annotation as "no feedback"; it is feedback whose target moved. Field-by-field shape:
 `skills/charter/references/review-loop.md`.
 
-**But the PANEL's pair and the DRAIN's pair are different frames, and only the drain's is authoritative.**
-`GET /api/annotations` reports the **submit-time** snapshot; `/api/poll` re-resolves against the plan as it is
-now. For the *same* annotation at the *same* moment, verified by execution against a replaced plan:
-
-| Route | `sourceLine` | `anchorStatus` |
-|---|---|---|
-| `GET /api/annotations` (panel) | `1` | `"resolved"` |
-| `charter poll` (drain) | `null` | `"orphaned"` |
-
-Never edit the plan from a line read off `/api/annotations` — that route exists to render the reviewer's
-in-page list. Take lines from the drain, only.
+**Every route that REPORTS an annotation re-resolves, so no two can disagree** (#78). `GET /api/annotations`
+(the panel's list) and `/api/poll` (the drain) both pass through `AnchorResolution`, so `sourceLine` /
+`anchorStatus` mean exactly one thing wherever you read them: *the anchor's line in the plan as it is now*.
+They did not: the list route emitted the **submit-time** snapshot, and for the same annotation at the same
+moment against a replaced plan it read `sourceLine: 1, "resolved"` while the drain read `null, "orphaned"` —
+#49 resurfacing through a key-gated route documented as safe, with the agent editing the wrong block
+confidently. There is deliberately **no submit-time twin field**: the reviewer reads the rendered page, not
+line numbers, so a second field meaning "the line when you wrote this" would only rebuild the ambiguity under
+another name. Binding test: `PanelDrainParityTests`.
 
 Two field-level traps that have each cost a debugging session:
 
 - **`kind` is HYPHENATED on the wire** — `element` · `text-range` · `diagram-node` — not camelCase. The C#
   enum goes through `AnnotationApi.AnnotationKindConverter` to match the SDK's tokens exactly (#15). An agent
-  branching on `"textRange"` never matches.
+  branching on `"textRange"` never matches — and **posting** an unrecognised token is now a **400 naming the
+  three accepted tokens** (#79), not a 200 that silently stores `element`. That coercion was the real damage:
+  a `text-range` submission was downgraded to a whole-element one while its `quote`/`start`/`end` stayed on the
+  record contradicting the kind. camelCase is **not** an alias — one spelling per kind, because a second legal
+  spelling forks the vocabulary the SDK emits and the skills document. An **absent** `kind` still means the
+  whole block. `AnnotationApi.TryParseKind` is the strict ingress parse; `ParseKind` stays lenient *only* for
+  reading a durable review-log record, where the alternative is dropping a comment somebody wrote.
 - **`start`/`end` index the BLOCK's own text**, from the selection's `Range`, via a shared walker that skips
   every `[data-charter-ui]` subtree — one reference frame shared with the panel's quote lookup, so
   `end > start` always holds for a real selection. They are **not** `anchorOffset`/`focusOffset`, which live in
@@ -203,9 +207,28 @@ over-eager quarantine would discard real review work, which is the worse failure
 Orphaning after an edit is normal — that is the living-document model — so a queue where *any* anchor still
 resolves is an edited plan, never a replaced one, and is delivered untouched. **Nothing is destroyed:** the
 queue is copied to `<sidecar>.stale-<utc>.json` and restored by **`charter review --keep-annotations`**.
-**Answers are id-keyed, never quarantined** — the anchor evidence says nothing about them (and #75 item 3
-records that this leaves a replaced plan reusing a question id able to inherit a stale answer *into the plan
-file*, which is open). Reviewer-facing details: `skills/charter/references/review-loop.md`.
+
+Three follow-ups landed on top of it (#75):
+
+- **The reviewer is told in the PANEL, not only on stderr** (item 2). `charter review` is frequently launched
+  *by an agent*, so the stream carrying "your notes are safe, here is how to get them back" often reached
+  nobody. `GET /api/review` now carries an additive `staleQueue { count, fileName, durabilityDisabled }` —
+  omitted entirely when there is none — and the SDK opens the panel once and renders it. It names the **file
+  name**, never a local absolute path, and it is runtime-only chrome (`data-charter-ui`, gone on `dispose()`).
+- **Answers are id-keyed, never quarantined — but they are CHECKED** (item 3). The anchor evidence says
+  nothing about an answer, which left a replaced plan reusing a question id able to fold a stale decision
+  *into the plan file*. Each submitted answer now records `questionFingerprint` — `QuestionIdentity`'s hash of
+  the question's **declared shape** (id, title, mode, target, options; **not** its answer, so applying one
+  answer cannot make the next look stale) — computed **server-side** at submit and persisted in the sidecar.
+  `charter resolve` / `poll --apply` refuse the whole batch (exit **5**, answers preserved) when a queued
+  answer has a fingerprint, a question with that id still exists, and its shape differs. No fingerprint, or no
+  such question, means *no evidence* ⇒ apply exactly as before. The human's override is
+  **`charter resolve --apply-stale-answers`**; `poll --apply` deliberately has none.
+- **`.stale-*.json` files are bounded** (item 4). One is retired only once it is **older than 30 days** *and*
+  **superseded** by a newer set-aside queue for the same plan; the newest is kept at any age because it may be
+  the only copy. Pruning runs at quarantine time, never on a read.
+
+Reviewer-facing details: `skills/charter/references/review-loop.md`.
 
 ## What the AGENT must do with all this
 
@@ -213,7 +236,8 @@ The consumption contract, and the part most easily missed:
 
 - **Branch on `charter poll`'s exit code, never on an empty array.** `0` drained · `2` clean-empty ·
   `3` no live session *and* no readable review log (also the ambiguous >1-session refusal) · `4` a drain
-  **could not complete** — queue state UNKNOWN · `5` `--apply` refused (answers preserved, never committed).
+  **could not complete** — queue state UNKNOWN · `5` the inline apply did not happen — it either FAILED or was
+  REFUSED as stale (#75 item 3); either way the answers are preserved, never committed, and stderr names which.
   `1` is the generic verb error. Normative in `src/Charter.Cli/ReviewExitCodes.cs`; `charter resolve` shares
   them. **A `4` still emits `"annotations": []`** — the envelope's `drainError` (non-null) is what
   distinguishes "nothing queued" from "we don't know", and treating them alike is how an agent hands off a plan
@@ -346,11 +370,15 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 - **Current version — `0.7.0`, release PENDING.** `<Version>` in `src/Charter.Cli/Charter.Cli.csproj` is
   `0.7.0` and `charter --version` reports it, but **there is no `v0.7.0` tag** — it was cut, unwound to take
   more fixes, and will be re-cut. The newest published tag is `v0.6.0`. Do not describe 0.7.0 as released.
-- **Master baseline:** 623 tests green, 0 warnings — Core 355 · Server 196 · Cli 57 · Browser 15.
+- **Master baseline:** 623 tests green, 0 warnings — Core 355 · Server 196 · Cli 57 · Browser 15. On
+  `fix/panel-drain-parity` (unmerged): **679** — Core 370 · Server 230 · Cli 63 · Browser 16.
 - **Landed since v0.6.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
   tracked-gate; the #67 replaced-plan quarantine + `--keep-annotations`; text-range offsets in the block's own
   frame (#56); the browser-flake fix (#66); diagram-node anchors to the block (#48); whole-diagram annotation
   (#60); no accidental text-range from a diagram gesture (#61); radio deselect (#63).
+- **On `fix/panel-drain-parity`, not yet merged:** panel/drain anchor parity (#78); an unrecognised annotation
+  `kind` refused with 400 rather than coerced to `element` (#79); the three #75 quarantine follow-ups (panel
+  surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention).
 - **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9):
   - **Built:** 1 (record + fold), 2 (writer), 3 (server-side fold + panel), 4 (server-less `poll` read path),
     7 (the two-author browser test — `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
@@ -362,9 +390,7 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
     `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
     `reopen` can only reach a log from outside Charter.
 - **Known-open follow-ups:** #74 (the review-log drain has the same stale-queue exposure as #67 — awaiting an
-  architect call), #75 (quarantine follow-ups: the stale-queue notice is **stderr-only** so an agent-launched
-  review may never show a human, `charter resolve` applies answers with no staleness check, `.stale-*.json`
-  files never GC), #51 (`:::diagram` pan/zoom specified but never implemented), #46 (annotation lifecycle v2),
+  architect call), #51 (`:::diagram` pan/zoom specified but never implemented), #46 (annotation lifecycle v2),
   #5 (layout-audit gate).
 - **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
   their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).

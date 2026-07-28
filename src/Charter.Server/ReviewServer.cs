@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Charter.Core;
 
 namespace Charter.Server;
@@ -696,6 +697,20 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // Charter #79: an unrecognized `kind` is REFUSED, naming the tokens that would have worked — never
+        // coerced. It used to fall back to Element, so a client sending the camelCase "textRange" got a 200 and
+        // a whole-element annotation while its quote/start/end stayed on the record contradicting it. Nothing is
+        // enqueued and nothing is logged on this path, so a rejected submission leaves no trace to reconcile.
+        if (!AnnotationApi.TryParseKind(submission.Kind, out var kind))
+        {
+            WriteError(
+                response,
+                HttpStatusCode.BadRequest,
+                $"Unknown annotation kind \"{submission.Kind}\". Accepted kinds: "
+                    + string.Join(", ", AnnotationApi.KindTokens) + ".");
+            return;
+        }
+
         // Resolve the anchor to its 1-based markdown source line — the deterministic half of the round-trip.
         // This is the SUBMIT-TIME value: it backs the reviewer's in-page panel, which is showing the page as
         // rendered right now. It is deliberately NOT the value the agent receives — the drain re-resolves
@@ -710,7 +725,7 @@ public sealed class ReviewServer : IReviewServer
         var created = _reviewLog.Create(
             new ReviewAnchor(
                 submission.AnchorId,
-                AnnotationApi.KindToken(AnnotationApi.ParseKind(submission.Kind)),
+                AnnotationApi.KindToken(kind),
                 submission.Quote,
                 // The plan's content hash AS THE REVIEWER SAW IT. Written now because records are immutable:
                 // it is what lets a later Charter show "you commented on «…»; here is what changed since".
@@ -719,7 +734,7 @@ public sealed class ReviewServer : IReviewServer
 
         var annotation = new Annotation(
             Id: created?.Id ?? Guid.NewGuid().ToString("N"),
-            Kind: AnnotationApi.ParseKind(submission.Kind),
+            Kind: kind,
             AnchorId: submission.AnchorId,
             Note: submission.Note ?? string.Empty,
             SourceLine: sourceLine,
@@ -887,14 +902,32 @@ public sealed class ReviewServer : IReviewServer
         }
 
         var submission = _handoff.Peek();
-        var status = new
-        {
-            submitted = submission is not null,
-            submission,
-            pending = new { annotations = _store.Snapshot().Count, answers = _answers.Peek().Count },
-        };
+        var status = new ReviewStatus(
+            Submitted: submission is not null,
+            Submission: submission,
+            Pending: new ReviewStatus.PendingCounts(_store.Snapshot().Count, _answers.Peek().Count),
+            // Charter #75 item 2: the replaced-plan quarantine used to be announced on stderr only, which an
+            // agent-launched review hides from the human entirely. Reporting it here puts it in the panel, where
+            // the reviewer is. Omitted from the wire when there is nothing to say, so the shipped shape of this
+            // route is byte-identical for every ordinary session.
+            StaleQueue: StaleQueueNotice.For(StaleAnnotations));
 
         WriteJson(response, JsonSerializer.Serialize(status, AnnotationApi.JsonOptions));
+    }
+
+    /// <summary>
+    /// The <c>GET /api/review</c> body: the round's hand-off state, the live pending counts, and — only when
+    /// there is one — the quarantined-queue notice the panel renders.
+    /// </summary>
+    private sealed record ReviewStatus(
+        bool Submitted,
+        ReviewSubmission? Submission,
+        ReviewStatus.PendingCounts Pending,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        StaleQueueNotice? StaleQueue)
+    {
+        /// <summary>What is queued right now, per store — what "Send to agent" would be sending.</summary>
+        public sealed record PendingCounts(int Annotations, int Answers);
     }
 
     private void HandleAnnotationsList(HttpListenerContext context)
@@ -912,7 +945,18 @@ public sealed class ReviewServer : IReviewServer
         // LIST, don't drain: Snapshot() is non-destructive, so the panel showing the queue never competes with
         // the agent's poll for it. A non-destructive read needs no requeue-on-write-failure — a dropped write
         // loses nothing.
-        WriteJson(response, JsonSerializer.Serialize(_store.Snapshot(), AnnotationApi.JsonOptions));
+        //
+        // Charter #78: the listed sourceLine/anchorStatus are re-resolved HERE, through the same
+        // AnchorResolution kernel /api/poll drains through, so the two routes cannot report different answers
+        // for the same annotation at the same moment. This route used to emit the SUBMIT-time snapshot, so a
+        // note on a block that no longer exists listed as `sourceLine: 1, anchorStatus: "resolved"` while the
+        // drain correctly called it orphaned — and an agent reading the key-gated, documented-as-safe list route
+        // edited the wrong block, confidently. `sourceLine` now means exactly one thing on every route: the
+        // anchor's line in the plan AS IT IS NOW. There is deliberately no submit-time twin: the reviewer reads
+        // the rendered page, not line numbers, and a second field meaning "the line when you wrote this" would
+        // only reintroduce the ambiguity by another name.
+        var listed = AnchorResolution.Resolve(_store.Snapshot(), ReadPlanOrEmpty());
+        WriteJson(response, JsonSerializer.Serialize(listed, AnnotationApi.JsonOptions));
     }
 
     private async Task HandleAnnotationUpdateAsync(
@@ -1125,9 +1169,20 @@ public sealed class ReviewServer : IReviewServer
         }
 
         // Unlike an annotation there is no anchor to resolve: an answer's identity is its client-chosen
-        // questionId, so this is a pure echo. Preserve the target (human/agent) verbatim for the downstream
-        // handoff, and default the values to empty so the drain always serializes a values array.
-        var answer = submission with { Values = submission.Values ?? Array.Empty<string>() };
+        // questionId, so this is very nearly a pure echo. Preserve the target (human/agent) verbatim for the
+        // downstream handoff, and default the values to empty so the drain always serializes a values array.
+        //
+        // The one thing that is NOT echoed is the question fingerprint (Charter #75 item 3): the shape of the
+        // :::question the reviewer was actually looking at, computed HERE from the plan on disk and overwriting
+        // anything the client sent. That is what later lets `charter resolve` / `poll --apply` tell "the same
+        // question, in an edited plan" from "a different question that reuses this id" before writing a decision
+        // into the plan file. An unreadable plan or an unparseable question simply yields no fingerprint, and the
+        // apply behaves exactly as it did before this existed.
+        var answer = submission with
+        {
+            Values = submission.Values ?? Array.Empty<string>(),
+            QuestionFingerprint = QuestionIdentity.FingerprintOf(ReadPlanOrEmpty(), submission.QuestionId),
+        };
 
         _answers.Enqueue(answer);
 
@@ -1445,6 +1500,22 @@ public sealed class ReviewServer : IReviewServer
         response.Headers["Content-Security-Policy"] = ServedPageCsp;
         response.Headers["Referrer-Policy"] = "no-referrer";
         response.Headers["X-Content-Type-Options"] = "nosniff";
+    }
+
+    /// <summary>
+    /// Refuse a request with <paramref name="status"/> and a JSON body carrying <paramref name="message"/> — a
+    /// reason the client can act on, not a bare status code. Used where the refusal is a CLIENT BUG worth
+    /// naming (an unknown annotation kind, Charter #79); the gate refusals (401/403) stay deliberately mute,
+    /// because an unauthorized caller is owed no detail.
+    /// </summary>
+    private static void WriteError(HttpListenerResponse response, HttpStatusCode status, string message)
+    {
+        var payload = Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new { error = message }, AnnotationApi.JsonOptions));
+        response.StatusCode = (int)status;
+        response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = payload.Length;
+        response.OutputStream.Write(payload, 0, payload.Length);
     }
 
     private static void WriteJson(HttpListenerResponse response, string json)

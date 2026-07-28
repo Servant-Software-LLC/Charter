@@ -49,10 +49,13 @@ public enum AnchorStatus
 /// are <c>null</c> for a whole-block (element) annotation.
 /// </summary>
 /// <remarks>
-/// <b>The stored <paramref name="SourceLine"/> is a submit-time snapshot and is NOT what the agent receives.</b>
-/// It backs the reviewer's in-page panel, which is looking at the page as rendered when the note was taken.
-/// The handoff value is re-resolved at DRAIN time by <see cref="AnchorResolution"/> against the plan as it is
-/// then, because any edit above the block — including <c>poll --apply</c>'s own write — moves it (Charter #49).
+/// <b>The stored <paramref name="SourceLine"/> is a submit-time snapshot and is never emitted as-is.</b> Every
+/// route that REPORTS an annotation re-resolves it through <see cref="AnchorResolution"/> against the plan as it
+/// is at that moment — the <c>/api/poll</c> drain (Charter #49), <c>charter poll --apply</c> after its own
+/// write, and <c>GET /api/annotations</c>, the in-page panel's list (Charter #78). So <c>sourceLine</c> and the
+/// derived <see cref="AnchorStatus"/> mean exactly one thing on the wire regardless of which route served them:
+/// the anchor's line in the plan as it is NOW. The stored value is only the store's own record, kept so a
+/// requeue after a failed write restores the annotation unchanged.
 /// </remarks>
 /// <param name="Id">Opaque, per-annotation identifier.</param>
 /// <param name="Kind">Which kind of anchor the annotation targets.</param>

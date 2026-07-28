@@ -61,10 +61,37 @@ internal static class AnnotationApi
     public sealed record NoteUpdate(string? Note);
 
     /// <summary>
-    /// Parse a submitted kind string to an <see cref="AnnotationKind"/> using the SAME map that serializes it
-    /// back out (<see cref="AnnotationKindConverter"/>), so inbound and outbound share one source of truth: the
-    /// SDK's hyphenated tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>, case-insensitive) map
-    /// to the matching kind, and an unknown/missing token defaults leniently to <see cref="AnnotationKind.Element"/>.
+    /// The accepted <c>kind</c> wire tokens, in catalog order, for an error message that TELLS a client what it
+    /// should have sent. Read from the same map that parses and serializes them, so the message can never name a
+    /// token the server does not actually accept.
+    /// </summary>
+    public static IReadOnlyList<string> KindTokens => AnnotationKindConverter.Tokens;
+
+    /// <summary>
+    /// The STRICT inbound parse, used at the one ingress where a client chooses the kind
+    /// (<c>POST /api/{key}/prompts</c>): <c>true</c> with the matching kind for one of the SDK's hyphenated
+    /// tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c>, case-insensitive), <c>true</c> with
+    /// <see cref="AnnotationKind.Element"/> for an ABSENT/empty token (unspecified means the whole block — the
+    /// documented <c>{ anchorId, note }</c> submission shape), and <c>false</c> for anything else.
+    /// </summary>
+    /// <remarks>
+    /// Charter #79: this used to fall back to <see cref="AnnotationKind.Element"/> for an unrecognized token, so
+    /// a client sending the camelCase <c>"textRange"</c> — the spelling the skill documented for a while, and the
+    /// one a default C#/JS enum-name convention produces — got <b>HTTP 200 and a whole-element annotation</b>,
+    /// while its <c>quote</c>/<c>start</c>/<c>end</c> stayed on the record contradicting the stored kind. A
+    /// malformed annotation is a client bug worth surfacing; storing a different kind than the client asked for
+    /// is the failure mode this repo has repeatedly paid for. The camelCase spelling is deliberately NOT accepted
+    /// as an alias: a second legal spelling forks the token vocabulary that the SDK emits and the skills document,
+    /// and a 400 naming the three tokens fixes the client permanently in one round trip.
+    /// </remarks>
+    public static bool TryParseKind(string? kind, out AnnotationKind parsed)
+        => AnnotationKindConverter.TryParse(kind, out parsed);
+
+    /// <summary>
+    /// The LENIENT parse, for reading a kind token off a DURABLE record Charter already holds — a review-log
+    /// entry (<c>ReviewLogDrain</c>). Unknown tokens degrade to <see cref="AnnotationKind.Element"/> rather than
+    /// throwing, because the alternative there is dropping a comment somebody actually wrote; there is no client
+    /// to answer with a 400. New client input must go through <see cref="TryParseKind"/> instead.
     /// </summary>
     public static AnnotationKind ParseKind(string? kind) => AnnotationKindConverter.Parse(kind);
 
@@ -78,10 +105,16 @@ internal static class AnnotationApi
     /// The single source of truth mapping between <see cref="AnnotationKind"/> and the browser SDK's hyphenated
     /// wire tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c> — see
     /// <c>sdk/charter-annotate.js</c>'s <c>KIND</c>). Registered in <see cref="JsonOptions"/> so the kind
-    /// serializes as its SDK token and deserializes back from it, and reused by <see cref="ParseKind"/> so the
-    /// inbound string parse cannot drift from the outbound token. An unrecognized token reads as
-    /// <see cref="AnnotationKind.Element"/> — the same leniency the raw <c>Enum.TryParse</c> gave.
+    /// serializes as its SDK token and deserializes back from it, and reused by <see cref="TryParseKind"/> and
+    /// <see cref="ParseKind"/> so no inbound string parse can drift from the outbound token.
     /// </summary>
+    /// <remarks>
+    /// <see cref="Read"/> stays LENIENT on purpose even though the HTTP ingress does not. It deserializes state
+    /// Charter itself wrote (the durability sidecar), and <c>ReviewSidecar.Rehydrate</c> answers ANY exception
+    /// with <c>State.Empty</c> — so a converter that threw on one bad token would silently discard the
+    /// reviewer's entire queue. Losing notes to a strict read is far worse than reading one corrupt kind as
+    /// <c>element</c>.
+    /// </remarks>
     private sealed class AnnotationKindConverter : JsonConverter<AnnotationKind>
     {
         private static readonly IReadOnlyDictionary<AnnotationKind, string> ToToken =
@@ -94,6 +127,24 @@ internal static class AnnotationApi
 
         private static readonly IReadOnlyDictionary<string, AnnotationKind> FromToken =
             ToToken.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>The accepted tokens in catalog order — the vocabulary a rejection message quotes.</summary>
+        public static IReadOnlyList<string> Tokens { get; } = ToToken.Values.ToArray();
+
+        /// <summary>
+        /// Strict: an SDK token maps to its kind, an absent/blank token means the whole block
+        /// (<see cref="AnnotationKind.Element"/>), and anything else is a REFUSAL — never a silent downgrade.
+        /// </summary>
+        public static bool TryParse(string? token, out AnnotationKind kind)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                kind = AnnotationKind.Element;
+                return true;
+            }
+
+            return FromToken.TryGetValue(token, out kind);
+        }
 
         /// <summary>Map an SDK token to its kind, defaulting an unknown/missing token to Element.</summary>
         public static AnnotationKind Parse(string? token)

@@ -616,8 +616,10 @@ public class AnnotationApiTests
         }
     }
 
-    // The STORED classification is correct: a text-range/diagram-node submission is parsed to its matching
-    // AnnotationKind (case-insensitively), and an unknown/missing/empty token stays leniently on Element.
+    // The DURABLE-RECORD reader stays lenient by design: it reads a kind token off a review-log entry Charter
+    // already holds, where the alternative to degrading is dropping a comment somebody actually wrote, and
+    // where there is no client to answer with a 400. Client input goes through the strict TryParseKind instead
+    // (AnnotationKindRejectionTests).
     [Theory]
     [InlineData("element", AnnotationKind.Element)]
     [InlineData("text-range", AnnotationKind.TextRange)]
@@ -627,49 +629,9 @@ public class AnnotationApiTests
     [InlineData(null, AnnotationKind.Element)]
     [InlineData("", AnnotationKind.Element)]
     [InlineData("not-a-real-kind", AnnotationKind.Element)]
-    public void ParseKind_MapsSdkTokens_AndDefaultsLeniently(string? token, AnnotationKind expected)
+    public void ParseKind_TheDurableRecordReader_MapsSdkTokens_AndDegradesRatherThanDropping(
+        string? token, AnnotationKind expected)
         => Assert.Equal(expected, AnnotationApi.ParseKind(token));
-
-    // No-regression: an unknown kind token still POSTs, enqueues, and drains — defaulting to element rather
-    // than being dropped (mirrors the unknown-anchor leniency).
-    [Fact]
-    public async Task RoundTrip_UnknownKind_DrainsAsElement_NoRegression()
-    {
-        var planPath = WriteTempPlan();
-        try
-        {
-            var session = ReviewSession.Create(planPath);
-            using var server = ReviewServer.Start(
-                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
-            using var client = new HttpClient();
-
-            var anchorId = BlockDocument.Parse(PlanMarkdown).Blocks
-                .Single(b => b.RawContent.Contains(AnchorMarker, StringComparison.Ordinal)).Id;
-
-            var promptsUri = new Uri(server.Address, $"api/{Uri.EscapeDataString(session.Key.Value)}/prompts");
-            var payload = JsonSerializer.Serialize(new
-            {
-                kind = "totally-unknown-kind",
-                anchorId,
-                note = "An unrecognized kind must default gracefully, not be dropped.",
-            });
-            using var postRequest = new HttpRequestMessage(HttpMethod.Post, promptsUri)
-            {
-                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
-            };
-            postRequest.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
-
-            using var postResponse = await client.SendAsync(postRequest);
-            Assert.Equal(HttpStatusCode.OK, postResponse.StatusCode);
-
-            var drained = await DrainOne(client, server.Address, session.Key.Value, anchorId);
-            Assert.Equal("element", GetString(drained, "kind"));
-        }
-        finally
-        {
-            TryDelete(planPath);
-        }
-    }
 
     // ---- Helpers ----------------------------------------------------------------------------------------
 
