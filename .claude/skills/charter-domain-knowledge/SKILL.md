@@ -255,6 +255,44 @@ The consumption contract, and the part most easily missed:
 - **`anchorStatus: "orphaned"` is neutral** — not an error, and not proof the note was addressed (§4.3).
 - **`status: "contested"` is NOT resolved** — treat it as open (§4.2).
 
+## The unattended path (`charter headless`)
+
+**Three of Charter's verbs already never block** — `render`, `export`, and `handoff` are all file-in/file-out
+and exit. `export` in particular renders the full offline artifact (local assets inlined, local paths scrubbed,
+SDK-free, strict CSP) and returns without a server or a long-poll, so "render headlessly" was never the gap
+(#7). What was missing is the **forensic guarantee**: the anchor→line source map and the decisions a review
+would have elicited lived **only in the live server's memory**, so an unattended artifact could not be traced
+back to its markdown, and nothing recorded which decisions were never made.
+
+`charter headless <plan> [--out-dir <dir>]` closes exactly that, and nothing else:
+
+- **It calls the same exporter** — the artifact is byte-identical to `charter export`'s, pinned by a test.
+  There is no second render path and no `--headless` flag anywhere; adding one would be pure redundancy.
+- **Both output names are DERIVED from the plan's file name**, so a collecting harness computes them with
+  nothing passed: `<stem>.html` + `<stem>.headless.json`, where `<stem>` is the plan name minus its final
+  extension (`storage.charter.md` → `storage.charter.html` + `storage.charter.headless.json`). Beside the plan
+  by default; `--out-dir` relocates the pair, never renames it. A derived name that would land on the plan
+  itself is **refused** (exit 1) rather than rendered over the source.
+- **The record is a pure function of the plan text + the tool version** — no clock, no local path (the plan and
+  artifact appear as bare names + a `planSha256`), so two runs diff clean and the file is as safe to hand on as
+  the artifact. Shape: `schema` · `charterVersion` · `plan` · `planSha256` · `artifact` · `needsHuman` ·
+  `questions[]` (id/title/mode/target/options/answered/answer + **`anchorId` and `sourceLine`**) · `notes[]` ·
+  `sourceMap` (anchor → 1-based line, ascending).
+- **Exit codes are `0`/`2`, and `2` is NOT a failure.** `0` = nothing outstanding. `2` = everything is on disk
+  **and** a human must decide or fix something. `1` stays the generic verb error. Normative in
+  `src/Charter.Cli/HeadlessExitCodes.cs` — deliberately a **separate** class from `ReviewExitCodes`, whose `2`
+  means "a queue was found and it was empty". Do not read one vocabulary as the other.
+- **`needsHuman` is the single escalation fact**, serialized into the record *and* returned as the exit code,
+  so the file and `$?` can never disagree. Exactly three things raise it: an **open `:::question` with
+  `target: human`**; a **`:::question` whose body will not parse** (target unknown ⇒ assume the worst, never
+  assume `agent`); **duplicate question ids** (an answer would resolve into both and `poll --apply`/`resolve`
+  refuse the write). A missing/unsupported version marker and an unknown `:::foo` are recorded in `notes` but
+  do **not** escalate — every other verb treats those as warnings that never change an exit code, and widening
+  the rule would make the flag almost always true and therefore worthless.
+- **Out of scope, deliberately:** auto-generating human-style review comments (#7 says so — that is an agent's
+  job). `notes[]` is Charter's OWN diagnostics, the stderr warnings an agent-launched run may never show a
+  human, made durable — not synthesized review prose.
+
 ## Git-mediated team review (the durable half)
 
 Comments also become **per-author append-only JSONL** records in `<plan>.review/<slug>.<hash8>.jsonl` beside
@@ -346,6 +384,9 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
    path needs **Guardrails ≥ `1.0.0-preview.48`**; against anything earlier use `charter handoff` → flattened
    `plan.md` (no version floor, supported permanently). A **documentation** compat note, not a code pin —
    Charter never invokes Guardrails; the real gate is the `charter-format` version range checked their side.
+   **Two unrelated senses of "headless" now live in this repo:** this invariant's is *which ingestion path
+   Guardrails uses*; the `charter headless` verb is *how Charter runs unattended*. They meet nowhere in code —
+   `headless` emits no handoff markdown, and `handoff` writes no forensic record.
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`.
 7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag does not
    prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a vendor SDK.
@@ -363,6 +404,7 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 | Architecture, milestones, decisions D1/D2 | `docs/plans/01-combine-lavish-and-visual-plan.md` |
 | Living-document / dual-handoff design (Architecture B) | `docs/plans/02-architecture-b-living-document.md` |
 | Team review: log layout, record schema, the 8 fold rules, `prev`/contested, §5.0 solo primacy | `docs/plans/03-git-mediated-team-review.md` |
+| Unattended run: exit codes; forensic-record shape and what raises `needsHuman` | `src/Charter.Cli/HeadlessExitCodes.cs`, `src/Charter.Core/HeadlessRecord.cs` |
 | Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
 
 ## Status (update as milestones complete)

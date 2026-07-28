@@ -362,9 +362,7 @@ public static class QuestionResolution
 
     /// <summary>The string <c>id</c> of a question block's JSON body, or <c>null</c> when it is unreadable.</summary>
     private static string? ReadQuestionId(string rawContent)
-        => TryLocateJsonBody(rawContent, out var bodyStart, out var bodyEnd)
-            ? ReadId(ParseBody(rawContent.Substring(bodyStart, bodyEnd - bodyStart)))
-            : null;
+        => QuestionBody(rawContent) is { } body ? ReadId(ParseBody(body)) : null;
 
     /// <summary>Parse a JSON body to a <see cref="JsonObject"/>, or <c>null</c> when it is not a JSON object.</summary>
     private static JsonObject? ParseBody(string body)

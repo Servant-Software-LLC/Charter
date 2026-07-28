@@ -53,6 +53,18 @@ if (args.Length >= 1 && args[0] == "export")
     return BuildExportRoot().Parse(args).Invoke();
 }
 
+// `charter headless <plan.charter.md> [--out-dir <dir>]`: the UNATTENDED path (Charter #7). Render the plan
+// to the same self-contained, SDK-free artifact `export` produces AND write the forensic record beside it —
+// the anchor->markdown-line source map plus the decisions and diagnostics that otherwise live only in the
+// review server's memory — at names derived from the plan's own file name, then exit. Starts no server, opens
+// no browser, waits on nothing. Exit 0 nothing outstanding, 2 a human must decide or fix something (both
+// files still written). Parsed with System.CommandLine, parallel to `render`; only entered for the `headless`
+// verb so the banner / --version behavior above stays exactly as-is.
+if (args.Length >= 1 && args[0] == "headless")
+{
+    return BuildHeadlessRoot().Parse(args).Invoke();
+}
+
 // `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]`: read the markdown and, via
 // Charter.Core.HandoffMarkdown, convert every ::: directive block into plain CommonMark Guardrails can
 // consume — resolving each :::question against the optional --answers file (or flagging it open when no
@@ -113,7 +125,7 @@ if (args.Length >= 1 && args[0] == "resolve")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, handoff, convert, skills, poll, resolve. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, headless, handoff, convert, skills, poll, resolve. Flags: --version, --help.");
     return 1;
 }
 
@@ -121,7 +133,7 @@ if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--hel
 AnsiConsole.Write(new FigletText("Charter").Color(Color.Teal));
 AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and you annotate in place.[/]");
 AnsiConsole.WriteLine();
-AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]handoff[/], [green]convert[/], [green]skills[/], [green]poll[/], [green]resolve[/].");
+AnsiConsole.MarkupLine("Status: the local review server is live. Commands: [green]render[/], [green]review[/], [green]export[/], [green]headless[/], [green]handoff[/], [green]convert[/], [green]skills[/], [green]poll[/], [green]resolve[/].");
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
 return 0;
 
@@ -323,6 +335,48 @@ static RootCommand BuildExportRoot()
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
     {
         export,
+    };
+}
+
+// Builds the root command hosting the `headless` subcommand wired to Charter.Cli.HeadlessCommand (which
+// composes Charter.Core's ArtifactExporter and HeadlessRecord). No --out option: BOTH output names are derived
+// from the plan's own file name, which is the point — a collecting harness computes them from the plan path
+// with nothing passed and nothing configured. --out-dir only relocates the pair.
+static RootCommand BuildHeadlessRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the Charter plan (.charter.md) to render and record.",
+    };
+    var outDirOption = new Option<string?>("--out-dir")
+    {
+        Description =
+            "Directory to write <plan-stem>.html and <plan-stem>.headless.json into. Defaults to the plan's "
+            + "own directory. Created if missing; the file names never change.",
+    };
+
+    var headless = new Command(
+        "headless",
+        "Render a Charter plan for an UNATTENDED run: the self-contained artifact plus a forensic record "
+            + "(anchor->line source map, open decisions, diagnostics) at paths derived from the plan's name. "
+            + "Starts no server and never waits for a human. Exit 0 nothing outstanding, 2 a human must decide "
+            + "or fix something (both files are still written).")
+    {
+        inputArgument,
+        outDirOption,
+    };
+
+    headless.SetAction(parseResult => RunVerb("headless", () =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+        string? outDirectory = parseResult.GetValue(outDirOption);
+
+        return HeadlessCommand.Execute(inputPath, outDirectory);
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        headless,
     };
 }
 
