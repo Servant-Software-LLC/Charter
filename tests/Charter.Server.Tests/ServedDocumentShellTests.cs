@@ -61,6 +61,12 @@ public class ServedDocumentShellTests
             var withoutScripts = Regex.Replace(body, "<script[^>]*>.*?</script>", string.Empty,
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
             Assert.DoesNotContain("${", withoutScripts);
+
+            // #51 — the OTHER half of "pan/zoom is review-time only": the SERVED page really does carry it.
+            // Charter.Core.Tests.DiagramPanZoomArtifactTests pins that the exported artifact does not, and a
+            // pair of assertions that could both hold with the feature simply absent would prove nothing.
+            Assert.Contains("charter-zoom-bar", body, System.StringComparison.Ordinal);
+            Assert.Contains("diagram-zoom-reset", body, System.StringComparison.Ordinal);
         }
         finally
         {

@@ -172,6 +172,28 @@ cannot map one, and they change on every render.
 construction no path can escape carrying a Mermaid id. Both granularities share one anchor id, so the
 composer's context line is all that distinguishes them for the reviewer — it names which one explicitly.
 
+**An oversized `:::diagram` PANS and ZOOMS at review time, and only at review time** (#51). Mermaid renders
+with `useMaxWidth`, so a diagram wider than the review column never overflows — it *shrinks*, until the
+labels cannot be read and no scrollbar ever says so. The SDK detects exactly that (`viewBox` width vs
+rendered width) and gives that block, and only that block, a zoom bar (`−` · % · `+` · Reset), a tab stop,
+and the gestures: **Ctrl/⌘+wheel** zooms about the pointer (a plain wheel is never intercepted), a **drag**
+pans once there is somewhere to pan, and **arrow keys** pan the focused block. **Alt stays the annotate
+modifier at every zoom level** — a *drag* swallows the click that ends it, so panning can never open a
+composer, while a *click* annotates exactly as before. A diagram that fits gains none of it. Three rules
+make it safe:
+
+- **It is an SDK affordance, so the exported artifact still renders the diagram statically** (invariant 1).
+  `charter.css` and the renderer are untouched by the feature; `Reset` and `dispose()` both restore the block
+  to the markup the renderer emitted. Guarded from both sides: `DiagramPanZoomArtifactTests` (the artifact
+  carries none of it) and `ServedDocumentShellTests` (the served page does) — either alone would hold with
+  the feature simply absent.
+- **Zooming WIDENS the `<svg>`; it never transforms it.** The block becomes an ordinary scroll container —
+  the same shape #68 gave a wide table. That keeps the label text vector-crisp, keeps `getBoundingClientRect`
+  and hit-testing simply correct so node annotation is unaffected, and makes a pan a real element scroll,
+  which the overlay's existing capture-phase `scroll` listener already follows.
+- **The pan gesture must never take pointer capture.** Capture retargets the compatibility `click` at the
+  captured element, which silently turns a `diagram-node` note into a whole-block one — #48 by the back door.
+
 **"Unanswered" is a state a reviewer can return a `:::question` to.** Clicking the already-selected radio
 clears it (Space does too — Blink dispatches no click for that gesture, so the SDK handles `keyup` itself).
 On an **open** question that just restores "nothing to save"; on an **answered** one it is a real, submittable
@@ -432,8 +454,10 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
     `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
     `reopen` can only reach a log from outside Charter.
 - **Known-open follow-ups:** #74 (the review-log drain has the same stale-queue exposure as #67 — awaiting an
-  architect call), #51 (`:::diagram` pan/zoom specified but never implemented), #46 (annotation lifecycle v2),
-  #5 (layout-audit gate).
+  architect call), #46 (annotation lifecycle v2), #5 (layout-audit gate).
+- **On `feat/diagram-pan-zoom`, not yet merged:** #51 — pan/zoom for an oversized `:::diagram` (see the
+  `:::diagram` granularities section above). SDK-only; the renderer, `charter.css` and the export path are
+  untouched.
 - **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
   their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

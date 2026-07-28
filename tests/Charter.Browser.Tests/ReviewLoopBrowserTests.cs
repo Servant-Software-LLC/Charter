@@ -2482,6 +2482,808 @@ public sealed class ReviewLoopBrowserTests
     private static string Normalize(string? text)
         => System.Text.RegularExpressions.Regex.Replace(text ?? string.Empty, @"\s+", " ").Trim();
 
+    // ---- Charter #51: pan/zoom for an oversized :::diagram ----------------------------------------------
+
+    /// <summary>
+    /// Two diagrams and two paragraphs. The first diagram is a left-to-right chain of six long-labelled
+    /// nodes, so its INTRINSIC width comfortably exceeds any review column — and because Mermaid renders
+    /// with <c>useMaxWidth</c> it does not overflow, it SHRINKS, which is the actual defect: the labels
+    /// become unreadable and no scrollbar ever appears to say so. The second diagram fits and must gain
+    /// nothing at all. The paragraph below the first diagram is the layout the zoom visibly moves.
+    /// </summary>
+    private const string PanZoomDiagramPlan =
+        "# Diagram pan and zoom\n\n" +
+        "Prose above the diagram, at the content column's full width.\n\n" +
+        ":::diagram\n" +
+        "graph LR\n" +
+        "IngressGateway[Public ingress gateway terminating TLS] --> AuthService[Authentication and authorization service]\n" +
+        "AuthService --> SessionStore[Session store backed by a Redis cluster]\n" +
+        "SessionStore --> PlanRenderer[Charter plan renderer and source map builder]\n" +
+        "PlanRenderer --> ReviewServer[Loopback review server and annotation API]\n" +
+        "ReviewServer --> HandoffWriter[Guardrails handoff writer and flattener]\n" +
+        ":::\n\n" +
+        "Prose below the diagram, which moves down when the diagram grows.\n\n" +
+        ":::diagram\n" +
+        "graph TD\n" +
+        "S[Small] --> T[Tiny]\n" +
+        ":::\n";
+
+    /// <summary>The oversized diagram, and the one that fits and must stay untouched.</summary>
+    private const int Oversized = 0;
+
+    private const int Fitting = 1;
+
+    /// <summary>
+    /// Charter #51, the shape of it: an oversized diagram gains the pan/zoom affordance, a diagram that
+    /// fits gains NOTHING, and the exported artifact gains neither — pan/zoom is a review-time affordance
+    /// and the saved file must still render the diagram statically with no SDK (invariant 1).
+    ///
+    /// <para>The fixture's own premise is asserted first, because every other assertion here is vacuous
+    /// without it: the wide diagram really is being drawn smaller than Mermaid laid it out, and the small
+    /// one really is not.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Oversized_diagram_gains_zoom_chrome_a_fitting_one_gains_none_and_the_export_gains_neither()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-zoom-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForDiagramsAsync(page, 2);
+            await WaitForEventAsync(page, "diagram-zoomable");
+
+            // ---- the premise ----
+            var big = await DiagramProbeAsync(page, Oversized);
+            var small = await DiagramProbeAsync(page, Fitting);
+            Assert.True(
+                big.GetProperty("intrinsicWidth").GetDouble()
+                    > big.GetProperty("renderedWidth").GetDouble() + 8,
+                "fixture drift: the wide diagram is not being shown smaller than it was drawn: " + big);
+            Assert.True(
+                small.GetProperty("intrinsicWidth").GetDouble()
+                    <= small.GetProperty("renderedWidth").GetDouble() + 8,
+                "fixture drift: the 'fitting' diagram does not fit: " + small);
+
+            // ---- the oversized one is discoverable and keyboard-reachable ----
+            Assert.Equal(1, await page.Locator(Ui("diagram-zoom")).CountAsync());
+            Assert.True(big.GetProperty("hasBar").GetBoolean(), "the oversized diagram must carry the zoom bar");
+            Assert.Contains("charter-zoomable", big.GetProperty("classes").GetString()!, StringComparison.Ordinal);
+            Assert.Equal(0, big.GetProperty("tabIndex").GetInt32());
+            Assert.Equal("group", big.GetProperty("role").GetString());
+            Assert.False(
+                string.IsNullOrEmpty(big.GetProperty("ariaLabel").GetString()),
+                "a zoomable diagram needs an accessible name or its tab stop announces as nothing");
+            Assert.Equal("100%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            // The SDK reaches the browser as an EMBEDDED RESOURCE, so every glyph in it makes an encoding
+            // hop the source file never sees. Asserted on the characters that actually ARRIVED: a mojibake
+            // zoom-out button is a defect no string test upstream of the resource pipeline can see.
+            Assert.Equal("−", await page.InnerTextAsync(Ui("diagram-zoom-out")));
+            Assert.Equal("+", await page.InnerTextAsync(Ui("diagram-zoom-in")));
+            Assert.Contains("—", big.GetProperty("ariaLabel").GetString()!, StringComparison.Ordinal);
+
+            // ---- and the one that fits gains no chrome and no behaviour change ----
+            // Held over a window: the views are created from a MutationObserver, so chrome arriving LATE
+            // would be just as wrong as chrome arriving now.
+            var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(750);
+            while (DateTime.UtcNow < deadline)
+            {
+                small = await DiagramProbeAsync(page, Fitting);
+                Assert.False(small.GetProperty("hasBar").GetBoolean(),
+                    "a diagram that fits must gain no zoom chrome: " + small);
+                Assert.DoesNotContain(
+                    "charter-zoomable", small.GetProperty("classes").GetString()!, StringComparison.Ordinal);
+                Assert.Equal(-1, small.GetProperty("tabIndex").GetInt32());
+                Assert.Equal(string.Empty, small.GetProperty("role").GetString());
+                Assert.Equal(string.Empty, small.GetProperty("svgInlineWidth").GetString());
+                await Task.Delay(150);
+            }
+
+            // ---- the exported artifact: the diagram renders, and none of this exists ----
+            var exportPath = Path.ChangeExtension(planPath, ".export.html");
+            await File.WriteAllTextAsync(
+                exportPath, ArtifactExporter.Export(PanZoomDiagramPlan, Path.GetDirectoryName(planPath)!));
+            try
+            {
+                await page.GotoAsync(
+                    new Uri(exportPath).AbsoluteUri, new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+                await WaitForDiagramsAsync(page, 2);
+
+                Assert.False(
+                    await page.EvaluateAsync<bool>("() => typeof window.CharterAnnotate !== 'undefined'"),
+                    "the exported artifact must ship WITHOUT the annotation SDK");
+                Assert.Equal(0, await page.Locator("[data-charter-ui]").CountAsync());
+                Assert.Equal(0, await page.Locator(".charter-zoomable").CountAsync());
+
+                var offline = await DiagramProbeAsync(page, Oversized);
+                Assert.False(offline.GetProperty("hasBar").GetBoolean());
+                Assert.Equal(-1, offline.GetProperty("tabIndex").GetInt32());
+                Assert.Equal(string.Empty, offline.GetProperty("svgInlineWidth").GetString());
+                Assert.Equal(string.Empty, offline.GetProperty("blockInlineOverflow").GetString());
+                Assert.True(
+                    offline.GetProperty("renderedWidth").GetDouble() > 0,
+                    "the exported artifact must still render the diagram: " + offline);
+            }
+            finally
+            {
+                File.Delete(exportPath);
+            }
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The capability itself: an oversized diagram ZOOMS (and gets bigger, not blurrier — the &lt;svg&gt;
+    /// is widened, never transformed) and PANS, by every gesture the affordance offers, and Reset returns
+    /// the block to exactly the markup the renderer emitted.
+    ///
+    /// <para>The load-bearing negative is that panning is not annotating. A drag is a drag whether or not
+    /// Alt is held, so BOTH are exercised: neither may open a composer, and neither may reach the server's
+    /// pre-drain queue. A plain wheel must also never be stolen — hijacking page scroll is hostile, so
+    /// only Ctrl+wheel zooms.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Oversized_diagram_zooms_and_pans_and_a_drag_never_becomes_an_annotation()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-panzoom-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForDiagramsAsync(page, 2);
+            await WaitForEventAsync(page, "diagram-zoomable");
+
+            var fit = await DiagramProbeAsync(page, Oversized);
+            var fitWidth = fit.GetProperty("renderedWidth").GetDouble();
+
+            // ---- at FIT a drag is not a pan gesture AT ALL ----
+            // Not merely "it does not move anything": the gesture must not ENGAGE, because an engaged pan
+            // swallows the click that ends it, and a diagram showing everything it has is one a reviewer is
+            // most likely to be clicking rather than navigating.
+            await DragOverDiagramAsync(page, Oversized, -140, 0);
+            Assert.Equal(0, (await DiagramProbeAsync(page, Oversized)).GetProperty("scrollLeft").GetDouble());
+            Assert.Equal(0, await CountEventsAsync(page, "diagram-panned"));
+
+            // And the reviewer's next Alt+click still annotates.
+            var atFitBackground = await VisibleDiagramBackgroundPointAsync(page, Oversized);
+            await page.Keyboard.DownAsync("Alt");
+            await page.Mouse.ClickAsync(atFitBackground.X, atFitBackground.Y);
+            await page.Keyboard.UpAsync("Alt");
+            await page.WaitForSelectorAsync(Ui("composer"));
+            await page.ClickAsync(Ui("composer-cancel"));
+
+            // ---- zoom in with the explicit controls ----
+            await page.ClickAsync(Ui("diagram-zoom-in"));
+            await page.ClickAsync(Ui("diagram-zoom-in"));
+            Assert.Equal("156%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            var zoomed = await DiagramProbeAsync(page, Oversized);
+            Assert.True(
+                zoomed.GetProperty("renderedWidth").GetDouble() > fitWidth * 1.5,
+                "zooming must make the diagram BIGGER, not merely change a label: " + zoomed);
+            // Widened, never transformed: a CSS transform would rasterize the label text this exists to
+            // make readable, and would move every rect the annotation overlay is painted from.
+            Assert.Equal("none", zoomed.GetProperty("svgTransform").GetString());
+            Assert.True(
+                zoomed.GetProperty("scrollWidth").GetDouble() > zoomed.GetProperty("clientWidth").GetDouble(),
+                "a zoomed diagram must become a scroll region: " + zoomed);
+
+            // ---- a plain wheel is NOT a zoom (page scroll stays the page's) ----
+            await WheelOverDiagramAsync(page, Oversized, -240, control: false);
+            Assert.Equal("156%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            // ---- Ctrl+wheel IS ----
+            await WheelOverDiagramAsync(page, Oversized, -240, control: true);
+            Assert.NotEqual("156%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            // ---- and now a real drag PANS ----
+            await ScrollDiagramAsync(page, Oversized, 0, 0);
+            await DragOverDiagramAsync(page, Oversized, -160, 0);
+            var panned = await DiagramProbeAsync(page, Oversized);
+            Assert.True(
+                panned.GetProperty("scrollLeft").GetDouble() > 0,
+                "a primary-button drag over a zoomed diagram did not pan it: " + panned);
+
+            // The zoom bar is absolutely positioned INSIDE the scroll container, so it would ride away with
+            // the content if it were not pushed back by the scroll offset.
+            var barLeft = await page.EvaluateAsync<double>(
+                "() => { const b = document.querySelector('[data-charter-ui=\"diagram-zoom\"]');" +
+                "  const p = b.closest('pre.mermaid');" +
+                "  return b.getBoundingClientRect().left - p.getBoundingClientRect().left; }");
+            Assert.True(barLeft >= 0 && barLeft < 40, "the zoom bar panned away with the content: " + barLeft);
+
+            // ---- neither drag annotated anything, with or without the annotate modifier ----
+            await ScrollDiagramAsync(page, Oversized, 0, 0);
+            var openedBefore = await CountEventsAsync(page, "composer-opened");
+            await DragOverDiagramAsync(page, Oversized, -150, 0, alt: true);
+            await DragOverDiagramAsync(page, Oversized, 0, -60);
+            await AssertNoComposerForAsync(page, 900);
+            Assert.Equal(openedBefore, await CountEventsAsync(page, "composer-opened"));
+            Assert.Equal(0, (await ListAnnotationsAsync(server.Address, session.Key.Value)).GetArrayLength());
+
+            // ---- Reset restores the block to exactly what the renderer emitted ----
+            await page.ClickAsync(Ui("diagram-zoom-reset"));
+            Assert.Equal("100%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            var reset = await DiagramProbeAsync(page, Oversized);
+            Assert.Equal(string.Empty, reset.GetProperty("svgInlineWidth").GetString());
+            Assert.Equal(string.Empty, reset.GetProperty("svgInlineMaxWidth").GetString());
+            Assert.Equal(string.Empty, reset.GetProperty("blockInlineOverflow").GetString());
+            Assert.Equal(string.Empty, reset.GetProperty("blockInlineMaxHeight").GetString());
+            Assert.Equal(0, reset.GetProperty("scrollLeft").GetDouble());
+            Assert.True(
+                Math.Abs(reset.GetProperty("renderedWidth").GetDouble() - fitWidth) <= 1,
+                "Reset must return the diagram to its fit width: " + reset);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The regression this feature could most easily cause, asserted on the POSTED PAYLOAD: after a zoom
+    /// AND a pan, a node click is still a <c>diagram-node</c> note carrying the BLOCK's anchor id and that
+    /// node's own id (#48), and a background click is still the plain <c>element</c> note (#60). Both must
+    /// still resolve to the <c>:::diagram</c>'s markdown line.
+    ///
+    /// <para>Every click here is a real mouse click at a point computed from the LIVE, zoomed, panned
+    /// layout — never a locator click, which would scroll the block and quietly undo the pan the test is
+    /// about.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Diagram_node_and_background_still_anchor_to_the_block_after_a_zoom_and_a_pan()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-zoom-anchor-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForDiagramsAsync(page, 2);
+            await WaitForEventAsync(page, "diagram-zoomable");
+
+            var blockId = await page.EvaluateAsync<string>("() => document.querySelectorAll('pre.mermaid')[0].id");
+            Assert.False(string.IsNullOrEmpty(blockId), "the renderer must stamp a stable block id on pre.mermaid");
+
+            await page.ClickAsync(Ui("diagram-zoom-in"));
+            await page.ClickAsync(Ui("diagram-zoom-in"));
+
+            // Zooming about the block's centre already moves the scroll offset, so the DRAG is measured
+            // against where the zoom left it — otherwise this premise would hold with panning broken.
+            var beforeDrag = (await DiagramProbeAsync(page, Oversized)).GetProperty("scrollLeft").GetDouble();
+            await DragOverDiagramAsync(page, Oversized, -180, 0);
+            var panned = (await DiagramProbeAsync(page, Oversized)).GetProperty("scrollLeft").GetDouble();
+            Assert.True(
+                panned > beforeDrag,
+                "this test proves nothing unless the drag really panned the diagram (" +
+                    beforeDrag + " -> " + panned + ")");
+
+            // ---- a NODE, clicked where it actually is on screen now ----
+            var node = await VisibleDiagramNodePointAsync(page, Oversized);
+            await page.Keyboard.DownAsync("Alt");
+            await page.Mouse.ClickAsync(node.X, node.Y);
+            await page.Keyboard.UpAsync("Alt");
+            await page.WaitForSelectorAsync(Ui("composer"));
+            Assert.Contains(
+                "diagram node", await page.InnerTextAsync(Ui("composer-context")), StringComparison.OrdinalIgnoreCase);
+            await page.FillAsync(Ui("composer-input"), "this node needs a failure path");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // The pan must survive the annotation round trip — losing it would put the reviewer back at the
+            // top-left of a diagram they had just navigated.
+            Assert.True(
+                (await DiagramProbeAsync(page, Oversized)).GetProperty("scrollLeft").GetDouble() > 0,
+                "annotating a node reset the diagram's pan");
+
+            // ---- the BACKGROUND, likewise ----
+            var background = await VisibleDiagramBackgroundPointAsync(page, Oversized);
+            await page.Keyboard.DownAsync("Alt");
+            await page.Mouse.ClickAsync(background.X, background.Y);
+            await page.Keyboard.UpAsync("Alt");
+            await page.WaitForSelectorAsync(Ui("composer"));
+            Assert.Contains(
+                "whole diagram", await page.InnerTextAsync(Ui("composer-context")), StringComparison.OrdinalIgnoreCase);
+            await page.FillAsync(Ui("composer-input"), "this diagram is missing the retry edge");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // ---- the posted payloads ----
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(2, listed.GetArrayLength());
+
+            var nodeNote = FindByNote(listed, "this node needs a failure path");
+            Assert.Equal("diagram-node", nodeNote.GetProperty("kind").GetString());
+            Assert.Equal(blockId, nodeNote.GetProperty("anchorId").GetString());
+            Assert.Equal(node.NodeId, nodeNote.GetProperty("nodeId").GetString());
+            AssertMapsToThePanZoomDiagram(nodeNote);
+
+            var wholeNote = FindByNote(listed, "this diagram is missing the retry edge");
+            Assert.Equal("element", wholeNote.GetProperty("kind").GetString());
+            Assert.Equal(blockId, wholeNote.GetProperty("anchorId").GetString());
+            Assert.Equal(JsonValueKind.Null, wholeNote.GetProperty("nodeId").ValueKind);
+            AssertMapsToThePanZoomDiagram(wholeNote);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The transient text highlight is painted as fixed-position rectangles from a <c>Range</c>'s client
+    /// rects, so it is only correct while something repaints it. A zoom changes the diagram block's own
+    /// height and therefore moves every block below it — exactly the class of movement a scroll or a
+    /// resize causes, and it must be answered the same way.
+    ///
+    /// <para>Asserted as the OFFSET between the overlay and the paragraph it covers, which is invariant to
+    /// anything else that may move the page (Playwright scrolling a control into view, for instance),
+    /// with the reflow itself asserted separately so the test cannot pass by nothing having happened.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Annotation_overlay_stays_aligned_when_a_diagram_zoom_reflows_the_page()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-zoom-overlay-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 900);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForDiagramsAsync(page, 2);
+            await WaitForEventAsync(page, "diagram-zoomable");
+
+            // A text-range note on the paragraph BELOW the diagram — the block a zoom pushes down.
+            var line = await FirstLineRectAsync(page, "body > p:nth-of-type(2)");
+            await page.Mouse.MoveAsync(line.X + 4, line.Y + (line.Height / 2));
+            await page.Mouse.DownAsync();
+            await page.Mouse.MoveAsync(
+                line.X + (line.Width * 0.7f), line.Y + (line.Height / 2), new MouseMoveOptions { Steps = 10 });
+            await page.Mouse.UpAsync();
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "which paragraph the overlay covers");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // Jump paints the highlight over that range. (The panel opens itself once there is an entry, so
+            // the floating toggle is hidden — clicking it here would wait forever.)
+            await page.WaitForSelectorAsync(Ui("item-jump"));
+            await page.ClickAsync(Ui("item-jump"));
+            await page.WaitForSelectorAsync(Ui("overlay-rect"));
+
+            var before = await OverlayOffsetAsync(page);
+            await page.ClickAsync(Ui("diagram-zoom-in"));
+            var after = await OverlayOffsetAsync(page);
+
+            // The premise: the zoom really did make the diagram taller, so the paragraph really did move.
+            Assert.True(
+                after.BlockHeight > before.BlockHeight + 10,
+                "fixture drift: the zoom did not change the diagram's height, so nothing reflowed (" +
+                    before.BlockHeight + " -> " + after.BlockHeight + ")");
+
+            // The assertion: the highlight is still exactly over the text it names.
+            Assert.True(
+                Math.Abs(after.Offset - before.Offset) <= 1,
+                "the annotation overlay drifted off its text when the diagram was zoomed (" +
+                    before.Offset + " -> " + after.Offset + ")");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Charter #68's precedent, applied: an affordance only a mouse can reach hides the diagram from a
+    /// keyboard-only reviewer just as effectively as shrinking it did. The block itself is a tab stop, the
+    /// zoom keys work there, arrow keys pan it (it is a real scroll container, so the browser does that
+    /// for us) and <c>0</c> puts it back.
+    /// </summary>
+    [SkippableFact]
+    public async Task Diagram_pan_and_zoom_are_reachable_and_operable_from_the_keyboard()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-diagram-zoom-keys-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 800);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForDiagramsAsync(page, 2);
+            await WaitForEventAsync(page, "diagram-zoomable");
+
+            // ---- TAB reaches it, from the top of the document, without a mouse ----
+            await page.EvaluateAsync("() => { document.body.setAttribute('tabindex', '-1'); document.body.focus(); }");
+            var reached = false;
+            for (var i = 0; i < 6 && !reached; i++)
+            {
+                await page.Keyboard.PressAsync("Tab");
+                reached = await page.EvaluateAsync<bool>(
+                    "() => document.activeElement === document.querySelectorAll('pre.mermaid')[0]");
+            }
+
+            Assert.True(reached, "a keyboard-only reviewer cannot reach the zoomable diagram with Tab");
+
+            // ---- the zoom keys ----
+            await page.Keyboard.PressAsync("+");
+            await page.Keyboard.PressAsync("+");
+            Assert.Equal("156%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+
+            // ---- and the arrows pan it ----
+            for (var i = 0; i < 10; i++)
+            {
+                await page.Keyboard.PressAsync("ArrowRight");
+            }
+
+            Assert.True(
+                await PollDiagramScrollLeftAsync(page, Oversized) > 0,
+                "ArrowRight on the focused diagram did not pan it");
+
+            // ---- 0 puts it back ----
+            await page.Keyboard.PressAsync("0");
+            Assert.Equal("100%", await page.InnerTextAsync(Ui("diagram-zoom-level")));
+            Assert.Equal(0, (await DiagramProbeAsync(page, Oversized)).GetProperty("scrollLeft").GetDouble());
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    // ---- #51 helpers -------------------------------------------------------------------------------------
+
+    /// <summary>Wait until Mermaid has rendered <paramref name="count"/> diagrams to inline SVG.</summary>
+    private static async Task WaitForDiagramsAsync(IPage page, int count)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(25);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await page.Locator("pre.mermaid svg").CountAsync() >= count)
+            {
+                return;
+            }
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail("Mermaid never rendered " + count + " diagrams to <svg>");
+    }
+
+    /// <summary>
+    /// Everything the pan/zoom affordance could get wrong about one rendered <c>:::diagram</c>, as JSON so
+    /// the whole shape lands in any assertion message. <c>intrinsicWidth</c> vs <c>renderedWidth</c> is the
+    /// defect itself: with Mermaid's <c>useMaxWidth</c> an oversized diagram never overflows, it shrinks.
+    /// </summary>
+    private static async Task<JsonElement> DiagramProbeAsync(IPage page, int index)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "i => {" +
+            "  const el = document.querySelectorAll('pre.mermaid')[i];" +
+            "  if (!el) return 'null';" +
+            "  const svg = el.querySelector('svg');" +
+            "  const box = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };" +
+            "  const vb = svg && svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.width : 0;" +
+            "  return JSON.stringify({" +
+            "    blockId: el.id," +
+            "    classes: el.className," +
+            "    tabIndex: el.tabIndex," +
+            "    role: el.getAttribute('role') || ''," +
+            "    ariaLabel: el.getAttribute('aria-label') || ''," +
+            "    hasBar: !!el.querySelector('[data-charter-ui=\"diagram-zoom\"]')," +
+            "    intrinsicWidth: vb," +
+            "    renderedWidth: box.width," +
+            "    svgInlineWidth: svg ? svg.style.width : ''," +
+            "    svgInlineMaxWidth: svg ? svg.style.maxWidth : ''," +
+            "    svgTransform: svg ? getComputedStyle(svg).transform : ''," +
+            "    blockInlineOverflow: el.style.overflow," +
+            "    blockInlineMaxHeight: el.style.maxHeight," +
+            "    blockHeight: el.getBoundingClientRect().height," +
+            "    scrollLeft: el.scrollLeft, scrollTop: el.scrollTop," +
+            "    scrollWidth: el.scrollWidth, clientWidth: el.clientWidth," +
+            "    scrollHeight: el.scrollHeight, clientHeight: el.clientHeight" +
+            "  });" +
+            "}",
+            index);
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return doc.RootElement.Clone();
+    }
+
+    private static Task ScrollDiagramAsync(IPage page, int index, int left, int top)
+        => page.EvaluateAsync(
+            "a => { const el = document.querySelectorAll('pre.mermaid')[a.i];" +
+            "  el.scrollLeft = a.left; el.scrollTop = a.top; return null; }",
+            new { i = index, left, top });
+
+    /// <summary>
+    /// A real press-drag-release across the diagram, starting at the centre of its visible box. Delivered
+    /// through <c>page.Mouse</c> so Chromium produces genuine pointer events — a synthetic
+    /// <c>dispatchEvent</c> would prove nothing about the gesture a reviewer actually makes.
+    /// </summary>
+    private static async Task DragOverDiagramAsync(IPage page, int index, int dx, int dy, bool alt = false)
+    {
+        var box = await page.Locator("pre.mermaid").Nth(index).BoundingBoxAsync();
+        Assert.NotNull(box);
+        var startX = box!.X + (box.Width / 2);
+        var startY = box.Y + (box.Height / 2);
+
+        if (alt)
+        {
+            await page.Keyboard.DownAsync("Alt");
+        }
+
+        await page.Mouse.MoveAsync(startX, startY);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(startX + dx, startY + dy, new MouseMoveOptions { Steps = 12 });
+        await page.Mouse.UpAsync();
+
+        if (alt)
+        {
+            await page.Keyboard.UpAsync("Alt");
+        }
+    }
+
+    private static async Task WheelOverDiagramAsync(IPage page, int index, int deltaY, bool control)
+    {
+        var box = await page.Locator("pre.mermaid").Nth(index).BoundingBoxAsync();
+        Assert.NotNull(box);
+        await page.Mouse.MoveAsync(box!.X + (box.Width / 2), box.Y + (box.Height / 2));
+
+        if (control)
+        {
+            await page.Keyboard.DownAsync("Control");
+        }
+
+        await page.Mouse.WheelAsync(0, deltaY);
+
+        if (control)
+        {
+            await page.Keyboard.UpAsync("Control");
+        }
+
+        // Wheel handling is asynchronous (the compositor delivers it), so give the SDK a bounded window to
+        // answer before anything is read back.
+        await Task.Delay(250);
+    }
+
+    /// <summary>
+    /// Poll the diagram's own <c>scrollLeft</c> until it moves off zero, or give up. A bounded
+    /// <c>EvaluateAsync</c> poll, never <c>WaitForFunctionAsync</c>, whose in-page <c>eval</c> the served
+    /// page's CSP correctly refuses.
+    /// </summary>
+    private static async Task<double> PollDiagramScrollLeftAsync(IPage page, int index, int timeoutMs = 5_000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        double scrollLeft = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            scrollLeft = await page.EvaluateAsync<double>(
+                "i => { const el = document.querySelectorAll('pre.mermaid')[i]; return el ? el.scrollLeft : -1; }",
+                index);
+            if (scrollLeft > 0)
+            {
+                return scrollLeft;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return scrollLeft;
+    }
+
+    /// <summary>
+    /// A viewport point on a Mermaid NODE that is genuinely visible inside the (possibly clipped, possibly
+    /// panned) block right now, plus that node's own Mermaid id. Scanned from the live layout and it FAILS
+    /// when no such point exists, so a zoom that broke hit-testing cannot pass as "nothing to click".
+    /// </summary>
+    private static async Task<(float X, float Y, string NodeId)> VisibleDiagramNodePointAsync(
+        IPage page, int index)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "i => {" +
+            "  const block = document.querySelectorAll('pre.mermaid')[i];" +
+            "  const br = block.getBoundingClientRect();" +
+            "  const nodes = block.querySelectorAll('g.node');" +
+            "  for (let n = 0; n < nodes.length; n++) {" +
+            "    const r = nodes[n].getBoundingClientRect();" +
+            "    for (let fy = 0.25; fy <= 0.8; fy += 0.15) {" +
+            "      for (let fx = 0.2; fx <= 0.85; fx += 0.1) {" +
+            "        const x = r.left + (r.width * fx), y = r.top + (r.height * fy);" +
+            "        if (x < br.left + 2 || x > br.right - 2 || y < br.top + 2 || y > br.bottom - 2) continue;" +
+            "        const el = document.elementFromPoint(x, y);" +
+            "        if (!el || !block.contains(el) || el.closest('[data-charter-ui]')) continue;" +
+            "        if (el.closest('g.node') !== nodes[n]) continue;" +
+            "        return JSON.stringify({ x: x, y: y, nodeId: nodes[n].id });" +
+            "      }" +
+            "    }" +
+            "  }" +
+            "  return 'null';" +
+            "}",
+            index);
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return (
+            (float)doc.RootElement.GetProperty("x").GetDouble(),
+            (float)doc.RootElement.GetProperty("y").GetDouble(),
+            doc.RootElement.GetProperty("nodeId").GetString()!);
+    }
+
+    /// <summary>The same scan for the diagram's BACKGROUND — inside the visible box, on no node.</summary>
+    private static async Task<(float X, float Y)> VisibleDiagramBackgroundPointAsync(IPage page, int index)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "i => {" +
+            "  const block = document.querySelectorAll('pre.mermaid')[i];" +
+            "  const br = block.getBoundingClientRect();" +
+            "  for (let fy = 0.1; fy < 1; fy += 0.04) {" +
+            "    for (let fx = 0.02; fx < 1; fx += 0.02) {" +
+            "      const x = br.left + (br.width * fx), y = br.top + (br.height * fy);" +
+            "      const el = document.elementFromPoint(x, y);" +
+            "      if (!el || !block.contains(el)) continue;" +
+            "      if (el.closest('.node, g.node, [data-node-id], [data-charter-ui]')) continue;" +
+            "      return JSON.stringify({ x: x, y: y });" +
+            "    }" +
+            "  }" +
+            "  return 'null';" +
+            "}",
+            index);
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return (
+            (float)doc.RootElement.GetProperty("x").GetDouble(),
+            (float)doc.RootElement.GetProperty("y").GetDouble());
+    }
+
+    /// <summary>
+    /// The first overlay rectangle's top relative to the paragraph it covers, plus the diagram block's
+    /// height. The OFFSET is what must not change; the height is the proof that something moved at all.
+    /// </summary>
+    private static async Task<(double Offset, double BlockHeight)> OverlayOffsetAsync(IPage page)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "() => {" +
+            "  const rect = document.querySelector('[data-charter-ui=\"overlay-rect\"]');" +
+            "  const prose = document.querySelectorAll('body > p')[1];" +
+            "  const block = document.querySelectorAll('pre.mermaid')[0];" +
+            "  if (!rect) return 'null';" +
+            "  return JSON.stringify({" +
+            "    offset: rect.getBoundingClientRect().top - prose.getBoundingClientRect().top," +
+            "    blockHeight: block.getBoundingClientRect().height" +
+            "  });" +
+            "}");
+
+        Assert.NotEqual("null", json);
+        using var doc = JsonDocument.Parse(json!);
+        return (
+            doc.RootElement.GetProperty("offset").GetDouble(),
+            doc.RootElement.GetProperty("blockHeight").GetDouble());
+    }
+
+    /// <summary>
+    /// The drained annotation resolves to the <c>:::diagram</c>'s own source line — asserted against the
+    /// plan text, so it proves the agent is pointed at the right markdown and not merely that a number
+    /// arrived.
+    /// </summary>
+    private static void AssertMapsToThePanZoomDiagram(JsonElement annotation)
+    {
+        var line = annotation.GetProperty("sourceLine");
+        Assert.True(
+            line.ValueKind == JsonValueKind.Number,
+            "the annotation reached the agent with no sourceLine (anchorId was '" +
+                annotation.GetProperty("anchorId").GetString() + "')");
+        Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+        Assert.StartsWith(
+            ":::diagram", PanZoomDiagramPlan.Split('\n')[line.GetInt32() - 1], StringComparison.Ordinal);
+    }
+
     // ---- shared browser plumbing -------------------------------------------------------------------------
 
     /// <summary>A launched Playwright + browser pair, or <see langword="null"/> where Chromium is absent.</summary>
