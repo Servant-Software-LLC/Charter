@@ -9,8 +9,8 @@
  * renderer selects the same way.
  *
  * Selectors match the renderer's structural markers (CharterRenderer / CharterContainerRenderer): .note / .warn
- * callouts, .comparison cards, form.question, the .diff / .diff-add / .diff-del / .diff-context lines, and
- * pre.mermaid diagrams.
+ * callouts, .comparison cards, form.question, the .diff / .diff-add / .diff-del / .diff-context lines,
+ * pre.mermaid diagrams, and the .table-scroll container CharterTableRenderer wraps every table in.
  */
 
 :root {
@@ -21,6 +21,8 @@
   --charter-border: #d0d7de;
   --charter-code-bg: #f6f8fa;
   --charter-accent: #0969da;
+  /* The persistent scrollbar thumb on a .table-scroll region — the "there is more here" signal (#68). */
+  --charter-scroll-thumb: #afb8c1;
 
   --charter-note-bg: #ddf4ff;
   --charter-note-border: #54aeff;
@@ -44,6 +46,7 @@
     --charter-border: #30363d;
     --charter-code-bg: #161b22;
     --charter-accent: #4493f8;
+    --charter-scroll-thumb: #484f58;
 
     --charter-note-bg: #0b2942;
     --charter-note-border: #1f6feb;
@@ -109,14 +112,74 @@ li { margin: 0.2rem 0; }
   background: var(--charter-code-bg);
 }
 
-/* Tables. */
+/*
+ * Tables (Charter #68).
+ *
+ * A plan's tables carry exactly the content that is wide and must not be truncated — file paths, method
+ * signatures — so they overflow the review column, and the review-notes panel narrows that column further.
+ * `overflow-x` used to sit on the <table> element itself; that shape left the clipped columns unreachable in
+ * practice, because Chromium draws that scrollbar as a fading OVERLAY (measured gutter: 0px) so nothing told
+ * the reviewer the content could move, and a <table> takes no tab stop so a keyboard-only reviewer had no way
+ * in at all.
+ *
+ * The scroll now lives on the WRAPPING .table-scroll container the renderer emits around every table
+ * (CharterTableRenderer), which is both the conventional shape and the only one that can carry an affordance.
+ * All of it is plain CSS + markup with no SDK involvement, so the saved and exported artifacts behave
+ * identically offline.
+ */
+.table-scroll {
+  margin: 1rem 0;
+  overflow-x: auto;
+  /* A horizontal wheel/trackpad gesture that runs out of table must not become browser back-navigation. */
+  overscroll-behavior-x: contain;
+}
+
+/*
+ * Discoverability. Sizing ::-webkit-scrollbar opts the container OUT of Chromium/WebKit's fading overlay
+ * scrollbars, so an overflowing table always shows a real, persistent bar — the signal that there is more
+ * to see. It costs a table that FITS nothing at all: `overflow-x: auto` then draws no bar and takes no
+ * gutter, so a narrow table gains no decoration and no false affordance.
+ * Firefox has no ::-webkit-scrollbar and gets the standard properties instead. The two live in
+ * mutually-exclusive branches deliberately: Chromium ignores ::-webkit-scrollbar styling entirely once
+ * scrollbar-width/scrollbar-color are set on the same element, so declaring both would cancel the first.
+ */
+.table-scroll::-webkit-scrollbar { height: 10px; }
+.table-scroll::-webkit-scrollbar-track {
+  background: var(--charter-code-bg);
+  border-radius: 999px;
+}
+.table-scroll::-webkit-scrollbar-thumb {
+  background: var(--charter-scroll-thumb);
+  border-radius: 999px;
+}
+.table-scroll::-webkit-scrollbar-thumb:hover { background: var(--charter-muted); }
+@supports not selector(::-webkit-scrollbar) {
+  .table-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--charter-scroll-thumb) var(--charter-code-bg);
+  }
+}
+
+/* The renderer makes the container focusable, so its focus stop has to be visible. */
+.table-scroll:focus-visible {
+  outline: 2px solid var(--charter-accent);
+  outline-offset: 2px;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
   margin: 1rem 0;
-  overflow: auto;
-  display: block;
 }
+/* The wrapper owns the block spacing; doubling it would push the table off its neighbours. */
+.table-scroll > table { margin: 0; }
+/*
+ * The one <table> the renderer never wraps is a raw one an author put inside :::custom-html, which renders
+ * its HTML verbatim by design. Keep it contained there so the escape hatch cannot blow the page out
+ * horizontally — the same containment those tables had before the wrapper existed.
+ */
+.custom-html table { display: block; overflow-x: auto; }
+
 th, td {
   border: 1px solid var(--charter-border);
   padding: 0.4rem 0.75rem;
