@@ -369,6 +369,7 @@ public static class ReviewLog
             Resolution = outcome.Resolution,
             ResolutionRecords = outcome.ResolutionRecords,
             RetractRecord = outcome.Retract,
+            StateHeads = outcome.StateHeads,
             Replies = Order(replies.ToList(), r => r.Record, r => r.Id),
         };
     }
@@ -395,11 +396,12 @@ public static class ReviewLog
         ReviewResolution Resolution,
         IReadOnlyList<ReviewRecord> ResolutionRecords,
         ReviewRecord? Edit,
-        ReviewRecord? Retract)
+        ReviewRecord? Retract,
+        IReadOnlyList<ReviewRecord> StateHeads)
     {
         /// <summary>An item nobody has acted on: open, unedited, not withdrawn.</summary>
         public static readonly ItemOutcome Untouched =
-            new(ReviewResolution.Open, Array.Empty<ReviewRecord>(), null, null);
+            new(ReviewResolution.Open, Array.Empty<ReviewRecord>(), null, null, Array.Empty<ReviewRecord>());
 
         /// <summary>The settled text: the settled edit's body, or the item's original body.</summary>
         public string? Body(ReviewRecord item) => Edit?.Body ?? item.Body;
@@ -438,7 +440,7 @@ public static class ReviewLog
             .OrderBy(n => n.Id, StringComparer.Ordinal)
             .FirstOrDefault();
 
-        return new ItemOutcome(resolution, resolutionRecords, edit, retract);
+        return new ItemOutcome(resolution, resolutionRecords, edit, retract, chain.Heads);
     }
 
     /// <summary>

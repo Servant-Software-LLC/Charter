@@ -69,6 +69,12 @@ internal static class AnnotationApi
     public static AnnotationKind ParseKind(string? kind) => AnnotationKindConverter.Parse(kind);
 
     /// <summary>
+    /// The wire token for <paramref name="kind"/>, from the SAME map that serializes it — so a review-log
+    /// record's <c>anchor.kind</c> and the annotation API's <c>kind</c> can never drift apart.
+    /// </summary>
+    public static string KindToken(AnnotationKind kind) => AnnotationKindConverter.Token(kind);
+
+    /// <summary>
     /// The single source of truth mapping between <see cref="AnnotationKind"/> and the browser SDK's hyphenated
     /// wire tokens (<c>element</c> / <c>text-range</c> / <c>diagram-node</c> — see
     /// <c>sdk/charter-annotate.js</c>'s <c>KIND</c>). Registered in <see cref="JsonOptions"/> so the kind
@@ -92,6 +98,9 @@ internal static class AnnotationApi
         /// <summary>Map an SDK token to its kind, defaulting an unknown/missing token to Element.</summary>
         public static AnnotationKind Parse(string? token)
             => token is not null && FromToken.TryGetValue(token, out var kind) ? kind : AnnotationKind.Element;
+
+        /// <summary>Map a kind back to its SDK token — the exact inverse of <see cref="Parse"/>.</summary>
+        public static string Token(AnnotationKind kind) => ToToken[kind];
 
         public override AnnotationKind Read(
             ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

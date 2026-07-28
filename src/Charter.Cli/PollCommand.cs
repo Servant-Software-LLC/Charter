@@ -34,8 +34,20 @@ internal static class PollCommand
         var resolution = await ResolveSessionAsync(input, sessionPath, url).ConfigureAwait(false);
         if (resolution.Client is null)
         {
-            // No live session (or ambiguous — ResolveSessionAsync already listed the candidates to stderr).
-            // Emit the parseable session:null envelope either way so an agent always gets JSON, and exit 3.
+            // A LIVE session always takes precedence; only once none was found does the committed review log
+            // become the source. With a plan named, read it — this is the step that closes the loop, because
+            // the agent reading a teammate's comments is EXECUTING, not running `charter review`.
+            if (!resolution.Ambiguous && !string.IsNullOrEmpty(input))
+            {
+                var fromLog = DrainReviewLog(input);
+                if (fromLog is not null)
+                {
+                    return fromLog.Value;
+                }
+            }
+
+            // No live session, and no readable log (or none asked for). Emit the parseable session:null
+            // envelope either way so an agent always gets JSON, and exit 3.
             if (!resolution.Ambiguous)
             {
                 Console.Error.WriteLine(NoSessionMessage);
@@ -140,6 +152,56 @@ internal static class PollCommand
         return annotations.Items.Count + answers.Items.Count >= 1 || submission is not null
             ? ReviewExitCodes.Drained
             : ReviewExitCodes.CleanEmpty;
+    }
+
+    /// <summary>
+    /// The server-less read: fold the committed <c>&lt;plan&gt;.review/*.jsonl</c> logs and emit the SAME
+    /// envelope shape, or null when there is no log beside <paramref name="planPath"/> at all (which leaves
+    /// the caller on the unchanged no-session path, exit 3 — "no session AND no readable log" is still
+    /// "nothing to drain", and an agent that branches on 3 keeps behaving as it does today).
+    /// </summary>
+    /// <remarks>
+    /// Exit codes are unchanged in meaning: comments reported ⇒ 0, a readable log with nothing new ⇒ 2, a log
+    /// that could not be READ ⇒ 4 (the review state is unknown, never "nothing queued"). The envelope's
+    /// <c>session</c> is null because there genuinely is none; the additive <c>source: "review-log"</c> field
+    /// is what distinguishes this from the no-session case without changing any existing field.
+    /// </remarks>
+    private static int? DrainReviewLog(string planPath)
+    {
+        ReviewLogDrainResult drain;
+        try
+        {
+            drain = ReviewLogDrain.Drain(planPath, StateDirectory.Consumed());
+        }
+        catch (Exception ex)
+        {
+            // A ledger this machine cannot write must not swallow a teammate's comments; report it as a failed
+            // drain (state unknown) rather than as an empty one.
+            drain = new ReviewLogDrainResult(Array.Empty<Annotation>(), HasLog: true, DrainError: ex.Message);
+        }
+
+        if (!drain.HasLog)
+        {
+            return null;
+        }
+
+        // No live session, so no round hand-off can exist: `reviewSubmission` is null by construction here,
+        // and `source` is named because the envelope now carries BOTH additive fields.
+        Console.WriteLine(PollEnvelope.Serialize(
+            null,
+            drain.Annotations,
+            Array.Empty<Answer>(),
+            drain.DrainError,
+            source: PollEnvelope.ReviewLogSource));
+
+        if (drain.DrainError is not null)
+        {
+            Console.Error.WriteLine(
+                $"charter poll: {drain.DrainError}; the review state is unknown — not reporting 'nothing queued'.");
+            return ReviewExitCodes.DrainFailed;
+        }
+
+        return drain.Annotations.Count >= 1 ? ReviewExitCodes.Drained : ReviewExitCodes.CleanEmpty;
     }
 
     private static async Task<SessionResolution> ResolveSessionAsync(string? input, string? sessionPath, string? url)

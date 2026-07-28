@@ -102,6 +102,16 @@ public sealed record ReviewComment
     /// <summary>The applied <c>retract</c> record, when the comment's own author withdrew it.</summary>
     public ReviewRecord? RetractRecord { get; init; }
 
+    /// <summary>
+    /// The state records nothing else observed — the live heads of this comment's <c>prev</c> forest (§4.2).
+    /// This is the WRITER's half of the concurrency contract: a new <c>edit</c>/<c>resolve</c>/<c>reopen</c>/
+    /// <c>retract</c> must point its <c>prev</c> at what its author has observed, and the heads are exactly
+    /// that. Without it a writer can only send <c>prev: null</c>, which makes every second edit by one author
+    /// read as a concurrent edit and reverts the body to the last agreed one. Empty when nobody has acted on
+    /// the comment. Ordered by id, so it never depends on which order git merged the logs in.
+    /// </summary>
+    public required IReadOnlyList<ReviewRecord> StateHeads { get; init; }
+
     /// <summary>The thread, in display order (timestamp then id — presentation only, never causality).</summary>
     public required IReadOnlyList<ReviewReply> Replies { get; init; }
 

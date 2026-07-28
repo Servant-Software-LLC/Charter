@@ -19,7 +19,13 @@ namespace Charter.Server;
 /// <c>/api/poll</c> drain contract is untouched. The round HAND-OFF (the panel's "Send to agent" control)
 /// adds <c>POST /api/{key}/review/submit</c>, <c>POST /api/{key}/review/ack</c> and
 /// <c>GET /api/review</c>: they record and clear a signal and wake the long-poll, and they never write the
-/// plan — the drafting agent stays its single writer (Architecture B).
+/// plan — the drafting agent stays its single writer (Architecture B). The git-mediated team review
+/// (<c>docs/plans/03-git-mediated-team-review.md</c>) adds two more: <c>GET /api/review-log</c>, the fold of
+/// every author's <c>&lt;plan&gt;.review/*.jsonl</c> projected server-side, and
+/// <c>POST /api/{key}/annotations/{id}/resolve</c>, which appends a <c>resolve</c> record. Those are the
+/// DURABLE half and are orthogonal to the round hand-off: a resolve settles one comment in the log forever,
+/// a hand-off marks one round of the live session and is cleared by an ack. Note <c>/api/review</c> and
+/// <c>/api/review-log</c> are matched by ORDINAL equality on the whole segment, so neither shadows the other.
 /// </summary>
 /// <remarks>
 /// Transport is <see cref="HttpListener"/> — a BCL primitive, so Charter stays a lean, AOT-friendly binary
@@ -56,6 +62,11 @@ public sealed class ReviewServer : IReviewServer
     // The durability sidecar, or null when durability is off (no SidecarDirectory configured). Every mutation
     // of a store is followed by _sidecar?.Persist() so a crash before drain loses nothing (§1.6).
     private readonly ReviewSidecar? _sidecar;
+
+    // The git-mediated review log beside the plan: always READ (so the panel shows teammates' comments), and
+    // WRITTEN only when an author identity was supplied. Kept alongside the AnnotationStore rather than
+    // replacing it — this slice DUAL-WRITES deliberately, so the existing drain path is untouched.
+    private readonly ReviewLogBridge _reviewLog;
     private readonly HttpListener _listener;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _acceptLoop;
@@ -66,6 +77,7 @@ public sealed class ReviewServer : IReviewServer
         AnnotationStore store,
         AnswerStore answers,
         ReviewSidecar? sidecar,
+        ReviewLogBridge reviewLog,
         HttpListener listener,
         Uri address)
     {
@@ -73,6 +85,7 @@ public sealed class ReviewServer : IReviewServer
         _store = store;
         _answers = answers;
         _sidecar = sidecar;
+        _reviewLog = reviewLog;
         _listener = listener;
         Address = address;
         _acceptLoop = Task.Run(AcceptLoopAsync);
@@ -137,7 +150,13 @@ public sealed class ReviewServer : IReviewServer
             sidecar = new ReviewSidecar(sidecarPath, session.SourcePath, store, answers);
         }
 
-        return new ReviewServer(session, store, answers, sidecar, listener, address);
+        // The review log beside the plan. When this Charter can write it, materialize the .review/ directory
+        // now so the reload watcher can be armed on it before anyone has commented — otherwise a teammate's
+        // log landing mid-session would be invisible until the next page load.
+        var reviewLog = new ReviewLogBridge(session.SourcePath, options.ReviewLog);
+        options.ReviewLog?.EnsureDirectory();
+
+        return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address);
     }
 
     /// <summary>Stop the server and release the bound port.</summary>
@@ -459,6 +478,19 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/annotations/{id}/resolve — CLOSE a comment in the review log. Also five segments,
+        // matched alongside /delete. There is no AnnotationStore counterpart: resolution is a property of the
+        // durable log (a resolve is a record, §4.2), never of the pre-drain queue, so this route is the one
+        // panel action with no dual write.
+        if (segments.Length == 5 &&
+            string.Equals(segments[2], "annotations", StringComparison.Ordinal) &&
+            string.Equals(segments[4], "resolve", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnnotationResolve(context, segments[1], segments[3]);
+            return;
+        }
+
         // POST /api/{key}/annotations/{id} — EDIT a still-pending annotation's note (state-changing:
         // capability key in the path + CSRF gated). A command-POST with the id as the trailing segment, the
         // same write idiom as /answers/ack — no second HTTP verb vocabulary for a single new operation.
@@ -488,6 +520,20 @@ public sealed class ReviewServer : IReviewServer
             string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
         {
             HandleReviewStatus(context);
+            return;
+        }
+
+        // GET /api/review-log — the FOLDED review state of every author's log beside the plan (capability key
+        // on the query string, like /api/annotations). The logs are read and folded server-side and only this
+        // projection crosses the wire; there is deliberately NO static-file branch for `.review/`, because the
+        // served root is the plan's own DIRECTORY — one such branch would make every sibling file under
+        // docs/plans/ a key-gated HTTP-readable resource. Distinct from /api/review above by ORDINAL equality
+        // on the whole segment, so the round hand-off's status and the durable log can never shadow each other.
+        if (segments.Length == 2 &&
+            string.Equals(segments[1], "review-log", StringComparison.Ordinal) &&
+            string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleReviewLog(context);
             return;
         }
 
@@ -594,8 +640,22 @@ public sealed class ReviewServer : IReviewServer
         var markdown = await File.ReadAllTextAsync(_session.SourcePath).ConfigureAwait(false);
         var sourceLine = SourceMap.Build(markdown).LineForAnchor(submission.AnchorId);
 
+        // DUAL WRITE (deliberately temporary — see the ReviewLogBridge remarks): the comment becomes a durable
+        // `create` record in this author's log AND stays in the pre-drain AnnotationStore, so the shipped
+        // drain path is untouched by this slice. The log record's id BECOMES the annotation's id, so the
+        // panel's later edit / retract / resolve address one identity rather than needing a side map.
+        var created = _reviewLog.Create(
+            new ReviewAnchor(
+                submission.AnchorId,
+                AnnotationApi.KindToken(AnnotationApi.ParseKind(submission.Kind)),
+                submission.Quote,
+                // The plan's content hash AS THE REVIEWER SAW IT. Written now because records are immutable:
+                // it is what lets a later Charter show "you commented on «…»; here is what changed since".
+                ReviewLogBridge.PlanHash(markdown)),
+            submission.Note ?? string.Empty);
+
         var annotation = new Annotation(
-            Id: Guid.NewGuid().ToString("N"),
+            Id: created?.Id ?? Guid.NewGuid().ToString("N"),
             Kind: AnnotationApi.ParseKind(submission.Kind),
             AnchorId: submission.AnchorId,
             Note: submission.Note ?? string.Empty,
@@ -835,9 +895,14 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        // 404 means "not in the pending queue" — almost always because the agent already drained it. That is a
-        // normal outcome the reviewer's panel reports as "already handed off", not a fault.
-        if (!_store.Update(annotationId, submission.Note))
+        // DUAL WRITE: append an `edit` record to the durable log AND update the pre-drain queue. The two are
+        // independent — the log outlives the drain, so an edit is still meaningful for a comment the agent has
+        // already taken, whereas the queue's 404 ("already handed off") only speaks for the queue.
+        var logged = _reviewLog.Edit(annotationId, submission.Note);
+        var queued = _store.Update(annotationId, submission.Note);
+
+        // 404 only when NEITHER store could act — the id is unknown to both, so there is nothing to edit.
+        if (!logged && !queued)
         {
             response.StatusCode = (int)HttpStatusCode.NotFound;
             return;
@@ -848,6 +913,71 @@ public sealed class ReviewServer : IReviewServer
         _sidecar?.Persist();
 
         WriteJson(response, JsonSerializer.Serialize(new { updated = true }, AnnotationApi.JsonOptions));
+    }
+
+    private void HandleAnnotationResolve(HttpListenerContext context, string keyFromPath, string commentId)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        // Resolve is open to ANYONE (review is collaborative) and always attributed in the panel — unlike
+        // retract, which only the comment's own author may write. 404 means no such comment in the fold; the
+        // bridge never guesses which comment was meant.
+        if (!_reviewLog.Resolve(commentId))
+        {
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            return;
+        }
+
+        WriteJson(response, JsonSerializer.Serialize(new { resolved = true }, AnnotationApi.JsonOptions));
+    }
+
+    private void HandleReviewLog(HttpListenerContext context)
+    {
+        var response = context.Response;
+
+        // Gate — capability key on the query string, like /api/annotations: a plan's review is as sensitive as
+        // the plan itself, so a guessed ephemeral port must not read it.
+        if (!_session.Key.Matches(context.Request.QueryString["key"]))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        // Fold on every read (rather than caching) so a `git pull` landing a teammate's log mid-session is
+        // reflected the moment the panel asks. Anchors resolve against the plan AS IT IS NOW: exact block-id
+        // match, or orphaned (§4.3) — never a fuzzy re-attachment.
+        var markdown = ReadPlanOrEmpty();
+        WriteJson(response, JsonSerializer.Serialize(_reviewLog.BuildView(markdown), AnnotationApi.JsonOptions));
+    }
+
+    /// <summary>
+    /// The plan's markdown, or empty when it cannot be read. An unreadable plan means no anchor can honestly
+    /// be resolved, so every comment renders as an ORPHAN — the neutral, recoverable answer — rather than
+    /// carrying a line number nothing verified.
+    /// </summary>
+    private string ReadPlanOrEmpty()
+    {
+        try
+        {
+            return File.ReadAllText(_session.SourcePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
     }
 
     private void HandleAnnotationDelete(HttpListenerContext context, string keyFromPath, string annotationId)
@@ -867,9 +997,17 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        // Removing a PENDING annotation is a true retraction: the _gate lock serializes delete-vs-drain, so the
-        // note either reaches the agent or is retracted, never both. A 404 means the agent already has it.
-        if (!_store.Remove(annotationId))
+        // DUAL WRITE: append a `retract` record to the durable log AND remove from the pre-drain queue.
+        // Removing a PENDING annotation is a true retraction: the store's _gate lock serializes
+        // delete-vs-drain, so the note either reaches the agent or is retracted, never both. The log's retract
+        // is the DURABLE half — it hides the body but keeps the thread, because replies are other people's
+        // words (§4.2) — and it is refused for anyone but the comment's own author.
+        var logged = _reviewLog.Retract(annotationId);
+        var queued = _store.Remove(annotationId);
+
+        // 404 only when NEITHER store could act: an unknown id, or someone else's comment (which only its own
+        // author may withdraw).
+        if (!logged && !queued)
         {
             response.StatusCode = (int)HttpStatusCode.NotFound;
             return;
@@ -1012,18 +1150,29 @@ public sealed class ReviewServer : IReviewServer
         await output.WriteAsync(AnnotationApi.SseEvent("ping", "connected"), ct).ConfigureAwait(false);
         await output.FlushAsync(ct).ConfigureAwait(false);
 
-        // Edge-triggered wake signal fed by a watcher on the source FILE (not the whole tree): a change
-        // releases the semaphore and the loop pushes a reload event.
-        using var reloadSignal = new SemaphoreSlim(0);
-        void Signal()
+        // Edge-triggered wake signal fed by two watchers. Each names the event it wants pushed, because a plan
+        // edit and a teammate's log arriving are DIFFERENT things: the first needs a page reload, the second
+        // only needs the panel to re-read. Coalesced through a set, so a burst of file events (an editor's
+        // write-truncate-rename dance, or a `git pull` touching several logs) pushes one frame per kind.
+        using var wake = new SemaphoreSlim(0);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        void Signal(string eventName)
         {
+            lock (pending)
+            {
+                if (!pending.Add(eventName))
+                {
+                    return;
+                }
+            }
+
             try
             {
-                reloadSignal.Release();
+                wake.Release();
             }
             catch (SemaphoreFullException)
             {
-                // Already saturated with pending reloads; the loop will coalesce them.
+                // Already saturated with pending wakes; the loop will coalesce them.
             }
             catch (ObjectDisposedException)
             {
@@ -1031,44 +1180,96 @@ public sealed class ReviewServer : IReviewServer
             }
         }
 
+        // Watch the plan FILE, never its tree — a large parent directory saturates the event loop.
         var directory = Path.GetDirectoryName(_session.SourcePath) ?? Directory.GetCurrentDirectory();
         var fileName = Path.GetFileName(_session.SourcePath) ?? "*";
-        using var watcher = new FileSystemWatcher(directory, fileName)
+        using var planWatcher = new FileSystemWatcher(directory, fileName)
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
         };
-        watcher.Changed += (_, _) => Signal();
-        watcher.Created += (_, _) => Signal();
-        watcher.Renamed += (_, _) => Signal();
-        watcher.EnableRaisingEvents = true;
+        planWatcher.Changed += (_, _) => Signal(ReloadEvent);
+        planWatcher.Created += (_, _) => Signal(ReloadEvent);
+        planWatcher.Renamed += (_, _) => Signal(ReloadEvent);
+        planWatcher.EnableRaisingEvents = true;
 
-        // Push a reload event whenever the source file changes; otherwise a periodic keep-alive comment keeps
-        // the connection observably alive. Exits on server shutdown or client disconnect.
+        // ...and the .review/ DIRECTORY, filtered to *.jsonl. Without this, a `git pull` landing a teammate's
+        // log mid-session would leave the panel silently showing the fold taken at startup.
+        using var logWatcher = TryWatchReviewLogs(() => Signal(ReviewLogEvent));
+
+        // Push the named events whenever something changed; otherwise a periodic keep-alive comment keeps the
+        // connection observably alive. Exits on server shutdown or client disconnect.
         while (!ct.IsCancellationRequested)
         {
-            bool changed;
             try
             {
-                changed = await reloadSignal.WaitAsync(KeepAliveInterval, ct).ConfigureAwait(false);
+                await wake.WaitAsync(KeepAliveInterval, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 break;
             }
 
-            var frame = changed
-                ? AnnotationApi.SseEvent("reload", "source-changed")
-                : AnnotationApi.SseComment("keep-alive");
+            string[] due;
+            lock (pending)
+            {
+                due = pending.OrderBy(name => name, StringComparer.Ordinal).ToArray();
+                pending.Clear();
+            }
+
+            var frames = due.Length == 0
+                ? new[] { AnnotationApi.SseComment("keep-alive") }
+                : due.Select(name => AnnotationApi.SseEvent(name, name + "-changed")).ToArray();
 
             try
             {
-                await output.WriteAsync(frame, ct).ConfigureAwait(false);
+                foreach (var frame in frames)
+                {
+                    await output.WriteAsync(frame, ct).ConfigureAwait(false);
+                }
+
                 await output.FlushAsync(ct).ConfigureAwait(false);
             }
             catch (Exception)
             {
                 break; // The client disconnected or the server is shutting down.
             }
+        }
+    }
+
+    // The SSE event names. `reload` navigates the page (the plan itself changed); `review-log` only tells the
+    // panel to re-read the fold, so a teammate's comment arriving never discards a half-typed note.
+    private const string ReloadEvent = "reload";
+    private const string ReviewLogEvent = "review-log";
+
+    /// <summary>
+    /// A watcher on the plan's <c>.review/</c> directory, or null when it does not exist (this Charter has no
+    /// writer and nobody has ever commented). Best-effort: a watcher this stream could not arm must never cost
+    /// the reviewer their live-reload connection.
+    /// </summary>
+    private FileSystemWatcher? TryWatchReviewLogs(Action onChange)
+    {
+        try
+        {
+            if (!Directory.Exists(_reviewLog.Directory))
+            {
+                return null;
+            }
+
+            var watcher = new FileSystemWatcher(_reviewLog.Directory, ReviewLogPaths.LogSearchPattern)
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+                    | NotifyFilters.CreationTime,
+            };
+            watcher.Changed += (_, _) => onChange();
+            watcher.Created += (_, _) => onChange();
+            watcher.Deleted += (_, _) => onChange();
+            watcher.Renamed += (_, _) => onChange();
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 

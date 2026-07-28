@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
+using Charter.Core;
 using Charter.Server;
 using Microsoft.Playwright;
 using Xunit;
@@ -1074,6 +1075,222 @@ public sealed class ReviewLoopBrowserTests
         var url = new UriBuilder(address) { Path = "api/review", Query = "key=" + key }.Uri;
         using var doc = JsonDocument.Parse(await client.GetStringAsync(url));
         return doc.RootElement.Clone();
+    }
+
+    // ---- git-mediated team review (docs/plans/03-git-mediated-team-review.md, steps 2-3) -----------------
+
+    /// <summary>
+    /// The team-review loop in a real browser: a comment authored IN THE PAGE lands as a durable record in
+    /// this author's log beside the plan, and a SECOND author's log — arriving while the server runs, exactly
+    /// as a <c>git pull</c> would deliver it — shows up in the same panel with its author, its actor and its
+    /// status. Also pins the two renderings the design is most insistent about: a contested comment shows BOTH
+    /// sides, and an orphan shows its quote and is never called "addressed".
+    /// </summary>
+    [SkippableFact]
+    public async Task Review_panel_shows_this_authors_committed_comment_and_a_teammates_log()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-team-review-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "team.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var alice = new ReviewLogWriter(planPath, new ReviewAuthor("Alice Ng", "alice@example.com"));
+        var bob = new ReviewLogWriter(planPath, new ReviewAuthor("Bob Chen", "bob@example.com"));
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = alice,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            // ---- a comment authored in the page becomes a COMMITTED record beside the plan ----
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "This paragraph needs a concrete example.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            await WaitForFileAsync(alice.LogPath);
+            var written = await File.ReadAllTextAsync(alice.LogPath);
+            Assert.Contains("\"op\":\"create\"", written, StringComparison.Ordinal);
+            Assert.Contains("\"email\":\"alice@example.com\"", written, StringComparison.Ordinal);
+            Assert.Contains("This paragraph needs a concrete example.", written, StringComparison.Ordinal);
+            Assert.EndsWith("\n", written, StringComparison.Ordinal);
+
+            // ...and the panel shows it as this author's own, committed and open.
+            var mine = page.Locator(Ui("item")).First;
+            await page.WaitForSelectorAsync(Ui("item-status"));
+            Assert.Equal("true", await mine.GetAttributeAsync("data-charter-committed"));
+            Assert.Equal("open", await mine.GetAttributeAsync("data-charter-status"));
+            Assert.Equal("alice@example.com", await mine.GetAttributeAsync("data-charter-author-email"));
+            Assert.Contains("Alice Ng", await mine.Locator(Ui("item-author")).InnerTextAsync(), StringComparison.Ordinal);
+
+            // ---- a SECOND author's log arrives beside the plan while the server runs ----
+            var anchors = SourceMap.Build(Plan).Anchors.OrderBy(a => a, StringComparer.Ordinal).ToList();
+            var bobs = bob.AppendCreate(
+                new ReviewAnchor(anchors[1], "element", "a quote from the plan", null),
+                "The write path needs a retry budget.");
+            var contested = bob.AppendCreate(
+                new ReviewAnchor(anchors[2], "element", "another quote", null), "Is Postgres right here?");
+            var orphan = bob.AppendCreate(
+                new ReviewAnchor("b-no-such-block", "element", "the read path will be built after", null),
+                "a note whose block the agent has since rewritten");
+
+            // Concurrent, disagreeing settlements: neither observed the other (prev is null on both), so the
+            // fold reports CONTESTED rather than ordering them by a clock nobody synchronized.
+            bob.AppendResolve(contested.Id, prev: null);
+            alice.Append(new ReviewRecord
+            {
+                Version = ReviewRecord.CurrentVersion,
+                Id = ReviewLogWriter.NewId(ReviewOpKind.Reopen),
+                Op = ReviewOps.Token(ReviewOpKind.Reopen),
+                Author = alice.Author,
+                Target = contested.Id,
+            });
+
+            // The server watches `.review/`, so this refreshes the panel WITHOUT a page navigation. Re-touch
+            // on a cadence so the test never depends on one write landing after the watcher is armed.
+            //
+            // Wait on the LAST write's effect (the contested chip), not the FIRST comment's presence. The
+            // watcher fires on Bob's very first append, so a `review-log` re-read can be in flight while the
+            // rest of these records are still being written; the panel renders from ONE fold, so waiting for
+            // Bob's comment could be satisfied by a fold that had seen his `resolve` but not yet Alice's
+            // `reopen` — and every assertion below would then read a half-written review. That is not
+            // hypothetical: it reproduced on Linux, where the timing differs from Windows. The reopen is
+            // written after everything else here, so its effect is the honest "it has all landed" signal.
+            await WaitForSelectorWhileTouchingAsync(
+                page,
+                "[data-annotation-id=\"" + contested.Id + "\"][data-charter-status=\"contested\"]",
+                new[] { bob.LogPath, alice.LogPath });
+
+            var fromBob = page.Locator("[data-annotation-id=\"" + bobs.Id + "\"]");
+            Assert.Equal("bob@example.com", await fromBob.GetAttributeAsync("data-charter-author-email"));
+            Assert.Contains("Bob Chen", await fromBob.Locator(Ui("item-author")).InnerTextAsync(), StringComparison.Ordinal);
+            Assert.Equal(
+                "The write path needs a retry budget.",
+                (await fromBob.Locator(Ui("item-note")).InnerTextAsync()).Trim());
+
+            // A teammate's comment is not this reviewer's to withdraw, but anyone may resolve it.
+            Assert.Equal(0, await fromBob.Locator(Ui("item-delete")).CountAsync());
+            Assert.Equal(1, await fromBob.Locator(Ui("item-resolve")).CountAsync());
+
+            // ---- contested: BOTH sides, with their authors ----
+            var disputed = page.Locator("[data-annotation-id=\"" + contested.Id + "\"]");
+            Assert.Equal("contested", await disputed.GetAttributeAsync("data-charter-status"));
+            var sides = (await disputed.Locator(Ui("item-side")).AllInnerTextsAsync()).ToList();
+            Assert.Equal(2, sides.Count);
+            Assert.Contains(sides, s => s.Contains("resolved by Bob Chen", StringComparison.Ordinal));
+            Assert.Contains(sides, s => s.Contains("reopened by Alice Ng", StringComparison.Ordinal));
+
+            // ---- orphan: its quote, a neutral statement of fact, and never "addressed" ----
+            var stranded = page.Locator("[data-annotation-id=\"" + orphan.Id + "\"]");
+            Assert.Equal("orphaned", await stranded.GetAttributeAsync("data-charter-anchor-status"));
+            Assert.True(await stranded.Locator(Ui("item-jump")).IsDisabledAsync());
+            Assert.Contains(
+                "the read path will be built after",
+                await stranded.Locator(Ui("item-quote")).InnerTextAsync(),
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "The plan has changed",
+                await stranded.Locator(Ui("item-orphan-note")).InnerTextAsync(),
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "addressed",
+                await stranded.InnerTextAsync(),
+                StringComparison.OrdinalIgnoreCase);
+
+            // ---- resolving a teammate's comment appends a resolve record attributed to THIS author ----
+            await fromBob.Locator(Ui("item-resolve")).ClickAsync();
+            await WaitForEventAsync(page, "annotation-resolved");
+            await page.WaitForSelectorAsync(
+                "[data-annotation-id=\"" + bobs.Id + "\"][data-charter-status=\"resolved\"]");
+            Assert.Contains("\"op\":\"resolve\"", await File.ReadAllTextAsync(alice.LogPath), StringComparison.Ordinal);
+
+            Assert.True(instrumented.ConsoleErrors.Count == 0,
+                "console errors present:\n  " + string.Join("\n  ", instrumented.ConsoleErrors));
+            Assert.True(instrumented.PageErrors.Count == 0,
+                "page errors present:\n  " + string.Join("\n  ", instrumented.PageErrors));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A leftover temp directory is harmless.
+            }
+        }
+    }
+
+    /// <summary>Wait until <paramref name="path"/> exists — bounded, never a fixed sleep.</summary>
+    private static async Task WaitForFileAsync(string path, int timeoutMs = 10_000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (File.Exists(path))
+            {
+                return;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.Fail("the review log was never written at " + path);
+    }
+
+    /// <summary>
+    /// Wait for <paramref name="selector"/>, re-touching the given log files on a cadence so the test never
+    /// depends on one filesystem event landing after the server's watcher was armed. Touching changes only the
+    /// modification time — it fabricates no records — so what the panel ends up showing is exactly what the
+    /// logs say.
+    /// </summary>
+    private static async Task WaitForSelectorWhileTouchingAsync(
+        IPage page, string selector, IReadOnlyList<string> logPaths, int timeoutMs = 30_000)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await page.Locator(selector).CountAsync() > 0)
+            {
+                return;
+            }
+
+            foreach (var log in logPaths.Where(File.Exists))
+            {
+                try
+                {
+                    File.SetLastWriteTimeUtc(log, DateTime.UtcNow);
+                }
+                catch (IOException)
+                {
+                    // A transient sharing conflict with the server's own read is harmless — retry next pass.
+                }
+            }
+
+            await Task.Delay(200);
+        }
+
+        Assert.Fail("the panel never showed '" + selector + "' after the teammate's log arrived");
     }
 
     // ---- shared browser plumbing -------------------------------------------------------------------------
