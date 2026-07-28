@@ -78,8 +78,9 @@ to show a change (annotatable per line):
 
 ### Diagram — `:::diagram` (Mermaid body)
 
-A Mermaid diagram. Rendered theme-aware as inline SVG, and annotatable **per node** (the human clicks a
-node and comments on it):
+A Mermaid diagram. Rendered theme-aware as inline SVG, and annotatable at **two** granularities: **per
+node** (the human Alt+clicks a node and comments on it) and **as a whole block** (Alt+click anywhere else in
+the diagram — background, padding, an edge). Both anchor to the diagram block itself:
 
 ````
 :::diagram

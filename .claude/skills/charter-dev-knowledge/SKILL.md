@@ -26,44 +26,31 @@ src/
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
+    CharterVersion.cs           # the version SSOT (informational version, +build stripped)
   Charter.Server/               # loopback review server + annotation API; embeds ../../sdk/charter-annotate.js
-    ReviewLog*.cs               # all the review-log I/O: writer, store, ledger, server-less drain, panel view
+    AnchorResolution.cs         # the ONE drain-time anchor→line kernel
+    GitCommand.cs / GitTracking.cs   # the ONLY git shell-out — READ-only; `ls-files` decides "is .review/ tracked"
+    ReviewSidecar.cs / StaleAnnotationQueue.cs  # durability sidecar (schema 2) + the #67 replaced-plan quarantine
+    ReviewLog*.cs               # all review-log I/O: writer, store, ledger, server-less drain, panel view
 sdk/charter-annotate.js         # the ONLY browser JS (annotation SDK, adapted from Lavish, MIT); serve-time only
 tests/
   Charter.Core.Tests/           # xunit (net8.0) — renderer/exporter/format golden + security tests
   Charter.Server.Tests/         # xunit — loopback serve, annotation/answer API, sidecar, served-doc-shell guard
-  Charter.Cli.Tests/            # xunit — CLI process + poll/resolve + skills
+  Charter.Cli.Tests/            # xunit — CLI process + poll/resolve + skills + solo-footprint
   Charter.Browser.Tests/        # xunit + Microsoft.Playwright (Chromium) — headless review-loop acceptance (#8)
 docs/plans/                     # the plan-of-record (SSOT for design)
+skills/                         # the SHIPPED skills (`charter`, `charter-format`) installed by `charter skills install`
 install.sh / install.ps1        # SDK-free binary installers
 .github/workflows/              # ci.yml (Playwright chromium install step), release.yml, bump-tap.yml
-.github/templates/charter.rb.tmpl, .github/macos/entitlements.plist
 ```
 
-TFM `net8.0`; `TreatWarningsAsErrors=true`. Deterministic locked restore (`packages.lock.json`) is
-deferred until the dependency set is real — add it the Guardrails way when ready.
+TFM `net8.0`; `TreatWarningsAsErrors=true`. Deterministic locked restore (`packages.lock.json`) is deferred
+until the dependency set is real — add it the Guardrails way when ready.
 
-**Render contract (SSOT `CharterDocument`):** the renderer emits a COMPLETE, STYLED HTML document —
-`CharterRenderer.Render` = `CharterDocument.Wrap(RenderBody(md), cspMeta: null)`. `render`, `review`, and
-`export` all wrap the same `RenderBody` output in the same shell (doctype/html/head/body + one inline
-`<style>` from `assets/charter.css`); only `export` stamps a CSP meta (its strict offline policy), and the
-review server supplies the served-page CSP as an HTTP header. Never re-add a bare-fragment render path.
-
-## Packaging & distribution
-
-- **NuGet dotnet tool:** `PackageId ServantSoftware.Charter`, `ToolCommandName charter`. Publish is
-  opt-in via repo variable `PUBLISH_NUGET=true` + NuGet Trusted Publishing (OIDC) + a `NUGET_USER` secret.
-- **Native binaries (no .NET runtime for consumers):** `release.yml` builds self-contained single-file
-  binaries for 5 RIDs on a `v*` tag, renames the apphost `Charter.Cli` → `charter` **post-publish**
-  (a global `-p:AssemblyName` would rename `Charter.Core` too and collide on publish — NETSDK1152),
-  smoke-runs `charter --version`, and uploads archives + `.sha256`.
-- **Homebrew:** `bump-tap.yml` regenerates `charter.rb` from `.github/templates/charter.rb.tmpl` and
-  opens a PR to `Servant-Software-LLC/homebrew-tap` (needs org secret `TAP_PAT`). Triggered by
-  `workflow_run` of "Release" — a GITHUB_TOKEN-created release does not emit `release:published`.
-- **macOS codesign/notarize:** a gated step in `release.yml`, auto-skips until the six `MACOS_*`
-  secrets exist.
-- **Dry-run:** a `v0.0.0-ci.N` tag exercises binaries + tap without touching NuGet (the `-ci.` guard
-  skips the publish job).
+**Render contract (SSOT `CharterDocument`):** `CharterRenderer.Render` = `CharterDocument.Wrap(RenderBody(md),
+cspMeta: null)`. `render`, `review`, and `export` all wrap the same `RenderBody` output in the same shell
+(doctype/html/head/body + one inline `<style>`); only `export` stamps a CSP meta, and the review server
+supplies the served-page CSP as an HTTP header. **Never re-add a bare-fragment render path** (#38).
 
 ## Commands
 
@@ -80,68 +67,139 @@ dotnet publish src/Charter.Cli -c Release -r osx-arm64 --self-contained true `
 pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
 ```
 
+## Testing lessons (the expensive ones)
+
+### 1. The browser-test blind spot
+
+C#-string golden tests over rendered markup were **blind to four shipped defects**, every one of which a human
+hit immediately:
+
+| Defect | What the golden tests saw |
+|---|---|
+| #37 — an un-interpolated JS template literal leaked into the served HTML, tearing the Mermaid script apart | a string containing the expected substrings |
+| #38 — the served page had no doctype, no `<head>`, and zero CSS | a valid fragment |
+| #57 — a `:::question` form had **no submit control**, so a human could not answer anything | inputs present, form present |
+| #68 — a wide table overflowed with no usable way to reach the hidden columns | markup unchanged |
+
+Worse, one golden **actively protected** a defect.
+`AnsweredQuestionRenderTests.Render_OpenQuestion_EmitsByteIdenticalMarkupToThePreFixRenderer` pinned a
+`:::question` form **byte for byte** — and that pinned literal contained **no submit button**, because #57 had
+not been found yet. The test's own premise was fidelity to the previous renderer, so the harder it locked the
+markup down, the more firmly it protected the missing control. A pinned literal only ever asserts *"this has
+not changed"*; it can never assert *"this is right."*
+
+**The rule: anything a human sees or clicks needs a browser test that asserts the POSTED PAYLOAD, not just the
+DOM.** #57 survived a green browser suite because the test called `form.requestSubmit()` — which works with no
+submit button. Click the real control; assert what reached the server.
+
+### 2. Falsification is the norm here
+
+Every recent fix was proved **RED-then-GREEN**, or by deliberate mutation (delete the guard, watch the test
+fail, restore it). **A test that has never been seen to fail is not yet evidence** — it is a hypothesis about
+your own code. Show the failure before you claim the fix. `d347471`'s browser test was accepted on exactly
+that basis: "fails against the pre-fix code, passes after."
+
+### 3. The stale-binary trap (#69)
+
+`charter --version` warns when installed **skills** lag the tool (`SkillDriftCheck` compares each installed
+`SKILL.md`'s `metadata.charter-version` stamp against `CharterVersion.Current`). **Nothing warns when the tool
+lags the repo.** An automated pass once greped a page rendered by an old binary against expectations read from
+new source and filed a **fixed** bug as live (#69, a duplicate of the already-shipped #57) — with confident
+Playwright evidence attached.
+
+**Before diagnosing anything from a rendered page: check `charter --version` against the repo's
+`<Version>` in `src/Charter.Cli/Charter.Cli.csproj`.** If they differ, you are reading two different programs.
+Prefer `dotnet run --project src/Charter.Cli -- …` over the installed tool when investigating; after a tool
+update run `charter skills install --force` too.
+
+### 4. Playwright traps (all four are live)
+
+- **The served page's CSP refuses `WaitForFunctionAsync` once it has to POLL.** Playwright's polling loop
+  `eval`s its predicate *inside* the page, and the served CSP is `script-src 'unsafe-inline'` with no
+  `'unsafe-eval'` (`EvalError: Refused to evaluate a string as JavaScript`). It *appears* to work whenever the
+  condition is already true on the first check, then fails the moment a test genuinely waits. Use
+  `WaitForSelectorAsync` (the selector engine is CSP-safe) or a bounded C# poll over `EvaluateAsync`
+  (`ReviewLoopBrowserTests.WaitForEventAsync`). `EvaluateAsync` itself is fine — it goes over CDP, not `eval`.
+- **Playwright passes `--hide-scrollbars` to headless Chromium by DEFAULT**, forcing every scrollbar to 0
+  width. A test measuring a scroll affordance (#68) measures the *flag*, not the stylesheet — it passes while
+  proving nothing. Opt out per-launch with `options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" }`
+  (`TryLaunchAsync(showScrollbars: true)`), and **only** for the tests that need it, so no existing layout
+  assertion shifts. Same trap for any `scrollWidth`/`clientWidth`/`offsetWidth` delta or scrollbar-gutter
+  assertion.
+- **Navigation timeout is set ONCE, on the context, by a single factory.** `NewContextAsync(browser)` applies
+  `SetDefaultNavigationTimeout(90_000)`; a test calling `browser.NewContextAsync()` directly bypasses it and
+  can reintroduce the #66 flake on a contended `windows-latest` runner. Only *navigation* is relaxed — every
+  assertion keeps its own tight deadline, so a genuine hang still fails.
+- **Wait on selectors/events, not network-idle.** The served page holds an open SSE `/events` stream, so
+  `WaitUntil = NetworkIdle` never settles. Use `WaitUntilState.Load` + a selector/event wait. The suite
+  SKIPS cleanly (`Xunit.SkippableFact`) when Chromium is unavailable; the deterministic served-doc-shell
+  guards (Core + Server tests) cover the same symptoms on every OS.
+
 ## Conventions & gotchas (hard-won)
 
-- **Classic `.sln`, not `.slnx`.** CI uses `setup-dotnet 8.0.x`, which cannot read the newer `.slnx`
-  format; keep the classic solution file.
+- **Classic `.sln`, not `.slnx`.** CI uses `setup-dotnet 8.0.x`, which cannot read `.slnx`.
 - **Apphost rename, not AssemblyName.** Rename the published `Charter.Cli` binary to `charter` in the
-  workflow; never set a global `-p:AssemblyName` (it renames every project and collides on publish).
-- **LF-pinned installer.** `/install.sh` is `eol=lf` in `.gitattributes` so its shebang runs on
-  macOS/Linux from a Windows (autocrlf) checkout.
+  workflow; never set a global `-p:AssemblyName` (it renames every project and collides on publish —
+  NETSDK1152).
+- **LF-pinned installer.** `/install.sh` is `eol=lf` in `.gitattributes` so its shebang runs on macOS/Linux
+  from a Windows (autocrlf) checkout. Review logs are pinned `eol=lf` for the same class of reason — a
+  CRLF-writing teammate would fork every line under a union merge.
 - **Git with spaces / `git -C`.** Always `git -C <repo>`; assume paths contain spaces.
-- **Portability seam.** The renderer emits a standalone artifact; the annotation SDK is injected only
-  at serve time — never write it into the saved file.
+- **Portability seam.** The renderer emits a standalone artifact; the annotation SDK is injected only at serve
+  time — never write it into the saved file.
 - **Watch the file, not the tree,** for live reload (`FileSystemWatcher`), or a large parent directory
   saturates the event loop (Lavish's lesson).
 - **Inline-JS must be script-parse-safe.** A big minified lib inlined between `<script>…</script>` can carry
   `<!--` / `<script` / `</script` (even inside string/regex literals) that flip the browser's script-data
   tokenizer, tearing the script apart — the lib's tail dumps as visible text and its `<iframe>` template
-  literal materializes as a real (CSP-blocked) element, so the lib never defines (was Charter #37). Escape
-  those three sequences (`<\!--` etc.) when inlining. Charter does this to the Mermaid runtime in
-  `CharterRenderer.MermaidRuntimeMarkup`, and inits Mermaid with `securityLevel: 'antiscript'` so it renders
-  inline SVG (no sandboxed iframe/`frame-src`) under the strict CSP. Renderer C#-string golden tests are BLIND
-  to this — only the Playwright browser test catches it.
-- **Browser test: wait on selectors, not network-idle.** The served page holds an open SSE `/events` stream,
-  so `WaitUntil = NetworkIdle` never settles — use `WaitUntilState.Load` + `WaitForSelector`/`WaitForFunction`.
-  The test SKIPS cleanly (Xunit.SkippableFact) when Chromium is unavailable; the deterministic served-doc-shell
-  guards (Core + Server tests) cover the same symptoms on every OS.
-- **Playwright passes `--hide-scrollbars` to headless Chromium by DEFAULT, forcing every scrollbar to 0
-  width.** So a test that measures a scroll affordance (Charter #68) measures the *flag*, not the
-  stylesheet — it passes while proving nothing (passes-but-blind). Opt out per-launch with
-  `options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" }`
-  (`ReviewLoopBrowserTests.TryLaunchAsync(showScrollbars: true)`), and **only** for the tests that need it,
-  so no existing layout assertion shifts. The same trap applies to any `scrollWidth`/`clientWidth`/
-  `offsetWidth` delta or scrollbar-gutter assertion.
-- **`page.WaitForFunctionAsync` is unusable on the served page once it has to POLL.** Playwright's polling
-  loop `eval`s its predicate inside the page, and the served-page CSP is `script-src 'unsafe-inline'` with no
-  `'unsafe-eval'` — so the browser refuses it (`EvalError: Refused to evaluate a string as JavaScript`). It
-  *appears* to work whenever the condition is already true on the first check (which is why the `ready` wait
-  survived), then fails the moment a test genuinely waits. Use `WaitForSelectorAsync` (the selector engine is
-  CSP-safe) or a bounded C# poll over `EvaluateAsync` (`ReviewLoopBrowserTests.WaitForEventAsync`). `evaluate`
-  itself is fine — it goes over CDP, not `eval`.
+  literal materializes as a real (CSP-blocked) element, so the lib never defines (#37). Escape those three
+  sequences when inlining (`CharterRenderer.MermaidRuntimeMarkup`), and init Mermaid with
+  `securityLevel: 'antiscript'` so it renders inline SVG (no sandboxed iframe / `frame-src`) under the strict
+  CSP.
 - **Inside a rendered `:::diagram`, only `pre.mermaid` carries a Charter id.** Mermaid stamps its own ids on
-  the `<svg>` and on every `g.node`, so the SDK's generic "nearest ancestor with an `id`" walk stops on one
-  of those unless it is short-circuited — which is exactly how a diagram-node note reached the agent with no
-  `sourceLine` (#48). `closestAnchored` resolves `pre.mermaid` explicitly; keep any new anchoring path going
-  through it rather than re-walking. Mermaid's theme CSS also rides in a `<style>` **inside** the `<svg>`, so
-  a "what am I annotating" label built from text nodes reads as a stylesheet unless `style`/`script` are
-  skipped — and note an SVG element's `tagName` is lower-case where an HTML element's is upper-case.
+  the `<svg>` and every `g.node`, so a generic "nearest ancestor with an `id`" walk stops on one of those
+  unless short-circuited — which is how a diagram-node note reached the agent with no `sourceLine` (#48).
+  `closestAnchored` resolves `pre.mermaid` explicitly, **at the anchoring layer**; route any new anchoring
+  path through it rather than re-walking. Mermaid's theme CSS also rides in a `<style>` **inside** the `<svg>`,
+  so a text-derived label reads as a stylesheet unless `style`/`script` are skipped — and note an SVG
+  element's `tagName` keeps its lower-case local name where an HTML element's is upper-cased.
 - **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
-  handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the
-  listener runs and will re-check a control the listener just cleared (#63).
+  handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener
+  runs and will re-check a control the listener just cleared (#63).
+- **Charter reads git; it never writes git.** `GitCommand.Read` is the single shell-out, 5s timeout, and every
+  failure (git absent, not a repo, hung, sandboxed) returns `null` so the caller degrades to the solo-safe
+  answer. Never add a mutating git call.
+- **`.review/` is created lazily, on the first append** — not in `ReviewLogWriter`'s constructor. A `charter
+  review` that writes no comment must leave no trace beside the plan (plan-03 §5.0). Do not reintroduce an
+  eager `EnsureDirectory`; `SoloReviewFootprintTests` and `SoloReviewPathTests` guard it.
+
+## Packaging & distribution
+
+- **NuGet dotnet tool:** `PackageId ServantSoftware.Charter`, `ToolCommandName charter`. Publish is opt-in via
+  repo variable `PUBLISH_NUGET=true` + NuGet Trusted Publishing (OIDC) + a `NUGET_USER` secret.
+- **Native binaries (no .NET runtime for consumers):** `release.yml` builds self-contained single-file
+  binaries for 5 RIDs on a `v*` tag, renames the apphost `Charter.Cli` → `charter` **post-publish**,
+  smoke-runs `charter --version`, and uploads archives + `.sha256`.
+- **Homebrew:** `bump-tap.yml` regenerates `charter.rb` from `.github/templates/charter.rb.tmpl` and opens a PR
+  to `Servant-Software-LLC/homebrew-tap` (needs org secret `TAP_PAT`). Triggered by `workflow_run` of
+  "Release" — a GITHUB_TOKEN-created release does not emit `release:published`.
+- **macOS codesign/notarize:** a gated step in `release.yml`, auto-skips until the six `MACOS_*` secrets exist.
+- **Dry-run:** a `v0.0.0-ci.N` tag exercises binaries + tap without touching NuGet (the `-ci.` guard skips the
+  publish job).
+- **The version SSOT is `<Version>` in `src/Charter.Cli/Charter.Cli.csproj`**, surfaced through
+  `CharterVersion.Current` (never `AssemblyVersion`). `charter skills install` stamps it into each installed
+  `SKILL.md`; do **not** hand-write a version into a bundled `skills/**/SKILL.md`.
 
 ## Status pointers
 
-- Design of record / roadmap: `docs/plans/` — `01-combine-lavish-and-visual-plan.md` (architecture,
-  decisions D1/D2), `02-architecture-b-living-document.md` (dual handoff), and
-  `03-git-mediated-team-review.md` (per-author JSONL logs, the fold rules; **normative**, and its §9 build
-  order says which steps exist — 1–4 are built, 5–7 are not).
+- Design of record / roadmap: `docs/plans/` — `01-combine-lavish-and-visual-plan.md` (architecture, D1/D2),
+  `02-architecture-b-living-document.md` (dual handoff), `03-git-mediated-team-review.md` (per-author JSONL
+  logs, the fold rules, §5.0 solo primacy; **normative**, and its §9 build order says which steps exist).
 - Distribution + CI: `.github/workflows/`, mirrored from Guardrails' validated pipeline.
-- Current state: **shipping — v0.6.0**. Renderer, source-map, loopback review server, annotation loop,
-  in-page review panel, answerable `:::question` forms, the **Send to agent** round hand-off, offline
-  export, the living-document `--apply`/`resolve` fold, and team-review steps 2–4 are all built. Baseline
-  on a clean tree: **623 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) —
-  Core 355 · Server 196 · Cli 57 · Browser 15.
-- Product model, review-loop semantics, and the agent-facing consumption contract (poll exit codes,
-  `drainError`, `reviewSubmitted`): skill `charter-domain-knowledge`.
+- **Current state: `0.7.0`, release PENDING** — the version is in the csproj but **no `v0.7.0` tag exists**
+  (cut, unwound to take more fixes, to be re-cut; newest published tag is `v0.6.0`). Clean-tree baseline:
+  **623 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) — Core 355 · Server 196 · Cli 57 ·
+  Browser 15.
+- Product model, review-loop semantics, solo primacy, and the agent-facing consumption contract (poll exit
+  codes, `drainError`, `reviewSubmitted`, `anchorStatus`): skill `charter-domain-knowledge`.
