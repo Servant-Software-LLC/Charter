@@ -1,6 +1,7 @@
 # Git-mediated team review — design of record
 
 **Status:** proposed · **Rev 2** (spike-gated; adversarial pass applied 2026-07-26)
+· **Rev 2.1** adds §4.3.1 (review-log staleness — resolves #74) and amends §4.3, §5 and §9 accordingly, 2026-07-28
 **Supersedes:** the "annotations are ephemeral" half of `02-architecture-b-living-document.md` §1.3
 **Closes (recommended, owner sign-off):** #46 (durable consume), #3 (review rounds), #4 (hosted share)
 
@@ -288,9 +289,17 @@ comment on block Y. Orphaning is confined to (a) the commented block itself chan
 correct — and (b) a *duplicate* block whose neighbourhood changed, which is collateral from the #50 fix.
 
 **An orphan is never blind.** Each record carries `base` (the plan's content hash when written) and the
-`quote`, so the panel always shows *"you commented on «…»; the plan has changed since"* — with a diff
+`quote`, so the panel can show *"you commented on «…»; the plan has changed since"* — with a diff
 against `base` where available. That delivers the practical value of the ladder with none of the
 rebinding risk, and it is a smaller build.
+
+*Amended by §4.3.1 (2026-07-28) in two places.* The "the plan has changed since" half is a claim about the
+whole document, and the panel now makes it **only when `baseStatus` backs it**; it used to be asserted on every
+orphan, including ones where the plan is byte-identical to what the reviewer saw. And "never blind" **overstates
+the guarantee for a whole-block (`element`) comment**, which carries no `quote` at all — for those an orphan is
+its note, its author, its dead block id and its `base`, and nothing about the text it pointed at. That is an
+honest limit of this design, not of §4.3.1; closing it means the submit path capturing a quote for element
+anchors too.
 
 *(If real dogfooding shows orphan rates are painful, a ladder may be revisited — but only with a normative
 ambiguity rule: **any rank matching more than one candidate yields `Orphaned`, never a guess.**)*
@@ -299,6 +308,186 @@ ambiguity rule: **any rank matching more than one candidate yields `Orphaned`, n
 cases: folding a `:::question` answer rewrites that block, changing its id — so every comment on that
 question orphans **though nobody addressed anything**. The panel must render `Orphaned` as a neutral fact.
 Claiming "Addressed" requires positive evidence that the *commented* block's content changed.
+
+### 4.3.1 Review-log staleness: the quarantine does not cross over (resolves #74)
+
+**Ratified 2026-07-28, adversarial pass applied.** §4.3's *"an orphan is delivered as a neutral fact"* stands
+unchanged and normative. This section says why the #67 defence stops at the sidecar, and what travels instead.
+
+Charter #67 fixed the machine-local durability sidecar: a queue is quarantined when it holds ≥1 annotation, the
+plan is **not** byte-identical to the revision the queue was written against, and **not one** anchor resolves.
+`charter poll`'s server-less read (§5) folds the *committed* logs and is the sibling path. #74 asked whether the
+same rule belongs there.
+
+**It does not — and the reason is not deference to §4.3. The rule is unsound over this population.**
+
+**1. The remedy does not exist here.** Quarantine means *copy the queue aside, rewrite the live file*. The
+review log is git-tracked and Charter never mutates git (§5, invariant 8). There is nothing to move aside and
+nothing to rewrite, so "quarantine" over the log could only mean **suppression at read time** — a filter over
+the fold — which is what §4.3 forbids, and which would fork the contract between the two readers of one fold
+(the panel and the `poll` envelope) that §5 built a single `ReviewLogStore` read path to keep in agreement.
+
+**2. The evidence does not carry.** "Not one anchor resolves" is decisive for a machine-local, undelivered,
+single-session queue written against a single revision. Over a **shared, permanent** log the same observation
+has a high *benign* base rate:
+
+- **A fresh clone, a second `git worktree`, a renamed checkout, a rebuilt devcontainer.** The consumption
+  ledger is machine-local and path-keyed by design (§5), so the whole of a mature plan's review history is
+  delivered in one poll — and nearly all of it is legitimately orphaned, because the plan has moved on.
+  *All-orphaned is the expected state here.* This case alone is fatal to any corpus-level test — as a
+  suppression rule **and equally as a warning** — because it fires loudest on the healthiest workflow.
+- **A round the agent addressed.** Every commented block changed by construction, so every anchor orphans.
+  That is the loop this design exists to serve.
+- **A teammate's comment on a revision you never had** — the case §5.1's stale-plan warning exists for.
+
+**3. Being wrong is unrecoverable in the direction that matters.** A quarantined sidecar is preserved on the
+machine that owns it and restored by `charter review --keep-annotations`. A committed record a reader declines
+to show has **no local remedy**: the record is fine, the *reader* is wrong, and the person who could vouch for it
+is on another machine. §4.2 exists to keep a disagreement visible; a fold that quietly withholds a blocking
+objection is that failure wearing a different hat.
+
+**Therefore, normatively: every reader of the fold delivers every comment it holds.** Staleness never
+suppresses, never reorders, never downgrades a record. That is the property that distinguishes the log from the
+sidecar — the sidecar is *undelivered work in progress owned by one machine*; the log is *the durable, shared
+record*.
+
+> **Note on the one thing that does gate delivery.** The consumption ledger withholds records this machine has
+> already been handed. That is delivery bookkeeping on a *fact*, not suppression on an *inference*, and it is
+> what "1." above is really claiming: **evidence-based suppression is what this design refuses.** The ledger has
+> its own honest cost — re-cloning into the *same* absolute path reuses it, so a genuinely fresh clone there is
+> silently short — which is out of scope here and recorded in §8.8.
+
+#### What travels instead: the evidence, and only claims that are earned
+
+#74's question 3 asked whether the readers should distinguish *"orphaned because the plan moved on"* from
+*"orphaned because this is a different document entirely."*
+
+**They should not, because that distinction is not derivable from the fold, and `base` does not derive it.**
+`base` is the plan's content hash when the comment was recorded. Equal to the plan's hash now, it proves *"this
+comment was recorded against exactly this text"* — a sound positive. Different, it proves only *"not exactly
+this text"*: an ordinary edit and a wholesale replacement produce the same observation. Inferring which from a
+hash mismatch is §4.3's misattribution class in a different costume — a confident, wrong, invisible answer.
+
+What *is* sound is the evidence itself, and it reached neither reader: `ReviewLogDrain` and `ReviewLogView` both
+dropped `anchor.base` on the floor, so §4.3's promise was **asserted, not derived** — the panel printed *"the
+plan has changed since this comment was written"* on every orphan, including ones where it had not.
+
+**Contract — a projection change only. No record-schema change, no new `v`, no `charter-format` change; §6 is
+untouched.** Every review-log-sourced comment carries, on the `charter poll` envelope and in the
+`GET /api/review-log` projection:
+
+| field | meaning |
+|---|---|
+| `base` | the record's `anchor.base` verbatim, or absent from the wire |
+| `baseStatus` | `current` · `different` · `unknown` (always present on a review-log comment) |
+
+- **`current`** — the plan is byte-identical (modulo line endings) to the text this comment was recorded
+  against. **Sound**: byte-identical text at this path *is* this document, by every definition Charter has.
+- **`different`** — it is not. **Evidence of nothing on its own**, and the modal state of nearly every comment
+  in a living document. An agent that reads it as "ignore this comment" is misreading it.
+- **`unknown`** — the record does not say, **or there is no plan text to compare**. A `null` *or empty* plan
+  answers `unknown` for every comment: the reachable ways to hold an empty plan are a read that raced the
+  drafting agent's truncate-then-write, an interrupted save, and a caller that answers an unreadable file with
+  `""`. Without this rule an entire review reads `different` at exactly the moment the plan is being rewritten —
+  the unearned claim this section exists to remove, reproduced at scale.
+
+**Read them as a pair with `anchorStatus`.** This is where the value actually is:
+
+| pair | what it means |
+|---|---|
+| `resolved` + `current` | ordinary live feedback on the current text |
+| `orphaned` + `different` | the ordinary living-document orphan |
+| `resolved` + `different` | the block is unchanged, the document is not. Ordinary after any edit round — **and** #67's collision. **The two are not separable**, which is the honest limit of this contract |
+| `orphaned` + `current` | **the one anomalous pair**: the block was never in the very text this comment was recorded against. Reachable when the reviewer commented on a render they had not reloaded (the SDK defers re-render while a composer is open), or when the anchor was never valid |
+
+**`base` says "when recorded", not "as the reviewer saw it".** The hash is taken from a fresh read at submit
+time, and the SDK deliberately defers re-render while a draft is open, so the reviewer can be looking at an
+older render than the file that was hashed. Earlier prose in §4 and in the code said "as the reviewer saw it";
+that was wrong, and it is the reason the `orphaned + current` pair exists at all. Making `current` mean
+*"the text the reviewer's eyes were on"* would require the render's hash to travel with the submission — a
+change to the submit contract, deliberately **not** made here, and the honest reason to keep the weaker claim.
+
+**Line endings are not content — and the minting side is frozen.** `anchor.base` is minted over the plan's
+**raw bytes**, and that is now permanent: records are immutable and committed forever, so changing the minting
+normalization would make every record written to date read `different` for all time. All widening therefore
+happens on the **comparison** side: the plan is hashed in each newline form, because `Block.StableId` normalizes
+CRLF before hashing for the same reason and a checkout's `core.autocrlf` must not make a teammate's comment read
+as written-against-different-text. Without it a Windows/Linux team reads `different` on every comment at the
+identical revision, and the signal is dead exactly where team review lives.
+
+**Error behaviour, stated as §4.2.1 states its own:**
+
+- **False `different`** — reachable, and harmless by construction because the field labels rather than
+  withholds: a **mixed-newline** file (a merge, or an LF tool and a CRLF editor touching one file) matches
+  neither pure form; a trailing-newline or BOM change; any hashable difference that is not a content
+  difference. `Block.StableId` trims, so no anchor moves and the comment is delivered untouched — only the
+  claim is over-strong.
+- **False `current`** — not reachable short of a SHA-256 collision.
+- **The false negative that matters:** `different` is the label in **both** the benign "the plan moved on" case
+  and the #67 "a different document is at this path" case, and nothing in the fold separates them. What it does
+  buy is #67's *worst* finding — a comment whose content-derived anchor **collided** with a block in the
+  replacement arrives today looking exactly like fresh feedback (`anchorStatus: "resolved"`, a plausible line).
+  It now arrives naming the revision it was actually recorded against.
+
+#### Where the signal is shown, and where it is not
+
+- **The envelope carries `base` and `baseStatus` on every review-log annotation.** An agent has no visual
+  context; per-record evidence is data it branches on, not decoration. `base` is also what lets a later step
+  fetch that revision from git and diff it (§9 step 5).
+- **The panel uses it only to make a claim it was already making *earned*.** An orphan with `different` keeps
+  *"The plan has changed since this comment was written."*; any other orphan says only that the block it was
+  written on is not in the plan. **No new per-comment badge** — `different` is the normal state of almost every
+  comment in a living document, and badging it would train the reviewer to ignore the one badge that matters.
+  That is §5.0's no-nagging principle applied to signal quality rather than to setup.
+- **Delivery is at-least-once.** The read no longer records consumption; the caller confirms it *after* the
+  envelope is written. Committing first made the drain at-**most**-once — a broken pipe or a killed process in
+  that window lost a committed objection on that machine permanently, and every later poll reported a clean
+  empty. "Deliver everything and let the reader judge" is only safe if a delivery that never arrived is not
+  recorded as one.
+
+#### The governing rule this settles
+
+**An unsound signal may inform a question; it may never make a decision — and a question must itself be gated
+on a fact, not on an inference.** The "is this review log even about this plan?" heuristic is real, useful, and
+cannot be made sound. So:
+
+- **`charter review verify`** (§5; §9 step 5, not yet built) gains an advisory: *no comment in this plan's
+  `.review/` anchors to a block in the current plan*, beside §8.4's stranded-directory check. `verify` is
+  human-invoked, so it cannot nag (§5.0).
+- **No orphan-rate heuristic ships in the skill.** An earlier draft of this decision would have told the agent
+  to ask the human when *every* delivered comment is orphaned and `different` — but that is the fresh-clone
+  state and the after-an-edit-round state, i.e. the modal reading, so it fails the same test that killed the
+  corpus rule in "2." above. **If a first-read notice ever ships it must be gated on the ledger fact** — *"this
+  machine has never read this plan's review history before; N of M comments predate the current text"* — which
+  is a statement, not an inference. Recorded with that default; not built here.
+- The `charter` skill must instead teach the *pair* table above, and in particular that `different` is not a
+  reason to discard. **SSOT: `skills/charter/references/review-loop.md` owns the annotation wire shape and must
+  gain `base`/`baseStatus`** (skill change owned by charter-skill-author; not made in this change).
+
+#### Alternatives considered and rejected
+
+- **Transplant `ReviewSidecar.IsStale` to the log.** Rejected above: the remedy is unavailable and the evidence
+  is unsound over a shared, permanent log.
+- **Suppress in the `poll` drain only, not the panel.** Rejected: two readers of one fold disagreeing about what
+  the review says is the drift §5's single read path exists to prevent.
+- **A quote-presence flag** ("does the quoted text still occur anywhere in the plan?"). Rejected twice over: it
+  is one rung of the ladder §4.3 withdrew and invites exactly the re-attachment that ladder was withdrawn for;
+  and it does not discriminate — a rewritten block and a replaced document both delete the quote.
+- **A document identity (a uuid in the `.charter.md`).** The only design that would actually *decide* #74's
+  question 3 — and rejected. It expands the `charter-format` SSOT for a failure mode that already has a
+  human-visible remedy; it is unreliable exactly where it matters (a human replacing a plan by hand does not
+  mint a new id, and a human copying a plan as a template *keeps* the id and gets a confident false "same
+  document"); and it is worth nothing to any plan or log that already exists. *Recorded with a default: revisit
+  only if replacement-at-a-path proves common in real use, and then as a format RFC, never as a quiet field.*
+- **Searching git history for a blob whose sha256 equals `base`.** It would prove positively that a comment
+  belongs to this path's lineage — at O(history) subprocess calls, failing in a shallow clone, and failing in
+  the *common* case that the commented revision was never committed. Cost without an answer.
+- **`git log --diff-filter=D -- <plan>` ("was this path ever emptied and refilled?").** This one is genuinely
+  sound and §5.1 already permits the read, so the claim "not derivable" must be stated precisely: **the fold
+  cannot derive it; one bounded git call can answer a narrower question.** It is rejected *for the drain* and
+  recorded *for `verify`, §9 step 5*, because it answers the wrong question in the reported case — #67's own
+  repro overwrote the file in place, which git records as an ordinary content change with no delete at all. A
+  signal that misses the bug that motivated it does not belong on the hot path.
 
 ---
 
@@ -316,13 +505,18 @@ state (§5.1).
   it, and exits 3 when none is live. So without this, the payoff step — **A's agent reading B's committed
   comments** — requires A to be running `charter review`, which A is not: A is executing. `charter resolve`
   already has exactly the needed fallback (reads the sidecar directly when no server is live); `poll` needs
-  the analogous path: read `.review/*.jsonl` → fold → envelope. The wire contract is unchanged; the read
-  path is new.
+  the analogous path: read `.review/*.jsonl` → fold → envelope. The read path is new.
   **`consumedAt` stays machine-local** in the existing sidecar and is deliberately **not** a log record —
   N agents on N machines, and A's agent consuming must not mark a comment handled for B.
+  *(Rev 2.1 — this bullet used to say "the wire contract is unchanged", and that is no longer true. §4.3.1 adds
+  the additive `base` / `baseStatus` pair to review-log-sourced annotations; both are omitted entirely from a
+  pending-queue annotation, exactly as `review` is, so the shipped session drain stays byte-for-byte what it
+  was. Consumption is now recorded **after** the envelope is written, making the read at-least-once.)*
 - **`charter resolve`** — appends a `resolve` record instead of mutating a queue.
 - **`charter review verify`** *(new)* — audits that no record ever committed is missing from HEAD,
-  catching both silent-loss paths (§3), and warns on a stranded `.review/` directory (§8.4).
+  catching both silent-loss paths (§3), warns on a stranded `.review/` directory (§8.4), and advises when
+  **no comment in a plan's `.review/` anchors to a block in the current plan** (§4.3.1 — the one place that
+  heuristic is allowed, because `verify` is human-invoked and therefore cannot nag).
 
 ### 5.0 Solo is the primary use case and must not regress
 
@@ -422,6 +616,17 @@ Therefore:
    at all. Shipping team review before signing means shipping a team feature that cannot acquire its
    second user. Similarly, §8.1's strongest claim over PR comments — "decisions that flow into execution" —
    rests on `guardrails run` executing a Charter-derived DAG to green, which has not happened yet.
+8. **The consumption ledger is path-keyed, and re-cloning to the same path silently short-changes the new
+   clone** (surfaced by the §4.3.1 adversarial pass). `ReviewLogLedger` keys on `sha256(full plan path)` under
+   the per-user state dir, so "blow it away and re-clone into the same directory" reuses the old ledger and the
+   fresh clone is never handed the history it has not seen. It is the mirror image of the fresh-clone case
+   §4.3.1 leans on, and it is a real, unlabelled withholding. **Recorded, not fixed here** — the cheap options
+   are keying the ledger on the plan's repo-relative path plus a repo identity, or invalidating it when the
+   plan's inode/creation time moves backwards. Needs its own issue.
+9. **`base` cannot mean "what the reviewer saw" without a submit-contract change** (§4.3.1). It is minted from a
+   fresh read at submit time, while the SDK deliberately defers re-render whenever a composer is open — so the
+   `orphaned + current` pair is reachable by design. Closing it means the rendered document's hash travelling
+   with the submission. Recorded with a default: leave it, and keep the weaker, true claim.
 
 ---
 
@@ -441,6 +646,10 @@ Therefore:
    `anchor.base` is the *plan's* content hash, so rendering "you commented on «…», here's what changed"
    requires fetching that plan revision from git — the fold cannot supply it. Until this step lands, an
    orphan shows its `quote` but not a diff.
+   *(Rev 2.1: `base` itself now ships on both readers ahead of this step — §4.3.1 — so what remains here is the
+   git fetch and the diff render, not the plumbing. This step also owns the two advisories §4.3.1 assigns to
+   `verify`: the all-orphaned `.review/` notice, and the optional `git log --diff-filter=D -- <plan>` check for
+   a path that was emptied and refilled.)*
 6. **Agent voice** — `reply` from the agent; skill guidance on when to reply vs. edit.
 7. **Browser test** — two logs from two authors fold into one panel; resolve round-trips; contested renders.
 8. **Docs** — README (permanence warning, opt-out, and the honest PR-comments comparison), `charter` skill,

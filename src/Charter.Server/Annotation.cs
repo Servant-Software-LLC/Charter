@@ -81,6 +81,41 @@ public enum AnchorStatus
 /// settled into. Omitted entirely from the wire for a pending-queue annotation, so the shipped drain shape is
 /// byte-for-byte what it was.
 /// </param>
+/// <param name="Base">
+/// Review-log only: the record's <c>anchor.base</c> verbatim — the plan's content hash <b>when the comment was
+/// recorded</b> (§4). Carried so an agent can fetch that revision from git and diff it; omitted from the wire
+/// when absent, exactly like <paramref name="Review"/>.
+/// <para>
+/// <b>"When recorded", not "as the reviewer saw it".</b> The hash is taken from a fresh read of the plan at
+/// submit time, and the SDK deliberately defers a re-render while a composer is open, so a reviewer can be
+/// looking at an older render than the file the hash is taken from.
+/// </para>
+/// </param>
+/// <param name="BaseStatus">
+/// Review-log only: whether the plan is still the text this comment was written against —
+/// <c>current</c> / <c>different</c> / <c>unknown</c>, per <see cref="ReviewBaseStatus"/> and §4.3.1 of
+/// <c>docs/plans/03-git-mediated-team-review.md</c>.
+/// <para>
+/// <b>It labels; it never withholds.</b> This is the resolution of Charter #74: the #67 sidecar quarantine
+/// does not cross over to the committed log, so every comment the fold holds is delivered and the evidence
+/// travels with it. <c>current</c> is sound; <c>different</c> proves only "not exactly this text" and is the
+/// modal state of a living document — an agent that treats it as "ignore this comment" is misreading it.
+/// </para>
+/// <para>
+/// The one case it exists for is #67's worst finding: a comment from a REPLACED document whose content-derived
+/// anchor happened to collide with a block in the replacement arrives with <c>anchorStatus: "resolved"</c> and
+/// a plausible line, indistinguishable from fresh feedback. It now arrives naming the revision it was actually
+/// written against.
+/// </para>
+/// <para>
+/// <b>Read it as a PAIR with <see cref="AnchorStatus"/>.</b> <c>(resolved, current)</c> is ordinary live
+/// feedback. <c>(orphaned, different)</c> is the ordinary living-document orphan, and <c>(resolved, different)</c>
+/// is ordinary after any edit round — that pair is also #67's collision, and the two are not separable.
+/// <c>(orphaned, current)</c> is the one genuinely ANOMALOUS pair: the block was never in the very text the
+/// comment was recorded against, which means the reviewer was commenting on a render they had not reloaded, or
+/// the anchor was never valid.
+/// </para>
+/// </param>
 public sealed record Annotation(
     string Id,
     AnnotationKind Kind,
@@ -92,7 +127,11 @@ public sealed record Annotation(
     int? End = null,
     string? NodeId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ReviewAttribution? Review = null)
+    ReviewAttribution? Review = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Base = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? BaseStatus = null)
 {
     /// <summary>
     /// Whether <see cref="AnchorId"/> resolved when <see cref="SourceLine"/> was last computed. DERIVED from

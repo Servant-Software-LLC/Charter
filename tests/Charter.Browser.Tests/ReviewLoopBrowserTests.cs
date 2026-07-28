@@ -1448,9 +1448,16 @@ public sealed class ReviewLoopBrowserTests
                 "The write path needs a retry budget.");
             var contested = bob.AppendCreate(
                 new ReviewAnchor(anchors[2], "element", "another quote", null), "Is Postgres right here?");
+            // Two orphans, differing ONLY in the revision they were written against (§4.3.1). The panel's
+            // strong sentence — "the plan has CHANGED since this comment was written" — is a claim about the
+            // whole document, and it is earned by exactly one of them.
             var orphan = bob.AppendCreate(
-                new ReviewAnchor("b-no-such-block", "element", "the read path will be built after", null),
+                new ReviewAnchor("b-no-such-block", "element", "the read path will be built after",
+                    PlanHash("# An entirely different document\n")),
                 "a note whose block the agent has since rewritten");
+            var orphanOnAnUnchangedPlan = bob.AppendCreate(
+                new ReviewAnchor("b-also-no-such-block", "element", "a quote", PlanHash(Plan)),
+                "a note whose plan is byte-identical to what the reviewer saw");
 
             // Concurrent, disagreeing settlements: neither observed the other (prev is null on both), so the
             // fold reports CONTESTED rather than ordering them by a clock nobody synchronized.
@@ -1506,6 +1513,7 @@ public sealed class ReviewLoopBrowserTests
                 "the read path will be built after",
                 await stranded.Locator(Ui("item-quote")).InnerTextAsync(),
                 StringComparison.Ordinal);
+            Assert.Equal("different", await stranded.GetAttributeAsync("data-charter-base-status"));
             Assert.Contains(
                 "The plan has changed",
                 await stranded.Locator(Ui("item-orphan-note")).InnerTextAsync(),
@@ -1514,6 +1522,14 @@ public sealed class ReviewLoopBrowserTests
                 "addressed",
                 await stranded.InnerTextAsync(),
                 StringComparison.OrdinalIgnoreCase);
+
+            // ---- the same orphan, on a plan that has NOT changed: the strong claim is withheld (§4.3.1) ----
+            var unmoved = page.Locator("[data-annotation-id=\"" + orphanOnAnUnchangedPlan.Id + "\"]");
+            Assert.Equal("orphaned", await unmoved.GetAttributeAsync("data-charter-anchor-status"));
+            Assert.Equal("current", await unmoved.GetAttributeAsync("data-charter-base-status"));
+            var unmovedNote = await unmoved.Locator(Ui("item-orphan-note")).InnerTextAsync();
+            Assert.DoesNotContain("The plan has changed", unmovedNote, StringComparison.Ordinal);
+            Assert.Contains("is not in the plan", unmovedNote, StringComparison.Ordinal);
 
             // ---- resolving a teammate's comment appends a resolve record attributed to THIS author ----
             await fromBob.Locator(Ui("item-resolve")).ClickAsync();
@@ -2466,6 +2482,16 @@ public sealed class ReviewLoopBrowserTests
 
     /// <summary>A selector for one of the SDK's own elements — it has no ids, only <c>data-charter-ui</c>.</summary>
     private static string Ui(string name) => "[data-charter-ui=\"" + name + "\"]";
+
+    /// <summary>
+    /// A record's <c>anchor.base</c> — the plan's content hash as the reviewer saw it (§4). Computed here
+    /// rather than through the server's minting helper so this test pins the committed wire format from a
+    /// consumer's side.
+    /// </summary>
+    private static string PlanHash(string markdown)
+        => "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(markdown))).ToLowerInvariant();
 
     /// <summary>
     /// Wait until the SDK has emitted <paramref name="type"/> across the postMessage boundary. Polls with
