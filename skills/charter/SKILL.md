@@ -40,7 +40,7 @@ reporting on work already finished.
 | `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: pass every block through unchanged, promote a section whose heading names open questions / risks / decisions (including a numbered heading like `9. Open questions / risks`) over a bullet **or numbered** list into `:::question` blocks, and stamp the format marker. Only **simple** items (one paragraph, no nested structure) promote; a **complex/nested** item (sub-bullets, a trailing decision paragraph) is left **verbatim as prose** and **reported on stderr** (`promoted X of Y`, plus a warning naming each item left) — never silently dropped. The deterministic floor — you then **enrich** it (diagrams, comparisons, more questions), including hand-promoting or enriching any item convert reported it left as prose. |
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. |
-| `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. |
+| `charter poll [<plan.charter.md>] [--wait] [--apply]` | Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. With **no** live session, `charter poll <plan>` instead folds the **committed review logs** beside the plan — how you read a teammate's comments while executing. **Branch on its exit code** (`0` drained · `2` clean-empty · `3` no session/log · `4` drain FAILED, state unknown · `5` apply refused), never on an empty array. |
 | `charter resolve <plan.charter.md>` | Solo-reviewer companion to `poll --apply`: fold a human reviewer's queued answers **inline** into the plan when no agent is looping `poll`. |
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
 | `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the headless Guardrails `plan-breakdown` path. |
@@ -118,10 +118,20 @@ session's two streams:
 - **`:::question` answers** — fold them into the plan with `charter poll --apply` (or `charter resolve`),
   which writes each chosen answer **inline** into its `:::question` block (the living-document write).
 
+The reviewer can also click **Send to agent** in the review panel to say *"I'm done with this round."* That
+rides the poll envelope as `reviewSubmitted: true` — the signal to do the substantial rewrite, as opposed to
+absorbing one more comment mid-review. **Check it on every poll.** It signals only; you remain the sole
+writer of the plan file.
+
 Edit the markdown source in response; the server re-renders from source on the next request (live
 reload), so the human sees your revision without restarting. Loop — poll, revise, let them re-review —
-until the plan is approved. The JSON envelope shapes, the long-poll semantics, and a concrete drain loop
-are in `references/review-loop.md`.
+until the plan is approved. The JSON envelope shapes, the exit codes, the long-poll semantics, and a
+concrete drain loop are in `references/review-loop.md`.
+
+`charter review` also writes each comment to a durable per-author log at `<plan>.review/*.jsonl` beside the
+plan, and says so on stderr. Those records travel to teammates **by git** and are permanent in history —
+Charter reads git for the author's identity but never commits, pushes, or stages. If the human wants review
+kept local, tell them to gitignore `*.review/`.
 
 ### 3. HANDOFF — `charter export` (optional) then `charter handoff`
 
@@ -186,6 +196,8 @@ Keep this file lean; the depth lives in `references/`:
   right block for its content.
 - **`references/authoring-plans.md`** — the block catalog in depth + a short sample `.charter.md` skeleton.
 - **`references/review-loop.md`** — running `charter review`, in-browser annotation, and draining
-  feedback with `charter poll` (`--apply` / `charter resolve` fold answers inline) on the loopback server.
+  feedback with `charter poll` (`--apply` / `charter resolve` fold answers inline) on the loopback server;
+  **the exit codes**, `drainError`, the **Send to agent** round hand-off, and reading a teammate's
+  committed comments with no server running.
 - **`references/handoff.md`** — `charter export` (offline artifact) and `charter handoff` (→ plain
   CommonMark; the `--answers` JSON shape; Open-question vs Answered).
