@@ -161,11 +161,15 @@ public class StaleAnnotationQueueTests
             using var server = ReviewServer.Start(session, OptionsFor(sidecarDir));
 
             Assert.NotNull(server.StaleAnnotations);
-            Assert.Equal(0, await DrainCountAsync(server, session));
 
+            // Read the sidecar BEFORE draining. The quarantine rewrote it (answers only) while Start() was
+            // still running, so the fact is already true here — whereas a poll persists AFTER it has written
+            // its response, so a read taken after the drain returns can land inside that rename.
             var live = ReviewSidecar.Rehydrate(sidecarPath);
             Assert.Empty(live.Annotations);
             Assert.Single(live.Answers);
+
+            Assert.Equal(0, await DrainCountAsync(server, session));
         }
         finally
         {
@@ -207,6 +211,58 @@ public class StaleAnnotationQueueTests
         {
             TryDeleteDir(directory);
         }
+    }
+
+    // ---- Charter #75 item 2: the notice reaches the REVIEWER, not just stderr -----------------------------
+
+    [Fact]
+    public async Task ReplacedPlan_IsReportedOnTheReviewRoute_SoThePanelCanSayIt()
+    {
+        // `charter review` is frequently launched BY an agent, so the stderr notice may reach no human at all
+        // and the panel — where the reviewer actually is — said nothing. The status route the panel already
+        // polls now carries the fact.
+        await RunAsync(OriginalPlan, ReplacementPlan, async (server, session, sidecarPath) =>
+        {
+            var status = await ReviewStatusAsync(server, session);
+            var stale = status.GetProperty("staleQueue");
+
+            Assert.Equal(3, stale.GetProperty("count").GetInt32());
+            Assert.False(stale.GetProperty("durabilityDisabled").GetBoolean());
+
+            // The reviewer is told the FILE NAME, never a local absolute path: a path has no business in page
+            // DOM, and the actionable instruction is the command, not the location.
+            var fileName = stale.GetProperty("fileName").GetString();
+            Assert.NotNull(fileName);
+            Assert.Contains(".stale-", fileName!, StringComparison.Ordinal);
+            Assert.Equal(fileName, Path.GetFileName(fileName));
+            Assert.DoesNotContain(Path.DirectorySeparatorChar, fileName!);
+        });
+    }
+
+    [Fact]
+    public async Task OrdinarySession_ReviewRouteOmitsTheNoticeEntirely()
+    {
+        // Additive means additive: with nothing set aside the route's shipped shape is untouched, so no client
+        // has to learn a new field to keep working.
+        await RunAsync(OriginalPlan, EditedPlan, async (server, session, sidecarPath) =>
+        {
+            var status = await ReviewStatusAsync(server, session);
+            Assert.False(
+                status.TryGetProperty("staleQueue", out var _unused),
+                "a session with no quarantine must not emit the field at all, not even as null.");
+        });
+    }
+
+    private static async Task<JsonElement> ReviewStatusAsync(ReviewServer server, ReviewSession session)
+    {
+        using var client = new HttpClient();
+        var uri = new Uri(server.Address, "api/review?key=" + Uri.EscapeDataString(session.Key.Value));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var response = await client.GetAsync(uri, cts.Token);
+        Assert.True(response.IsSuccessStatusCode, $"GET /api/review should succeed, got {(int)response.StatusCode}.");
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cts.Token));
+        return document.RootElement.Clone();
     }
 
     [Fact]

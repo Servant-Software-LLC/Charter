@@ -81,13 +81,22 @@ internal static class PollCommand
         // Skipped when nothing was answered (no spurious rewrite). A refused apply PRESERVES the answers (never
         // committed) and exits with a distinct code so the reviewer's decision is recoverable, not lost.
         AnswerApplication.ApplyResult? applied = null;
+        IReadOnlyList<Answer> staleAnswers = Array.Empty<Answer>();
         try
         {
             if (apply && answers.Items.Count > 0)
             {
-                applied = await AnswerApplication
-                    .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
-                    .ConfigureAwait(false);
+                // Charter #75 item 3: refuse to fold in a decision whose :::question is no longer the one the
+                // reviewer was asked. The agent gets the refusal, not an override — `charter resolve
+                // --apply-stale-answers` is the human's verb for saying "apply it anyway", and an autonomous
+                // loop must not be able to write a stale decision into the plan on its own say-so.
+                staleAnswers = AnswerApplication.FindStale(resolution.Session!.SourcePath, answers.Items);
+                if (staleAnswers.Count == 0)
+                {
+                    applied = await AnswerApplication
+                        .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
+                        .ConfigureAwait(false);
+                }
             }
         }
         finally
@@ -119,6 +128,15 @@ internal static class PollCommand
         if (submission is not null && drainError is null)
         {
             await client.AckReviewSubmissionAsync(submission.Sequence, drainCts.Token).ConfigureAwait(false);
+        }
+
+        if (staleAnswers.Count > 0)
+        {
+            Console.Error.WriteLine($"charter poll: refusing --apply: {AnswerApplication.StaleAnswerReason(staleAnswers)}");
+            Console.Error.WriteLine(
+                "charter poll: the queued answers remain in the review store. Ask the reviewer to re-answer them "
+                + "in 'charter review', or have them run 'charter resolve <plan> --apply-stale-answers'.");
+            return ReviewExitCodes.ApplyFailed;
         }
 
         if (applied is { Applied: false } refused)
@@ -168,16 +186,19 @@ internal static class PollCommand
     /// </remarks>
     private static int? DrainReviewLog(string planPath)
     {
+        var consumedDirectory = StateDirectory.Consumed();
+
         ReviewLogDrainResult drain;
         try
         {
-            drain = ReviewLogDrain.Drain(planPath, StateDirectory.Consumed());
+            drain = ReviewLogDrain.Drain(planPath, consumedDirectory);
         }
         catch (Exception ex)
         {
-            // A ledger this machine cannot write must not swallow a teammate's comments; report it as a failed
+            // A ledger this machine cannot read must not swallow a teammate's comments; report it as a failed
             // drain (state unknown) rather than as an empty one.
-            drain = new ReviewLogDrainResult(Array.Empty<Annotation>(), HasLog: true, DrainError: ex.Message);
+            drain = new ReviewLogDrainResult(
+                Array.Empty<Annotation>(), HasLog: true, DrainError: ex.Message, Delivered: Array.Empty<string>());
         }
 
         if (!drain.HasLog)
@@ -193,6 +214,21 @@ internal static class PollCommand
             Array.Empty<Answer>(),
             drain.DrainError,
             source: PollEnvelope.ReviewLogSource));
+
+        // Only NOW are these comments delivered. Recording consumption before the write would make the read
+        // at-most-once: a broken pipe or a killed process in that window would lose a committed objection on
+        // this machine permanently, and every later poll would report a clean empty. A repeat is recoverable;
+        // a silent loss is not — the design's asymmetry, applied to delivery.
+        try
+        {
+            ReviewLogDrain.ConfirmDelivered(planPath, consumedDirectory, drain.Delivered);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"charter poll: reported {drain.Annotations.Count} review comment(s) but could not record them "
+                + $"as delivered ({ex.Message}); they will be reported again on the next poll.");
+        }
 
         if (drain.DrainError is not null)
         {

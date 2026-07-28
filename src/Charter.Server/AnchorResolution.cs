@@ -8,12 +8,18 @@ namespace Charter.Server;
 /// </summary>
 /// <remarks>
 /// <para>
-/// An annotation's line is resolved at SUBMIT time for the reviewer's in-page panel, but that value goes stale
-/// the instant anything above the block changes line count — the drafting agent's own edit, or
-/// <c>charter poll --apply</c> folding an answer into a <c>:::question</c> above it. Handing the agent a stale
-/// line is worse than handing it none: it edits the wrong block, confidently. So every path that hands
-/// annotations OFF re-resolves through here first — the server's <c>/api/poll</c> drain, and
-/// <c>charter poll --apply</c> again after its own write.
+/// An annotation's line is resolved at SUBMIT time and stored, but that value goes stale the instant anything
+/// above the block changes line count — the drafting agent's own edit, or <c>charter poll --apply</c> folding an
+/// answer into a <c>:::question</c> above it. Handing the agent a stale line is worse than handing it none: it
+/// edits the wrong block, confidently. So every path that REPORTS an annotation re-resolves through here first —
+/// the server's <c>/api/poll</c> drain, <c>charter poll --apply</c> again after its own write, and
+/// <c>GET /api/annotations</c>, the panel's list.
+/// </para>
+/// <para>
+/// That last one is Charter #78. The list route used to emit the stored submit-time pair, so the same annotation
+/// at the same moment read <c>sourceLine: 1, anchorStatus: "resolved"</c> from the panel route and
+/// <c>null, "orphaned"</c> from the drain. One field cannot mean two things depending on who asked; routing both
+/// through this kernel is what makes them structurally incapable of disagreeing.
 /// </para>
 /// <para>
 /// An anchor that no longer resolves yields <c>SourceLine = null</c>, which surfaces as

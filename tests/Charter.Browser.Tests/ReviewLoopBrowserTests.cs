@@ -1247,6 +1247,106 @@ public sealed class ReviewLoopBrowserTests
     }
 
     /// <summary>
+    /// Charter #75 item 2 — the replaced-plan quarantine must reach the REVIEWER, not just stderr.
+    /// <c>charter review</c> is frequently launched by an agent, so the stream carrying "your earlier notes were
+    /// set aside, here is how to get them back" is often one no human ever sees, and the panel said nothing at
+    /// all. This is the browser-side proof that it now does: the notice is real DOM, it names the recovery, and
+    /// (invariant 1) it is runtime-only chrome that <c>dispose()</c> removes.
+    /// </summary>
+    [SkippableFact]
+    public async Task Replaced_plan_tells_the_reviewer_in_the_panel_that_their_queue_was_set_aside()
+    {
+        const string original =
+            "# Rate limiting\n\nThe read path stays Postgres-only until the write path is proven.\n";
+        const string replacement =
+            "# Tenant onboarding\n\nEvery tenant gets an isolated schema provisioned at signup time.\n";
+
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-stale-panel-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        var sidecarDirectory = Path.Combine(directory, "sidecars");
+        Directory.CreateDirectory(sidecarDirectory);
+
+        await File.WriteAllTextAsync(planPath, original);
+
+        // Seed the queue exactly as a previous session would have left it, then replace the plan at the SAME
+        // path — the #67 shape, whose quarantine is what this notice reports.
+        var anchors = SourceMap.Build(original).Anchors.OrderBy(a => a, StringComparer.Ordinal).ToList();
+        ReviewSidecar.WriteState(
+            ReviewSidecar.PathForPlan(sidecarDirectory, planPath),
+            planPath,
+            anchors.Select((anchor, i) => new Annotation(
+                "seed-" + i, AnnotationKind.Element, anchor, "a note from the previous document")).ToList(),
+            Array.Empty<Answer>());
+        await File.WriteAllTextAsync(planPath, replacement);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session,
+            new ReviewServerOptions
+            {
+                BindAddress = IPAddress.Loopback,
+                Port = 0,
+                SidecarDirectory = sidecarDirectory,
+            });
+
+        try
+        {
+            Assert.NotNull(server.StaleAnnotations);
+
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // The reviewer did not have to go looking for it: the panel opens itself, because notes silently
+            // missing is exactly the situation a reviewer would otherwise misread as "they were handed off".
+            await page.WaitForSelectorAsync(Ui("stale-queue"));
+            await WaitForEventAsync(page, "stale-queue");
+            Assert.False(
+                await page.Locator(Ui("panel")).IsHiddenAsync(),
+                "a set-aside queue must open the panel rather than hide its own explanation");
+
+            var notice = (await page.InnerTextAsync(Ui("stale-queue"))).Trim();
+            Assert.Contains("set aside", notice, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("--keep-annotations", notice, StringComparison.Ordinal);
+            Assert.Contains("Nothing was deleted", notice, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                server.StaleAnnotations!.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                await page.GetAttributeAsync(Ui("stale-queue"), "data-charter-stale-count"));
+
+            // A local absolute path must never reach page DOM — the notice names the file, not its location.
+            Assert.DoesNotContain(sidecarDirectory, notice, StringComparison.OrdinalIgnoreCase);
+
+            // Invariant 1: it is SDK chrome, so it goes when the SDK goes and it was never in the artifact.
+            await page.EvaluateAsync("() => window.CharterAnnotate.dispose()");
+            Assert.Equal(0, await page.Locator(Ui("stale-queue")).CountAsync());
+            Assert.DoesNotContain(
+                "charter-panel-stale", await File.ReadAllTextAsync(planPath), StringComparison.Ordinal);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup of a temp directory.
+            }
+        }
+    }
+
+    /// <summary>
     /// The mid-review guard: a reviewer part-way through ANSWERING a question must not have the page
     /// navigated out from under them when the agent revises the plan. An unsaved answer is deferred exactly
     /// as a half-typed note is (Charter #41's banner), and saving it releases the deferred reload.
@@ -1448,9 +1548,16 @@ public sealed class ReviewLoopBrowserTests
                 "The write path needs a retry budget.");
             var contested = bob.AppendCreate(
                 new ReviewAnchor(anchors[2], "element", "another quote", null), "Is Postgres right here?");
+            // Two orphans, differing ONLY in the revision they were written against (§4.3.1). The panel's
+            // strong sentence — "the plan has CHANGED since this comment was written" — is a claim about the
+            // whole document, and it is earned by exactly one of them.
             var orphan = bob.AppendCreate(
-                new ReviewAnchor("b-no-such-block", "element", "the read path will be built after", null),
+                new ReviewAnchor("b-no-such-block", "element", "the read path will be built after",
+                    PlanHash("# An entirely different document\n")),
                 "a note whose block the agent has since rewritten");
+            var orphanOnAnUnchangedPlan = bob.AppendCreate(
+                new ReviewAnchor("b-also-no-such-block", "element", "a quote", PlanHash(Plan)),
+                "a note whose plan is byte-identical to what the reviewer saw");
 
             // Concurrent, disagreeing settlements: neither observed the other (prev is null on both), so the
             // fold reports CONTESTED rather than ordering them by a clock nobody synchronized.
@@ -1506,6 +1613,7 @@ public sealed class ReviewLoopBrowserTests
                 "the read path will be built after",
                 await stranded.Locator(Ui("item-quote")).InnerTextAsync(),
                 StringComparison.Ordinal);
+            Assert.Equal("different", await stranded.GetAttributeAsync("data-charter-base-status"));
             Assert.Contains(
                 "The plan has changed",
                 await stranded.Locator(Ui("item-orphan-note")).InnerTextAsync(),
@@ -1514,6 +1622,14 @@ public sealed class ReviewLoopBrowserTests
                 "addressed",
                 await stranded.InnerTextAsync(),
                 StringComparison.OrdinalIgnoreCase);
+
+            // ---- the same orphan, on a plan that has NOT changed: the strong claim is withheld (§4.3.1) ----
+            var unmoved = page.Locator("[data-annotation-id=\"" + orphanOnAnUnchangedPlan.Id + "\"]");
+            Assert.Equal("orphaned", await unmoved.GetAttributeAsync("data-charter-anchor-status"));
+            Assert.Equal("current", await unmoved.GetAttributeAsync("data-charter-base-status"));
+            var unmovedNote = await unmoved.Locator(Ui("item-orphan-note")).InnerTextAsync();
+            Assert.DoesNotContain("The plan has changed", unmovedNote, StringComparison.Ordinal);
+            Assert.Contains("is not in the plan", unmovedNote, StringComparison.Ordinal);
 
             // ---- resolving a teammate's comment appends a resolve record attributed to THIS author ----
             await fromBob.Locator(Ui("item-resolve")).ClickAsync();
@@ -2466,6 +2582,16 @@ public sealed class ReviewLoopBrowserTests
 
     /// <summary>A selector for one of the SDK's own elements — it has no ids, only <c>data-charter-ui</c>.</summary>
     private static string Ui(string name) => "[data-charter-ui=\"" + name + "\"]";
+
+    /// <summary>
+    /// A record's <c>anchor.base</c> — the plan's content hash as the reviewer saw it (§4). Computed here
+    /// rather than through the server's minting helper so this test pins the committed wire format from a
+    /// consumer's side.
+    /// </summary>
+    private static string PlanHash(string markdown)
+        => "sha256:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(markdown))).ToLowerInvariant();
 
     /// <summary>
     /// Wait until the SDK has emitted <paramref name="type"/> across the postMessage boundary. Polls with

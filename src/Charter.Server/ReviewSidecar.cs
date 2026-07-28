@@ -34,6 +34,29 @@ public sealed class ReviewSidecar
     // sidecar, so the notice can name a path the reviewer can actually open.
     private const string QuarantineMarker = ".stale-";
 
+    // The UTC stamp format inside a quarantine file's name. It is the authoritative record of WHEN a queue was
+    // set aside — unlike the file's mtime, which File.Copy inherits from the sidecar it copied.
+    private const string QuarantineStampFormat = "yyyyMMdd'T'HHmmss'Z'";
+
+    // Length of a rendered QuarantineStampFormat ("20260724T101530Z"), used to slice it back out of a name.
+    private const int QuarantineStampLength = 16;
+
+    /// <summary>
+    /// How long a superseded quarantine copy is kept before <see cref="Quarantine"/> retires it (Charter #75
+    /// item 4 — the copies used to accumulate forever, while the sidecar itself deletes when empty).
+    /// </summary>
+    /// <remarks>
+    /// A quarantine copy is the ONLY copy of the notes it holds, so the bound is conservative in two directions
+    /// at once: a file must be older than this <b>and</b> have been superseded by a newer set-aside queue for the
+    /// same plan. The NEWEST preserved queue is never retired at any age — that is the one the stderr notice
+    /// named and the one <c>--keep-annotations</c> restores first, so a reviewer who quarantined once and came
+    /// back months later still finds their notes exactly where they were told. Thirty days is well past any
+    /// plausible "I will get back to that review" window while still bounding the steady state at "replacements
+    /// in the last month", instead of "replacements ever". Pruning runs only where the set GROWS (a successful
+    /// quarantine), never on a read, so it can never race a reclaim.
+    /// </remarks>
+    private static readonly TimeSpan QuarantineRetention = TimeSpan.FromDays(30);
+
     // 0600 — the owning user may read/write the sidecar; nobody else. It mirrors queued review state.
     private const UnixFileMode OwnerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
@@ -278,6 +301,10 @@ public sealed class ReviewSidecar
             var preserved = QuarantinePath(path);
             File.Copy(path, preserved, overwrite: false);
             WriteState(path, sourcePath, Array.Empty<Annotation>(), state.Answers);
+
+            // Retire only what is BOTH aged out and superseded — and only after this copy is on disk, so the
+            // queue being set aside right now is always the protected newest one.
+            PruneQuarantined(path);
             return preserved;
         }
         catch (Exception)
@@ -370,11 +397,71 @@ public sealed class ReviewSidecar
     private static string QuarantinePath(string path)
     {
         var stem = path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? path[..^5] : path;
-        var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        var stamp = DateTimeOffset.UtcNow.ToString(QuarantineStampFormat, CultureInfo.InvariantCulture);
         var candidate = stem + QuarantineMarker + stamp + ".json";
         return File.Exists(candidate)
             ? stem + QuarantineMarker + stamp + "-" + Guid.NewGuid().ToString("N")[..8] + ".json"
             : candidate;
+    }
+
+    /// <summary>
+    /// Delete every preserved queue beside the sidecar at <paramref name="path"/> that is BOTH older than
+    /// <see cref="QuarantineRetention"/> and superseded by at least one newer one. Best-effort and total: a file
+    /// whose stamp cannot be read is left alone (an unreadable age is not evidence of an expired one), and any
+    /// I/O failure simply leaves the file — an extra set-aside queue costs disk, whereas a wrong delete costs a
+    /// reviewer's notes.
+    /// </summary>
+    private static void PruneQuarantined(string path)
+    {
+        try
+        {
+            // Chronological (the names are timestamped and sorted ordinally), so everything except the LAST
+            // entry has been superseded.
+            var preserved = Quarantined(path);
+            var cutoff = DateTimeOffset.UtcNow - QuarantineRetention;
+            for (var i = 0; i < preserved.Count - 1; i++)
+            {
+                if (SetAsideAt(preserved[i]) is { } stamp && stamp < cutoff)
+                {
+                    Delete(preserved[i]);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Retention is housekeeping; it must never be the reason a quarantine reports failure.
+        }
+    }
+
+    /// <summary>
+    /// When the queue at <paramref name="preservedPath"/> was set aside, read from its FILE NAME, or
+    /// <see langword="null"/> when the name carries no parseable stamp. The name is used rather than the file's
+    /// mtime because <see cref="File.Copy(string, string, bool)"/> inherits the source sidecar's timestamp, which
+    /// says when the queue was last written, not when it was quarantined.
+    /// </summary>
+    private static DateTimeOffset? SetAsideAt(string preservedPath)
+    {
+        var name = Path.GetFileName(preservedPath);
+        var marker = name.IndexOf(QuarantineMarker, StringComparison.Ordinal);
+        if (marker < 0)
+        {
+            return null;
+        }
+
+        var start = marker + QuarantineMarker.Length;
+        if (name.Length < start + QuarantineStampLength)
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParseExact(
+            name.Substring(start, QuarantineStampLength),
+            QuarantineStampFormat,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsed)
+            ? parsed
+            : null;
     }
 
     /// <summary>The plan fingerprint: <c>sha256</c> of the markdown, lowercase hex.</summary>

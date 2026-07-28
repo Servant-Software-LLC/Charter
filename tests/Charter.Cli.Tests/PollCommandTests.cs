@@ -257,6 +257,61 @@ public class PollCommandTests
         }
     }
 
+    /// <summary>
+    /// Charter #75 item 3, agent path: <c>poll --apply</c> must refuse to fold in a decision whose
+    /// <c>:::question</c> is no longer the one the reviewer was asked. Unlike an orphaned annotation this write
+    /// lands IN THE PLAN FILE, so it is silent and durable — and the agent gets no override, because
+    /// <c>charter resolve --apply-stale-answers</c> is the human's verb for saying "apply it anyway".
+    /// </summary>
+    [Fact]
+    public async Task Poll_Apply_QuestionReplacedUnderTheSameId_RefusesAndPreservesTheAnswer()
+    {
+        // The reviewer answers "Which theme should ship? A / B", then the question is rewritten under the same
+        // id — a different decision entirely. `A` would still splice in cleanly, which is exactly the danger.
+        const string rewritten =
+            "# Poll Loop Plan\n\nAn overview paragraph.\n\n" +
+            ":::question\n" +
+            "{\"id\":\"q-theme\",\"title\":\"Which rollout order?\",\"mode\":\"single\"," +
+            "\"options\":[\"Canary first\",\"Big bang\"],\"target\":\"human\"}\n" +
+            ":::\n";
+
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(QuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+            await PostAnswerAsync(url, "q-theme", new[] { "A" });
+
+            await File.WriteAllTextAsync(planPath, rewritten);
+
+            var apply = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+
+            Assert.Equal(5, apply.ExitCode);
+            Assert.Contains("DIFFERENT version of their :::question", apply.StdErr, StringComparison.Ordinal);
+            Assert.Contains("q-theme", apply.StdErr, StringComparison.Ordinal);
+            Assert.Contains("--apply-stale-answers", apply.StdErr, StringComparison.Ordinal);
+
+            // Nothing was written into the plan...
+            Assert.Null(ExtractQuestionAnswer(await File.ReadAllTextAsync(planPath), "q-theme"));
+
+            // ...and the envelope still reaches stdout exactly once, reporting the answer as still queued: a
+            // refused apply reports, it never drops.
+            using var envelope = JsonDocument.Parse(apply.StdOut.Trim());
+            Assert.Equal(1, envelope.RootElement.GetProperty("answers").GetArrayLength());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
     [Fact]
     public async Task Poll_Apply_DuplicateIds_RefusesWithClearError_AndPreservesAnswer()
     {

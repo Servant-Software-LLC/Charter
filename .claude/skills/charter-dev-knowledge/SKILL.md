@@ -24,7 +24,11 @@ src/
     assets/mermaid.min.js       # vendored Mermaid v11.16.0 (MIT), embedded → Charter.Core.mermaid.min.js
     assets/charter.css          # bundled stylesheet, embedded → Charter.Core.charter.css (CharterStyles/CharterDocument)
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
+<<<<<<< HEAD
     HeadlessRecord.cs / PlanWalk.cs  # the `headless` forensic record (source map + questions + notes); one joined walk
+=======
+    QuestionIdentity.cs         # the :::question DECLARED-SHAPE fingerprint (an answer's "anchor", #75/3)
+>>>>>>> master
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
     HeadlessExitCodes.cs        # the SEPARATE 0/2 contract for `headless` — NOT the drain vocabulary
@@ -96,6 +100,13 @@ not changed"*; it can never assert *"this is right."*
 **The rule: anything a human sees or clicks needs a browser test that asserts the POSTED PAYLOAD, not just the
 DOM.** #57 survived a green browser suite because the test called `form.requestSubmit()` — which works with no
 submit button. Click the real control; assert what reached the server.
+
+That pattern has now cost three defects, and the last two were **named as intent**:
+`RoundTrip_UnknownKind_DrainsAsElement_NoRegression` pinned #79's silent kind-coercion as a feature, and
+`PendingList_KeepsTheSubmitTimeLine_ForTheInPageReviewPanel` pinned #78's panel/drain divergence as a
+deliberate design. Both had to be **rewritten, not extended**, when the behaviour was recognised as a bug.
+**A test whose name asserts leniency or "no regression" around a degraded value is a place to look for a
+defect**, not evidence of one being absent — ask what the lenient branch does when the client is wrong.
 
 ### 2. Falsification is the norm here
 
@@ -205,6 +216,7 @@ update run `charter skills install --force` too.
 - **Current state: `0.7.0`, release PENDING** — the version is in the csproj but **no `v0.7.0` tag exists**
   (cut, unwound to take more fixes, to be re-cut; newest published tag is `v0.6.0`). Clean-tree baseline:
   **623 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) — Core 355 · Server 196 · Cli 57 ·
-  Browser 15.
+  Browser 15. On the unmerged `fix/panel-drain-parity` (#78/#79/#75): **679** — Core 370 · Server 230 ·
+  Cli 63 · Browser 16.
 - Product model, review-loop semantics, solo primacy, and the agent-facing consumption contract (poll exit
   codes, `drainError`, `reviewSubmitted`, `anchorStatus`): skill `charter-domain-knowledge`.

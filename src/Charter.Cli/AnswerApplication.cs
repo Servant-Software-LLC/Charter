@@ -22,6 +22,86 @@ internal static class AnswerApplication
     public readonly record struct ApplyResult(bool Applied, bool Committed, string? Error);
 
     /// <summary>
+    /// The queued answers whose <c>:::question</c> is NO LONGER THE ONE THE REVIEWER WAS ASKED — the answer
+    /// carries a fingerprint of the question's declared shape at submit time, a question with that id still
+    /// exists in the plan at <paramref name="planPath"/>, and its shape has changed since (Charter #75 item 3).
+    /// Empty means "apply normally", which is what an ordinary edited plan always returns.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The rule, exactly:</b> an answer is stale iff it carries a <see cref="Answer.QuestionFingerprint"/>,
+    /// <see cref="QuestionIdentity.FingerprintOf"/> finds a question with the same id in the plan as it is now,
+    /// and the two fingerprints differ. Three deliberate exemptions, each meaning "no evidence, proceed": an
+    /// answer with no fingerprint (a queue from before this existed), a plan the answer's question is ABSENT
+    /// from (the apply is a documented no-op there, so it cannot corrupt anything), and a plan that cannot be
+    /// read (handled by the caller, which lets the ordinary apply path report the I/O failure).
+    /// </para>
+    /// <para>
+    /// <b>False positive:</b> the drafting agent legitimately edits the question — retitles it, adds or removes
+    /// an option, flips its target — after the reviewer answered. The decision is withheld and reported rather
+    /// than applied. That is close to a true positive: the reviewer chose among options that no longer read the
+    /// same, and nothing is lost (the answer stays queued and re-reported until applied, re-answered, or
+    /// explicitly forced).
+    /// <b>False negative:</b> the replacement plan's question is byte-identical in its DECLARED shape — same id,
+    /// title, mode, target, options. The old decision folds in, but it answers a question that is, as asked,
+    /// literally the same question with the same choices. That is the weakest claim that still catches the
+    /// reported bug, exactly as <c>ReviewSidecar.IsStale</c>'s "one surviving anchor" is for annotations.
+    /// </para>
+    /// <para>
+    /// A legitimately-edited plan keeps applying its answers normally — prose changes, block insertions, and
+    /// other questions' answers being folded in all leave a question's declared shape untouched. That is the
+    /// living-document model, and it is what this rule is careful not to break.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<Answer> FindStale(string planPath, IReadOnlyList<Answer> answers)
+    {
+        ArgumentNullException.ThrowIfNull(answers);
+
+        string markdown;
+        try
+        {
+            markdown = File.ReadAllText(planPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // No evidence: let the ordinary apply run and report the real I/O problem in its own words.
+            return Array.Empty<Answer>();
+        }
+
+        var stale = new List<Answer>();
+        foreach (var answer in answers)
+        {
+            if (answer.QuestionFingerprint is null)
+            {
+                continue;
+            }
+
+            var current = QuestionIdentity.FingerprintOf(markdown, answer.QuestionId);
+            if (current is not null &&
+                !string.Equals(current, answer.QuestionFingerprint, StringComparison.Ordinal))
+            {
+                stale.Add(answer);
+            }
+        }
+
+        return stale;
+    }
+
+    /// <summary>
+    /// The one sentence both <c>poll --apply</c> and <c>resolve</c> say when they refuse a stale batch, so the
+    /// two verbs cannot describe the same refusal differently. <paramref name="stale"/> must be non-empty.
+    /// </summary>
+    public static string StaleAnswerReason(IReadOnlyList<Answer> stale)
+    {
+        ArgumentNullException.ThrowIfNull(stale);
+
+        var ids = string.Join(", ", stale.Select(answer => answer.QuestionId).Distinct(StringComparer.Ordinal));
+        return $"{stale.Count} queued answer(s) were written against a DIFFERENT version of their :::question "
+            + $"({ids}): its title/mode/target/options have changed since, so folding those decisions in would "
+            + "answer a question nobody was asked. Nothing was applied and nothing was discarded.";
+    }
+
+    /// <summary>
     /// Map drained answers to the <c>id → value(s)</c> dictionary <see cref="QuestionResolution.ApplyToFile"/>
     /// consumes. Answers are submit-ordered (oldest first), so a repeated question id is LAST-WINS — the
     /// reviewer's most recent submission for that question.

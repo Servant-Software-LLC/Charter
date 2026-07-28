@@ -164,7 +164,12 @@ public class SoloReviewPathTests
         try
         {
             await second.WaitForStdErrAsync("written against a different document");
-            Assert.Contains("--keep-annotations", second.StdErr, StringComparison.Ordinal);
+
+            // Wait for the RECOVERY line too rather than asserting on it immediately: the notice is two
+            // Console.Error.WriteLine calls and this buffer is filled by a background reader, so seeing the
+            // first line says nothing about the second having been read yet. Asserting straight away made the
+            // test lose a race with its own stderr pump on a loaded machine.
+            await second.WaitForStdErrAsync("--keep-annotations");
 
             var poll = await work.RunAsync("poll", planPath);
 

@@ -25,6 +25,14 @@ internal static class CharterCliRunner
     // Named distinctly (not a Run overload) so a call like Run("skills") can never bind its first string
     // argument to a working-directory parameter — a params-vs-overload trap.
     public static (int ExitCode, string StdOut, string StdErr) RunIn(string? workingDirectory, params string[] args)
+        => RunWith(workingDirectory, environment: null, args);
+
+    /// <summary>
+    /// <see cref="RunIn"/> with extra environment variables for the child — the seam a test needs to point the
+    /// CLI at its own <c>CHARTER_STATE_DIR</c> instead of the developer's real per-user state directory.
+    /// </summary>
+    public static (int ExitCode, string StdOut, string StdErr) RunWith(
+        string? workingDirectory, IReadOnlyDictionary<string, string>? environment, params string[] args)
     {
         string cliDll = CharterCliDllPath();
 
@@ -38,6 +46,14 @@ internal static class CharterCliRunner
         if (!string.IsNullOrEmpty(workingDirectory))
         {
             startInfo.WorkingDirectory = workingDirectory;
+        }
+
+        if (environment is not null)
+        {
+            foreach (var entry in environment)
+            {
+                startInfo.Environment[entry.Key] = entry.Value;
+            }
         }
 
         startInfo.ArgumentList.Add("exec");

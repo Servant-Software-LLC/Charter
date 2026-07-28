@@ -245,6 +245,17 @@ public static class QuestionResolution
     }
 
     /// <summary>
+    /// The JSON body of a <c>:::question</c> block's <see cref="Block.RawContent"/> — everything between the
+    /// opening and closing fence lines — or <c>null</c> when the content is not a well-formed container. Exposed
+    /// so a reader that needs the question's DECLARED SHAPE (<see cref="QuestionIdentity"/>) shares this kernel's
+    /// fence handling instead of re-deriving it, which is how two "the same block" answers drift apart.
+    /// </summary>
+    public static string? QuestionBody(string rawContent)
+        => TryLocateJsonBody(rawContent ?? string.Empty, out var bodyStart, out var bodyEnd)
+            ? rawContent!.Substring(bodyStart, bodyEnd - bodyStart)
+            : null;
+
+    /// <summary>
     /// The rewritten raw content of one <c>:::question</c> block with its answer spliced in, or <c>null</c> when
     /// the body is not parseable JSON, carries no string <c>id</c>, or its id is absent from
     /// <paramref name="answersById"/> (all "leave untouched" cases).
