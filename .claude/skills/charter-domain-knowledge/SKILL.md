@@ -26,10 +26,27 @@ firstmate/gnhf`). An AI authors a rich, block-structured **plan deliverable**; a
 the browser and **comments in place** (notes anchored to the exact block); the reviewed plan feeds
 Guardrails, which breaks it into a verified task DAG.
 
-**The bet:** the agent should be *visually expressive* (diagrams, tables, comparisons, code) **and**
-able to *elicit structured decisions* from the human, and the human's feedback should carry the
-context of exactly what it points at. Charter combines **Lavish**'s comment-in-place review loop with
-**visual-plan**'s block authoring, C#-native.
+**The bet:** the agent should be *visually expressive* **and** able to *elicit structured decisions*, and the
+human's feedback should carry the context of exactly what it points at. Charter combines **Lavish**'s
+comment-in-place review loop with **visual-plan**'s block authoring, C#-native. (Positioning vs both:
+`docs/why-charter.md`.)
+
+## Solo is the primary use case — and that is binding
+
+`docs/plans/03-git-mediated-team-review.md` **§5.0** is a product constraint, not a courtesy: **one
+person using Charter alone is the main use case, and team review is additive — it must never make solo
+use heavier.** Concretely, every slice must honour all three:
+
+- **No new required setup.** No git identity, no repo, no `.gitattributes`. A missing git identity
+  falls back to a marked local identity and the review still works.
+- **No per-session nagging.** Sharing-related warnings fire **only when the plan's `.review/`
+  directory is actually tracked by git** — i.e. the reviewer opted in. Untracked, gitignored, or
+  not-a-repo ⇒ **silent**.
+- **No trace where nothing was said.** A `charter review` that writes no comment leaves **no
+  `.review/` directory** beside the plan.
+
+If a change would make the solo path louder, heavier, or messier, it is wrong regardless of how good
+it is for teams. Check it against §5.0 before designing it.
 
 ## The model
 
@@ -38,42 +55,49 @@ context of exactly what it points at. Charter combines **Lavish**'s comment-in-p
   against a C# record.
 - **The renderer emits a COMPLETE, STYLED document, shared by render/review/export.** `CharterRenderer.Render`
   wraps the block body in the single shared shell (`CharterDocument.Wrap`: doctype/html/head/body + one inline
-  `<style>` from the bundled `assets/charter.css`); `render`, `review`, and `export` all go through it, so all
-  three are complete and styled — never a bare fragment. Only `export` stamps a CSP meta (its strict offline
+  `<style>` from the bundled `assets/charter.css`). Only `export` stamps a CSP meta (its strict offline
   policy); the review server supplies the served-page CSP as an HTTP header. Mermaid is inlined parse-safe and
-  inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe). (Was Charter #37/#38.)
-- **Block catalog:** prose/heading/list, `:::note`/`:::warn`, tables + `:::comparison`, fenced code +
-  `:::diff`, `:::diagram` (Mermaid), `:::custom-html` (escape hatch), and **`:::question`** (the
-  elicitation block). The normative catalog — including the fact that there is **no** `:::annotated-code`
-  or `:::file-tree` (they have no renderer) — is single-sourced in the **`charter-format`** skill; cite it,
-  don't fork it.
-- **`:::question` (elicitation):** body is a validated **JSON** payload — `id`, `title`, `mode`, `options`,
-  `target`, and an optional `answer` (its presence marks the question resolved). The `mode` tokens and full
-  schema are normative in the **`charter-format`** skill (cite it, don't restate). Renders to a native HTML
-  `<form>`; submitting posts structured answers back through the review loop. Reproduces **visual-plan's
-  `question-form`** — the input gap this fills is in *base markdown* (CommonMark has no input primitive),
-  not in visual-plan (which elicits via `question-form` and its `visual-intake` mode).
-- **Anchors + source-map:** every block gets a content-derived **stable ID**. The renderer carries a
-  **source-map (anchor ID → markdown line range)** so a human annotation on the *rendered HTML*
-  round-trips to the *markdown source* the agent edits. This is the deepest correctness concern —
-  Charter splits source (markdown) from render (HTML), which Lavish never did. Two rules keep it honest,
-  both of them "**orphan loudly rather than misattribute silently**":
-  - **The handoff line is resolved at DRAIN time, never at submit time** (was Charter #49). One kernel,
-    `AnchorResolution` (`src/Charter.Server/AnchorResolution.cs`), re-binds every anchor to the plan **as it
-    is at handoff** — on the `/api/poll` drain, and again in `charter poll --apply` after its own write. The
-    line stored at submit is a snapshot for the reviewer's in-page panel only. A stale line makes the agent
-    edit the wrong block, confidently.
-  - **Duplicate-content anchors are discriminated CONTEXTUALLY, not by occurrence index** (was Charter #50).
-    Identical content recurring in a document is disambiguated by a hash of the preceding slot's assigned id
-    (plus the length of its run of adjacent identical siblings) — so inserting an identical block elsewhere no
-    longer renumbers the existing ones onto each other's notes. Cost: a duplicate's id can change when a
-    *neighbour* changes, which orphans (detectable) rather than misattributes (not).
-  - **Chrome around a block must stay anchor-invisible.** A wide table renders inside
-    `<div class="table-scroll" tabindex="0" role="region" aria-label="Table">` (was Charter #68), and that
-    wrapper deliberately carries **no** anchor id — the `<table id="…">` keeps it, so annotation targeting is
-    unchanged. Any future wrapper must follow the same rule.
+  inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe).
+- **Block catalog and the `:::question` schema are normative in the `charter-format` skill** — including the
+  fact that there is **no** `:::annotated-code` or `:::file-tree` (they have no renderer). Cite it; never fork
+  it. A drift test binds the skill's catalog to `BlockKind` ∪ `QuestionSpec`, so a fork breaks the build.
+- **`:::question` is the elicitation block**: a validated JSON body (`id`, `title`, `mode`, `options`,
+  `target`, optional `answer` — whose presence marks it resolved) rendered as a native HTML `<form>`. The gap
+  it fills is in *base markdown* (CommonMark has no input primitive), not in visual-plan, which already elicits
+  via `question-form`.
 - **Session:** keyed by canonicalized artifact path; holds queued prompts + annotations. Loopback-only,
   guarded by a per-session capability key.
+
+### Anchors: orphan loudly rather than misattribute silently
+
+Every block gets a content-derived **stable ID**, and the renderer carries a **source-map (anchor ID →
+markdown line range)** so an annotation on the *rendered HTML* round-trips to the *markdown source* the agent
+edits. This is the deepest correctness concern in the product — Charter splits source (markdown) from render
+(HTML), which Lavish never did.
+
+**The governing principle: a wrong attribution is unrecoverable and invisible; an orphan is visible and
+carries its `quote`.** So every ambiguity resolves toward the orphan.
+
+- **Resolution is exact-block-id-match or orphaned. There is no fuzzy ladder.** One was designed and
+  **rejected**: quote-similarity / nearest-neighbour rebinding reintroduces exactly the #50 misattribution
+  class it would be sold as fixing. Do not re-propose it.
+- **The handoff line is resolved at DRAIN time, never at submit time** (#49). One kernel,
+  `AnchorResolution` (`src/Charter.Server/AnchorResolution.cs`), re-binds every anchor to the plan **as it is
+  at handoff** — on the `/api/poll` drain, and again in `charter poll --apply` after its own write. The line
+  stored at submit is a snapshot for the reviewer's in-page panel only. A stale line makes the agent edit the
+  wrong block, confidently. An unreadable plan resolves the whole batch as orphaned rather than carrying
+  unverifiable lines.
+- **Duplicate-content anchors are discriminated CONTEXTUALLY, not by occurrence index** (#50). Identical
+  content is disambiguated by a hash of the preceding slot's assigned id (plus the length of its run of
+  adjacent identical siblings), so inserting an identical block elsewhere no longer renumbers existing ones
+  onto each other's notes. Cost: a duplicate's id can change when a *neighbour* changes — which orphans
+  (detectable) rather than misattributes (not).
+- **Chrome around a block must stay anchor-invisible.** A wide table renders inside
+  `<div class="table-scroll" tabindex="0" role="region" aria-label="Table">` (`CharterTableRenderer`, #68) and
+  that wrapper deliberately carries **no** anchor id — the `<table id="…">` keeps it, so annotation targeting
+  is unchanged. Any future wrapper must follow the same rule. The SDK's own chrome obeys the mirror rule: it
+  is marked with the `data-charter-ui` **attribute** and has **no ids at all**, so even a guard bug degrades to
+  "no anchor", never "the wrong anchor".
 
 ## Review-loop semantics
 
@@ -87,200 +111,261 @@ artifact never contains the SDK, so it opens standalone.
 **The drained annotation's wire shape.** Each drained annotation carries `anchorId`, `kind`, `note`, the
 sub-part fidelity fields (`quote`/`start`/`end`/`nodeId`), `sourceLine` — **resolved at drain time** — and
 **`anchorStatus`**: `"resolved"` (with a line) or `"orphaned"` (`sourceLine: null`, meaning *the block you
-commented on has changed*; the stored `quote`/`nodeId`/note are the recovery hints). `anchorStatus` is
-*derived* from `sourceLine`, so the two can never disagree, and it is additive — a consumer that ignores it is
-unaffected. An agent must never treat an orphaned annotation as "no feedback"; it is feedback whose target
-moved.
+commented on has changed*; the stored `quote`/`nodeId`/note are the recovery hints). Within one payload
+`anchorStatus` is *derived* from `sourceLine`, so those two can never disagree. An agent must never treat an
+orphaned annotation as "no feedback"; it is feedback whose target moved. Field-by-field shape:
+`skills/charter/references/review-loop.md`.
 
-**In-page annotation UI (the reviewer's surface).** Notes are written in a styled, near-target composer
-(never a native `window.prompt`), and the SDK renders a **review panel** listing the notes plus an on-block
-marker + count badge, so the reviewer can see and manage what they have already said. The panel is the
-**pre-drain queue**: an annotation it lists is by definition *not yet handed off*. It is backed by three
-loopback routes over the same pending buffer — `GET /api/annotations` (non-destructive list, key on the
-query string), `POST /api/{key}/annotations/{id}` (edit the note) and
-`POST /api/{key}/annotations/{id}/delete` (retract it), both writes key-in-path + CSRF-gated. Once
-`charter poll` drains a note it belongs to the agent: with **no review-log writer** configured, edit/delete
-then answer **404**, which the UI reports as "already handed off", not as an error. (With a writer — the
-production `charter review` path — the durable log still knows the id, so the write succeeds and appends an
-`edit`/`retract` record instead; see the team-review section below, and note a live-session agent polling
-`/api/poll` does **not** read the log, so a retraction after the drain does not reach it.) The drain contract
-(`/api/poll`, `charter poll`, `PollEnvelope`) is unchanged, and the panel/markers/composer are runtime-only
-DOM — invariant 1 still holds.
+**But the PANEL's pair and the DRAIN's pair are different frames, and only the drain's is authoritative.**
+`GET /api/annotations` reports the **submit-time** snapshot; `/api/poll` re-resolves against the plan as it is
+now. For the *same* annotation at the *same* moment, verified by execution against a replaced plan:
 
-**A `:::diagram` has exactly TWO annotatable granularities, and BOTH anchor to the block.** A diagram renders
-as `<pre class="mermaid" id="<stable charter id>">` whose content Mermaid then replaces with an `<svg>`
-carrying **its own** generated ids (on the svg and on every `g.node`). Those are not Charter anchors —
-`SourceMap.LineForAnchor` cannot map one, and they change on every render. So: Alt+click a **node** ⇒ a
-`diagram-node` note whose `anchorId` is the **block** and whose `nodeId` carries the Mermaid node
-(was Charter #48, where `anchorId` was the Mermaid id and the agent got **no `sourceLine` at all**);
-Alt+click **anywhere else in the block** — svg background, padding, an edge ⇒ the ordinary `element` note
-every other block produces (was Charter #60, where a diagram was the one block type with no whole-block
-annotation). The composer's context line is the only thing distinguishing them for the reviewer, so it names
-which one explicitly. A diagram is **never** text-range annotatable: it carries no prose, and Chromium's
-word-select fallback on its background used to fabricate a text-range note over unrelated text elsewhere on
-the page (was Charter #61). The SDK also refuses any text-range whose selection does not include the element
-the reviewer's gesture ended on.
+| Route | `sourceLine` | `anchorStatus` |
+|---|---|---|
+| `GET /api/annotations` (panel) | `1` | `"resolved"` |
+| `charter poll` (drain) | `null` | `"orphaned"` |
+
+Never edit the plan from a line read off `/api/annotations` — that route exists to render the reviewer's
+in-page list. Take lines from the drain, only.
+
+Two field-level traps that have each cost a debugging session:
+
+- **`kind` is HYPHENATED on the wire** — `element` · `text-range` · `diagram-node` — not camelCase. The C#
+  enum goes through `AnnotationApi.AnnotationKindConverter` to match the SDK's tokens exactly (#15). An agent
+  branching on `"textRange"` never matches.
+- **`start`/`end` index the BLOCK's own text**, from the selection's `Range`, via a shared walker that skips
+  every `[data-charter-ui]` subtree — one reference frame shared with the panel's quote lookup, so
+  `end > start` always holds for a real selection. They are **not** `anchorOffset`/`focusOffset`, which live in
+  different text nodes and once drained as `start: 146, end: 0` over a ~150-character quote (#56). When no
+  honest offset can be computed both are **`null`** — never a misleading pair. `quote` always carries the
+  human-readable target.
+
+**In-page annotation UI.** Notes are written in a styled, near-target composer (never `window.prompt`), and
+the SDK renders a **review panel** — the **pre-drain queue**, so an annotation it lists is by definition *not
+yet handed off*. Three loopback routes back it over the same pending buffer: `GET /api/annotations` (list),
+`POST /api/{key}/annotations/{id}` (edit), `POST /api/{key}/annotations/{id}/delete` (retract) — both writes
+key-in-path + CSRF-gated. Once `charter poll` drains a note it belongs to the agent: with **no review-log
+writer**, edit/delete then 404 and the UI says "already handed off". With a writer (the shipped `charter
+review` path) the log still knows the id, so the write appends an `edit`/`retract` record instead — but a
+live-session agent polling `/api/poll` does **not** read the log, so a post-drain retraction never reaches it.
+The panel/markers/composer are runtime-only DOM, so invariant 1 holds.
+
+**A `:::diagram` has exactly TWO annotatable granularities, and BOTH anchor to the block.** It renders as
+`<pre class="mermaid" id="<stable charter id>">` whose content Mermaid replaces with an `<svg>` carrying **its
+own** generated ids (on the svg and every `g.node`). Those are not Charter anchors: `SourceMap.LineForAnchor`
+cannot map one, and they change on every render.
+
+- Alt+click a **node** ⇒ a `diagram-node` note whose `anchorId` is the **block**, with the Mermaid node in
+  `nodeId` (#48, where `anchorId` was the Mermaid id and the agent got **no `sourceLine` at all**).
+- Alt+click **anywhere else in the block** — background, padding, an edge ⇒ the ordinary `element` note every
+  other block produces (#60, where a diagram was the one block type with no whole-block annotation).
+- **`nodeId` is Mermaid-GENERATED and UNSTABLE across renders — a recovery hint, never an anchor.** Do not key
+  state on it or resolve it back to source. The block id is a diagram note's only stable identity.
+- A diagram is **never** text-range annotatable: it carries no prose, and Chromium's word-select fallback on
+  its background used to fabricate a text-range note over unrelated text elsewhere on the page (#61).
+
+`closestAnchored` resolves the enclosing `pre.mermaid` at the **anchoring layer**, not per handler, so by
+construction no path can escape carrying a Mermaid id. Both granularities share one anchor id, so the
+composer's context line is all that distinguishes them for the reviewer — it names which one explicitly.
 
 **"Unanswered" is a state a reviewer can return a `:::question` to.** Clicking the already-selected radio
-clears it (Space does too — Blink dispatches no click for that gesture, so the SDK handles keyup itself).
+clears it (Space does too — Blink dispatches no click for that gesture, so the SDK handles `keyup` itself).
 On an **open** question that just restores "nothing to save"; on an **answered** one it is a real, submittable
-retraction — Save renames itself to **Clear answer** and posts `values: []`, which `charter-format` reads as
-open again. A reviewer who may freely *change* a settled decision must be able to *withdraw* it, and a form
-showing nothing selected while the server still held an answer would be a lying UI (Charter #63).
+retraction — Save renames itself to **Clear answer** and posts `values: []`, which writes `"answer": []`,
+which `QuestionSpec` treats as **open** again (#63). A reviewer who may freely *change* a settled decision
+must be able to *withdraw* it, and a form showing nothing selected while the server still held an answer
+would be a lying UI.
 
-**The round HAND-OFF ("Send to agent").** The reviewer can say *"I am done with this round"* without leaving
-the page: `POST /api/{key}/review/submit` records a hand-off and wakes the long-poll, `GET /api/review`
-reports it plus the live pending counts, `POST /api/{key}/review/ack?sequence=N` clears it by
-compare-and-clear. It rides the poll envelope as the additive `reviewSubmitted` / `reviewSubmission` pair.
-It **signals only** — the drafting agent stays the single writer of the plan. The wake-signal invariant is
-stated ONCE, in `PendingSignal`: *the signal is completed iff the owning store has pending work*,
-re-established under the owner's lock after **every** mutation. All three review stores (annotations,
-answers, hand-off) use it and `ReviewServer.WaitForReviewWorkAsync` waits on all three; a store that skips
-the re-sync either hot-loops `poll --wait` or strands it until timeout. That is what makes **answers wake
-`poll --wait`** (was Charter #62): waiting on the annotation store alone made the reviewer's *decisions* —
-the highest-value signal Charter carries — its slowest, sitting queued until the ~30 s timeout.
+**The round HAND-OFF ("Send to agent").** The reviewer says *"I am done with this round"* without leaving the
+page: `POST /api/{key}/review/submit` records a hand-off and wakes the long-poll, `GET /api/review` reports it
+plus live pending counts, `POST /api/{key}/review/ack?sequence=N` clears it by compare-and-clear. It rides the
+poll envelope as the additive `reviewSubmitted` / `reviewSubmission` pair and **signals only** — the drafting
+agent stays the single writer of the plan.
 
-**What the AGENT must do with all this** (the consumption contract, and the part most easily missed):
+**The wake-signal invariant is stated ONCE, in `PendingSignal`:** *the signal is completed iff the owning
+store has pending work*, re-established under the owner's lock after **every** mutation. All three review
+stores (annotations, answers, hand-off) use it and `ReviewServer.WaitForReviewWorkAsync` waits on all three; a
+store that skips the re-sync either hot-loops `poll --wait` or strands it until timeout. That is what makes
+**answers wake `poll --wait`** (#62) — waiting on the annotation store alone made the reviewer's *decisions*,
+the highest-value signal Charter carries, its slowest.
+
+### The replaced-plan quarantine
+
+The durability sidecar is keyed by the plan's **path**, so deleting a `.charter.md` and authoring a different
+plan at the same name used to resurrect the dead document's notes into the new review (#67). `ReviewSidecar`
+now defends against that, and the rule is deliberately the **weakest one that still catches the bug** —
+over-eager quarantine would discard real review work, which is the worse failure:
+
+> Quarantine iff the sidecar holds **≥ 1 annotation**, **and** the plan is **not byte-identical** to the
+> revision the queue was last written against (sidecar **schema 2** stores a `planHash`; a schema-1 sidecar
+> has none and falls straight through), **and** **not one** of those anchors resolves in the plan as it is now.
+
+Orphaning after an edit is normal — that is the living-document model — so a queue where *any* anchor still
+resolves is an edited plan, never a replaced one, and is delivered untouched. **Nothing is destroyed:** the
+queue is copied to `<sidecar>.stale-<utc>.json` and restored by **`charter review --keep-annotations`**.
+**Answers are id-keyed, never quarantined** — the anchor evidence says nothing about them (and #75 item 3
+records that this leaves a replaced plan reusing a question id able to inherit a stale answer *into the plan
+file*, which is open). Reviewer-facing details: `skills/charter/references/review-loop.md`.
+
+## What the AGENT must do with all this
+
+The consumption contract, and the part most easily missed:
 
 - **Branch on `charter poll`'s exit code, never on an empty array.** `0` drained · `2` clean-empty ·
   `3` no live session *and* no readable review log (also the ambiguous >1-session refusal) · `4` a drain
-  **could not complete** — queue state UNKNOWN · `5` `--apply` refused (answers preserved, never
-  committed). `1` is the generic verb error. Normative in `src/Charter.Cli/ReviewExitCodes.cs`;
-  `charter resolve` shares them. **A `4` still emits `"annotations": []`** — the envelope's `drainError`
-  (non-null) is what distinguishes "nothing queued" from "we don't know", and treating them alike is how an
-  agent hands off a plan nobody approved.
+  **could not complete** — queue state UNKNOWN · `5` `--apply` refused (answers preserved, never committed).
+  `1` is the generic verb error. Normative in `src/Charter.Cli/ReviewExitCodes.cs`; `charter resolve` shares
+  them. **A `4` still emits `"annotations": []`** — the envelope's `drainError` (non-null) is what
+  distinguishes "nothing queued" from "we don't know", and treating them alike is how an agent hands off a plan
+  nobody approved.
 - **Check `reviewSubmitted` on every poll.** `true` = the human clicked **Send to agent**: *this round is
-  complete, do the substantial revision*. `false` = you woke on incremental feedback and the reviewer is
-  still working. Onboarding that skips this leaves an agent unable to tell the two apart, which is the whole
-  point of the hand-off.
-- The marker is **peek + ack**: reported once, acked after the envelope is written, and acked **only on a
-  clean drain** (a non-null `drainError` leaves it standing). Delivery is at-least-once — a repeated
+  complete, do the substantial revision*. `false` = you woke on incremental feedback and the reviewer is still
+  working. The marker is **peek + ack** — reported once, acked after the envelope is written, and acked **only
+  on a clean drain** (a non-null `drainError` leaves it standing). Delivery is at-least-once: a repeated
   `sequence` is the same round, not a second one.
-- **`anchorStatus: "orphaned"` is neutral, not an error and not proof the note was addressed** (§4.3).
+- **Annotations DRAIN; answers only PEEK.** A bare `charter poll` removes the annotations it reports but
+  leaves the answers queued (`AnswerStore.Peek`), so the *same* answer is re-reported on every poll until
+  `poll --apply` / `charter resolve` has durably written it into the `:::question` and called `CommitFront`.
+  That asymmetry is the "nothing lost" guarantee, not a bug — but an agent that treats each poll's `answers`
+  array as fresh work will act on the same decision repeatedly. De-duplicate by `questionId`, or apply.
+- **`anchorStatus: "orphaned"` is neutral** — not an error, and not proof the note was addressed (§4.3).
+- **`status: "contested"` is NOT resolved** — treat it as open (§4.2).
 
-**Git-mediated team review (the durable half).** Comments also become **per-author append-only JSONL**
-records in `<plan>.review/<slug>.<hash8>.jsonl` beside the plan, so review travels by git instead of dying
-in a machine-local sidecar. Normative design: `docs/plans/03-git-mediated-team-review.md` — cite it, don't
-restate it. What the code surface is:
+## Git-mediated team review (the durable half)
+
+Comments also become **per-author append-only JSONL** records in `<plan>.review/<slug>.<hash8>.jsonl` beside
+the plan, so review travels by git instead of dying in a machine-local sidecar. Normative design:
+`docs/plans/03-git-mediated-team-review.md` — cite it, don't restate it. The code surface:
 
 - `GET /api/review-log` — every author's logs, folded and projected **server-side**. There is deliberately
-  **no static-file branch** for `.review/`: the confinement root is the plan's own directory, so one would
-  make every sibling file under `docs/plans/` a key-gated HTTP-readable resource.
+  **no static-file branch** for `.review/`: the confinement root is the plan's own directory, so one would make
+  every sibling file under `docs/plans/` a key-gated HTTP-readable resource.
 - `POST /api/{key}/annotations/{id}/resolve` — appends a `resolve` record. Open to anyone (review is
   collaborative) and always attributed; `retract` (the existing `/delete`) is refused for anyone but the
   comment's own author. Orthogonal to the round hand-off: a resolve settles one comment forever, a hand-off
   marks one round of one live session.
-- The `/events` stream now names its frames: **`reload`** (the plan changed — navigate) vs **`review-log`**
-  (a teammate's log landed, e.g. a `git pull` — re-read the fold only). Keeping them distinct is what stops
-  a pulled log discarding a half-typed note or an unsaved answer.
-- Anchors resolve by **exact block-id match or `orphaned`** — no fuzzy ladder — and an orphan is a neutral
-  fact, never "addressed".
-- `charter poll <plan>` gained a **server-less read path**: with no live session it folds
-  `<plan>.review/*.jsonl` and emits the same envelope with the additive `source: "review-log"` (else
-  `"session"`) and a per-annotation `review { authorName, authorEmail, actor, status, ts }`. Consumption is
-  tracked in a **machine-local** ledger (`StateDirectory.Consumed()`), never as a log record — A's agent
-  consuming must not mark a comment handled for B. **A live session always takes precedence**; the log is
-  read only when none is live, and only when a `<plan>` is named (bare `poll`, `--url` and `--session` are
-  session-discovery paths and never read it). `--apply` is inert here — a log has comments, not an answer
-  queue. Exit codes are the same 0/2/4, so this path **returns 0/2/4 where it used to return 3**.
+- The `/events` stream names its frames: **`reload`** (the plan changed — navigate) vs **`review-log`** (a
+  teammate's log landed — re-read the fold only). Keeping them distinct is what stops a pulled log discarding a
+  half-typed note or an unsaved answer.
+- `charter poll <plan>` has a **server-less read path**: with no live session it folds `<plan>.review/*.jsonl`
+  into the same envelope with the additive `source: "review-log"` (else `"session"`) and a per-annotation
+  `review { authorName, authorEmail, actor, status, ts }`. Consumption is tracked in a **machine-local** ledger
+  (`StateDirectory.Consumed()`), never as a log record — A's agent consuming must not mark a comment handled for
+  B. **A live session always takes precedence**; the log is read only when none is live and a `<plan>` is named
+  (bare `poll`, `--url`, `--session` never read it). `--apply` is inert here. This path returns **0/2/4 where
+  it used to return 3**.
 - **`status` (`ReviewStatusTokens`) is load-bearing on the wire:** `open` · `resolved` · `contested` ·
-  `retracted`. **`contested` is NOT resolved** — concurrent resolve+reopen, neither having observed the
-  other — and execution must treat it as open (§4.2); `retracted` is a withdrawal whose body reads
-  `(comment withdrawn by author)`. Note **`charter handoff` does not read the review log at all**: honouring
-  "a contested comment blocks handoff" is currently the *agent's* responsibility, not a code gate.
+  `retracted`. `contested` = concurrent resolve+reopen, neither having observed the other. **`charter handoff`
+  does not read the review log at all** — honouring "a contested comment blocks handoff" is the *agent's*
+  responsibility, not a code gate.
 - A later `edit`/`reply`/`resolve`/`reopen`/`retract` mints a new record id, so a comment already delivered
-  becomes **deliverable again** with its new status — intended (something new is being said about it), and a
-  consumer must not treat the repeat as a duplicate to suppress.
-- **Who writes, precisely** (do not conflate the two): the *library* option `ReviewServerOptions.ReviewLog`
-  defaults `null`, and with no writer the server behaves bit-identically to the pre-log server. But the
-  **`charter review` CLI always supplies one** (`Program.OpenReviewLog`) — it resolves the author from
-  `git config user.name`/`user.email` (read-only; falling back to a marked `@localhost` identity with a
-  warning), **creates `<plan>.review/` eagerly** via `EnsureDirectory()` before any comment exists, and
-  prints one stderr line naming the log and stating the records are meant to be COMMITTED and are permanent.
-  An unwritable directory only warns and reviews local-only — a review never fails for want of a log. So
-  "opt-in" describes the API, **not** the shipped user experience; the user-facing opt-out is gitignoring
-  `*.review/` (§7).
-- Per **§5.0 the solo path must not regress**: the §5.1 nag warnings are to fire only when `.review/` is
-  actually *tracked*. Those warnings are **step 5 and not built yet** — see Status.
+  becomes **deliverable again** with its new status — intended. Do not suppress the repeat as a duplicate.
+- **Who writes, precisely.** The *library* option `ReviewServerOptions.ReviewLog` defaults `null`, and with no
+  writer the server behaves bit-identically to the pre-log server (the panel still *reads* whatever logs sit
+  beside the plan). The **`charter review` CLI always supplies one** (`Program.OpenReviewLog`), resolving the
+  author from `git config user.name`/`user.email` — **read-only; Charter never mutates git state** — and
+  falling back to a marked `@localhost` identity. A review never fails for want of a log; any failure only
+  warns and reviews local-only. **But it creates nothing and says nothing until it has to** (§5.0, above):
+  `ReviewLogWriter` creates `.review/` **on the first append**, not in its constructor, and both the §7
+  permanence notice (fired once, via the one-shot `OnFirstRecordWritten` callback) and the unresolved-identity
+  warning are gated on `GitTracking.IsTracked` — a read-only `git ls-files` on the directory. **A solo reviewer
+  who never shares is therefore completely silent, and leaves no directory.** The user-facing opt-out for a
+  reviewer who *is* in a tracked repo is gitignoring `*.review/` (§7).
 
-## The workflow
+## The handoff to Guardrails
 
-**AUTHOR → REVIEW → HANDOFF.** The handoff to Guardrails is **dual** (Architecture B, of record): the
-**interactive** `/plan-breakdown` consumes the `.charter.md` **directly**, interpreting the `:::` blocks
-via the `charter-format` skill; the **headless/autonomous** path consumes the retained **flattened**
-`charter handoff` output — plain CommonMark with each `:::question` resolved from its inline `answer` (or a
-`--answers` file) and open questions clearly flagged. So Charter's directives DO reach Guardrails on the
-interactive path (through the shared `charter-format` skill), while the flattened markdown stays the
-contract for the headless path.
+**AUTHOR → REVIEW → HANDOFF**, and the handoff is **dual** — see invariant 5 for which path is which. The
+flattened path emits plain CommonMark with each `:::question` resolved from its inline `answer` (or a
+`--answers` file) and open questions clearly flagged.
 
-**The flatten must be LOSSLESS in the two things the breakdown routes on** (Charter #48, found by the first
-real end-to-end Charter → Guardrails verification):
+**That flatten must be LOSSLESS in what the breakdown routes on.** Six defects — labelled **C1–C6** in commit
+`fbbcdd9`, **not** GitHub issue numbers — were found by the first real end-to-end Charter → Guardrails
+verification. Exact emitted shape: `skills/charter/references/handoff.md`. The rules that came out of it:
 
 - **Every `:::question` emits a status line PLUS a metadata line**, identical in shape whether answered or
   open: `` _Question — id: `x`; mode: `single`; target: `human`; options: `A`, `B`_ ``. `options` are the
-  *rationale* a resolved answer is folded in with (the rejected option is what a guardrail can be written
-  against), and `target` is what lets the headless path honour `target: agent` instead of halting for a
-  human. Both used to be dropped. Shape lives in `skills/charter/references/handoff.md`.
-- **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms — raw, or already wrapped in
-  ` ```mermaid ` / ` ```diff ` — are accepted (`charter-format`), and an already-fenced body is unwrapped
-  before emitting, never double-fenced (a double fence makes the inner fence literal, so the diagram does
-  not render on GitHub).
-- **An unknown `:::foo` keeps its BODY** — flagged as unknown, body preserved as blockquoted prose, never
-  silently dropped. Same rule in the renderer (a `<pre>` under the unknown-directive marker).
-- **A RESOLVED question RENDERS as resolved** — `class="question answered"` + `data-answered="true"`, the
-  chosen value(s) pre-selected, an "Answered" chip in the legend — so a second review round does not re-ask
-  a settled decision. An answer matching no declared option is surfaced as a checked write-in, never dropped.
-- **Duplicate `:::question` ids warn early** (stderr, non-fatal, exit code unchanged) from `render`,
-  `review`, and `handoff`, not only at answer-drain.
+  rationale a resolved answer is folded in with (the *rejected* option is what a guardrail can be written
+  against); `target` lets the headless path honour `target: agent` instead of halting for a human. Both used
+  to be dropped, and dropping `target` gave the flattened DAG 2 needs-human roots against the direct DAG's 1.
+- **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms are accepted (raw, or already
+  wrapped in ` ```mermaid ` / ` ```diff `); an already-fenced body is unwrapped before emitting, never
+  double-fenced (a double fence makes the inner fence literal, so the diagram does not render on GitHub).
+- **Nothing is silently dropped.** An unknown `:::foo` keeps its body (blockquoted prose on flatten, an escaped
+  `<pre>` on render); a **resolved** question renders as resolved (`class="question answered"` +
+  `data-answered="true"`, values pre-selected, an "Answered" chip) so a second round does not re-ask a settled
+  decision; an answer matching no declared option becomes a checked write-in; duplicate `:::question` ids warn
+  early on stderr from `render`, `review`, and `handoff`.
 
 ## Format decision (settled)
 
-**markdown + directives (Markdig), as a deliberate hybrid** — chosen over MDX, Adaptive Cards, JSON
-Forms, raw HTML, notebooks, AsciiDoc/RST, and slides. Key rationale: the essence of "MDX blocks" is a
-validated block *schema* (Builder.io validates with Zod), not JSX; real MDX cannot run in C#; so
-markdown+Markdig validated against C# records is the correct C# reproduction. Narrative stays free-form
-(strict format degrades LLM reasoning); the rigid schema is confined to `:::question` where reliability
-matters; `:::custom-html` is the raw-HTML escape hatch. No more-expressive *viable* standard exists.
-Full study: `docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
+**markdown + directives (Markdig), as a deliberate hybrid** — chosen over MDX, Adaptive Cards, JSON Forms, raw
+HTML, notebooks, AsciiDoc/RST, and slides. The essence of "MDX blocks" is a validated block *schema* (Builder.io
+validates with Zod), not JSX; real MDX cannot run in C#; so markdown+Markdig validated against C# records is
+the correct C# reproduction. Narrative stays free-form (strict format degrades LLM reasoning); the rigid schema
+is confined to `:::question`, where reliability matters; `:::custom-html` is the escape hatch. Full study:
+`docs/plans/01-combine-lavish-and-visual-plan.md` (decision D1).
 
 ## Load-bearing invariants
 
 1. **Portable artifact** — opens standalone; SDK injected only at serve time.
-2. **Comment-in-place with round-trip** — annotations anchor to stable block IDs and map back to
-   markdown source lines; they survive re-render of unrelated blocks. The line handed to the agent is
-   resolved **at drain time**, and an anchor that no longer resolves is reported as an explicit orphan —
-   never as a stale-but-confident line number, and never as a different block.
+2. **Comment-in-place with round-trip** — annotations anchor to stable block IDs and map back to markdown
+   source lines; they survive re-render of unrelated blocks. The line handed to the agent is resolved **at
+   drain time**, and an anchor that no longer resolves is reported as an explicit orphan — never as a
+   stale-but-confident line number, and never as a different block.
 3. **Format single-sourced** — the block schema lives in one place; renderer, SDK, and skill cite it.
-4. **Loopback + capability** — `127.0.0.1` default, per-session capability key, path-confined serving.
-5. **Dual handoff to Guardrails** — the interactive `/plan-breakdown` reads the `.charter.md` directly
-   (interpreting `:::` blocks via the `charter-format` skill); the headless/autonomous path consumes the
-   retained flattened `charter handoff` plain-CommonMark output. (Architecture B — flipped from the earlier
-   "plain-markdown-only handoff"; see `docs/plans/02-architecture-b-living-document.md`.) **Guardrails
-   compatibility:** the direct path requires **Guardrails ≥ `1.0.0-preview.48`** (the release implementing
-   #390–393); against any earlier Guardrails, use `charter handoff` → flattened `plan.md` (no version floor,
-   supported permanently). This is a **documentation** compat note, not a code pin — Charter never invokes
-   Guardrails; the actual gate is the `charter-format` format-version range checked on the Guardrails side.
+4. **Loopback + capability** — `127.0.0.1` default, per-session capability key, path-confined serving. The
+   drafting agent is the **single writer of `.charter.md`**; server-owned files (sidecar, review log) are not
+   the plan.
+5. **Dual handoff to Guardrails** — the interactive `/plan-breakdown` reads the `.charter.md` directly; the
+   headless/autonomous path consumes the flattened `charter handoff` output. (Architecture B — flipped from the
+   earlier "plain-markdown-only handoff"; see `docs/plans/02-architecture-b-living-document.md`.) The direct
+   path needs **Guardrails ≥ `1.0.0-preview.48`**; against anything earlier use `charter handoff` → flattened
+   `plan.md` (no version floor, supported permanently). A **documentation** compat note, not a code pin —
+   Charter never invokes Guardrails; the real gate is the `charter-format` version range checked their side.
 6. **Narrow C#↔JS boundary** — browser logic isolated in `sdk/`.
-7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag
-   does not prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a
-   vendor SDK. Deliberate departure from Lavish's default-on. (Plan → *Trust, security & telemetry*; #6.)
+7. **Telemetry: none in v1; vendor-neutral if ever** — no vendor-SDK lock-in. A default-*off* flag does not
+   prevent lock-in (the dependency compiles in regardless); the safeguard is not adding a vendor SDK.
+   Deliberate departure from Lavish's default-on. (#6.)
+8. **Charter reads git; it never writes git.** `GitCommand` is the one place it shells out, read-only, with
+   every failure mode (git absent, not a repo, timeout) degrading to the solo-safe answer.
 
 ## Where truth lives
 
 | Question | Authoritative source |
 |---|---|
 | Block catalog + `:::question` schema (normative, drift-tested) | skill `charter-format` |
+| Reviewer-facing loop: annotation JSON fields, quarantine recovery, poll usage | `skills/charter/references/review-loop.md` |
+| Flattened-handoff emitted shape | `skills/charter/references/handoff.md` |
 | Architecture, milestones, decisions D1/D2 | `docs/plans/01-combine-lavish-and-visual-plan.md` |
 | Living-document / dual-handoff design (Architecture B) | `docs/plans/02-architecture-b-living-document.md` |
-| Git-mediated team review: log layout, record schema, the 8 fold rules, `prev`/contested, exact-hash-or-orphan | `docs/plans/03-git-mediated-team-review.md` |
-| Build / test / package / distribution / gotchas | skill `charter-dev-knowledge` |
-| Format rationale (vs alternatives) | plan D1 + the format-research verdict it cites |
-| Guardrails handoff shape | to be pinned as a fixture in M0 |
+| Team review: log layout, record schema, the 8 fold rules, `prev`/contested, §5.0 solo primacy | `docs/plans/03-git-mediated-team-review.md` |
+| Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
 
 ## Status (update as milestones complete)
 
-- **Released — v0.2.0 GA** on all channels (Homebrew, NuGet `dotnet` tool, native binaries): the Architecture B living-document release. Ships the renderer + source-map, loopback review server, in-place annotation loop, offline export, and the full **living-document loop** — `.charter.md` format + `charter-format` skill + `charter-format-version` marker; `charter skills install`; `charter poll --apply` / `charter resolve` fold reviewer answers back **into the `.charter.md`** (durable sidecar + peek→apply→commit, nothing lost); `charter handoff` (flatten); and **`charter convert`** (#17), the mechanical Markdown→`.charter.md` seed the agent-driven `authoring-from-source` on-ramp enriches (the rich "any source → plan" path is a **skill**, not a CLI — the LLM stays out of the binary). (v0.1.0 was the prior GA, pre-Architecture-B.)
-- **Current version — 0.6.0** (`charter --version`). Landed since 0.2.0: the in-page **review panel** (#42) with pre-drain edit/retract; **answerable `:::question` forms** (#57/#58 — a real `Save answer` submit, `data-question-mode`, `free-text`/`number` no longer 400); **answers wake `poll --wait`** (#62); the in-page **Send to agent** round hand-off (#64); wide tables in a **scroll wrapper** (#68); and **git-mediated team review steps 2–4** — the per-author JSONL writer, `GET /api/review-log` + the panel's author/actor/contested/orphaned rendering, `POST /api/{key}/annotations/{id}/resolve`, and the server-less `charter poll` read path.
-- **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9): steps 1–4 are in. **Step 5 is NOT** — there is **no `charter review verify` verb**, no stale-plan/upstream warning, no uncommitted-records reminder, and no orphan diff (an orphan shows its `quote`, never a diff). Steps 6 (agent `reply`) and 7 (the two-author browser test) are also outstanding. Do not describe any of these as shipped.
-- **Pending** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393, their team; targeted for Guardrails `1.0.0-preview.48` — Charter's producer side is complete, so this is unblocked on their schedule); macOS signing (#9); v2 features (#1–#6).
+- **Current version — `0.7.0`, release PENDING.** `<Version>` in `src/Charter.Cli/Charter.Cli.csproj` is
+  `0.7.0` and `charter --version` reports it, but **there is no `v0.7.0` tag** — it was cut, unwound to take
+  more fixes, and will be re-cut. The newest published tag is `v0.6.0`. Do not describe 0.7.0 as released.
+- **Master baseline:** 623 tests green, 0 warnings — Core 355 · Server 196 · Cli 57 · Browser 15.
+- **Landed since v0.6.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
+  tracked-gate; the #67 replaced-plan quarantine + `--keep-annotations`; text-range offsets in the block's own
+  frame (#56); the browser-flake fix (#66); diagram-node anchors to the block (#48); whole-diagram annotation
+  (#60); no accidental text-range from a diagram gesture (#61); radio deselect (#63).
+- **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9):
+  - **Built:** 1 (record + fold), 2 (writer), 3 (server-side fold + panel), 4 (server-less `poll` read path),
+    7 (the two-author browser test — `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
+  - **Step 5 is only PARTLY built.** The read-only git *plumbing* exists (`GitCommand`, `GitTracking`) and
+    serves the §5.0 tracked-gate. The §5.1 **warnings do not exist**: no behind-upstream/stale-plan warning at
+    `charter review` start, no uncommitted-records reminder at session end, **no `charter review verify` verb**,
+    no orphan diff (an orphan shows its `quote`, never a diff).
+  - **Step 6 (agent voice) is not built.** `ReviewOpKind.Reply` and `Reopen` are understood by the fold and by
+    `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
+    `reopen` can only reach a log from outside Charter.
+- **Known-open follow-ups:** #74 (the review-log drain has the same stale-queue exposure as #67 — awaiting an
+  architect call), #75 (quarantine follow-ups: the stale-queue notice is **stderr-only** so an agent-launched
+  review may never show a human, `charter resolve` applies answers with no staleness check, `.stale-*.json`
+  files never GC), #51 (`:::diagram` pan/zoom specified but never implemented), #46 (annotation lifecycle v2),
+  #5 (layout-audit gate).
+- **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
+  their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).
