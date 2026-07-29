@@ -10,7 +10,8 @@
  *
  * Selectors match the renderer's structural markers (CharterRenderer / CharterContainerRenderer): .note / .warn
  * callouts, .comparison cards, form.question, the .diff / .diff-add / .diff-del / .diff-context lines,
- * pre.mermaid diagrams, and the .table-scroll container CharterTableRenderer wraps every table in.
+ * pre.mermaid diagrams, and the scroll regions that keep a clipping block reachable — .table-scroll,
+ * .diff-scroll, .custom-html-scroll and every non-diagram <pre> (see "Reachable scroll regions" below).
  */
 
 :root {
@@ -21,7 +22,7 @@
   --charter-border: #d0d7de;
   --charter-code-bg: #f6f8fa;
   --charter-accent: #0969da;
-  /* The persistent scrollbar thumb on a .table-scroll region — the "there is more here" signal (#68). */
+  /* The persistent scrollbar thumb on every scroll region — the "there is more here" signal (#68, #87). */
   --charter-scroll-thumb: #afb8c1;
 
   --charter-note-bg: #ddf4ff;

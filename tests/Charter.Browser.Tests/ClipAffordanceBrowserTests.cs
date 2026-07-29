@@ -252,6 +252,20 @@ public sealed partial class ReviewLoopBrowserTests
             var lineAnchor = Block.StableId(ClipDiffAddedLine);
             Assert.NotEqual(blockId, lineAnchor);
 
+            // The scrolled area must not look EMPTY. `.diff-line { width: fit-content; min-width: 100% }` is
+            // what makes an unbreakable line's add/del background follow the text past the fold instead of
+            // stopping at the container's right edge — without it a reviewer scrolls into unpainted space and
+            // cannot tell an added line from a removed one out there. A line that fits stays exactly
+            // full-bleed, so no ordinary diff gains a ragged right edge.
+            var lines = await DiffLineWidthsAsync(page);
+            Assert.True(
+                lines.GetProperty("unbreakable").GetDouble() > lines.GetProperty("client").GetDouble() + 100,
+                "the overflowing diff line's box stops at the fold, so its background does not follow the " +
+                    "text into the scrolled area: " + lines);
+            Assert.True(
+                Math.Abs(lines.GetProperty("short").GetDouble() - lines.GetProperty("client").GetDouble()) <= 1,
+                "a diff line that fits must stay full-bleed: " + lines);
+
             // Scroll the region first — an annotation written after the reviewer has moved the content is the
             // realistic gesture, and it is where a wrapper's geometry could plausibly go wrong.
             Assert.True(await WheelOverSelectorAsync(page, ".diff > .diff-scroll") > 0);
@@ -303,6 +317,24 @@ public sealed partial class ReviewLoopBrowserTests
         Assert.Equal(
             ClipDiffAddedLine,
             ClipAffordancePlan.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')[line.GetInt32() - 1]);
+    }
+
+    /// <summary>
+    /// The scroll region's client width, the rendered width of the diff line carrying the unbreakable token,
+    /// and the rendered width of a line that comfortably fits — the three numbers that say whether each
+    /// line's coloured background covers what a reviewer scrolls to see.
+    /// </summary>
+    private static async Task<JsonElement> DiffLineWidthsAsync(IPage page)
+    {
+        var json = await page.EvaluateAsync<string>(
+            "() => { const box = document.querySelector('.diff > .diff-scroll');" +
+            "  const rows = box.querySelectorAll('.diff-line');" +
+            "  return JSON.stringify({ client: box.clientWidth, scroll: box.scrollWidth," +
+            "    unbreakable: rows[0].getBoundingClientRect().width," +
+            "    short: rows[rows.length - 1].getBoundingClientRect().width }); }");
+
+        using var document = JsonDocument.Parse(json!);
+        return document.RootElement.Clone();
     }
 
     /// <summary>
