@@ -36,6 +36,7 @@ src/
     GitCommand.cs / GitTracking.cs   # the ONLY git shell-out — READ-only; `ls-files` decides "is .review/ tracked"
     ReviewSidecar.cs / StaleAnnotationQueue.cs  # durability sidecar (schema 2) + the #67 replaced-plan quarantine
     ReviewLog*.cs               # all review-log I/O: writer, store, ledger, server-less drain, panel view
+    ReviewLogWatch.cs           # the two-stage `.review/` watch behind /events + its keep-alive re-check (#88)
 sdk/charter-annotate.js         # the ONLY browser JS (annotation SDK, adapted from Lavish, MIT); serve-time only
 tests/
   Charter.Core.Tests/           # xunit (net8.0) — renderer/exporter/format golden + security tests
@@ -189,6 +190,26 @@ update run `charter skills install --force` too.
   time — never write it into the saved file.
 - **Watch the file, not the tree,** for live reload (`FileSystemWatcher`), or a large parent directory
   saturates the event loop (Lavish's lesson).
+- **`FileSystemWatcher` is best-effort, and a check-then-arm chain has a window (#88).** `.review/` is created
+  lazily (§5.0), so `ReviewLogWatch` is a TWO-STAGE watch: a directory-name bridge on the plan's own directory,
+  then the inner `*.jsonl` watch. It used to look for the directory first and arm the bridge *only if it was
+  missing* — and a `.review/` created in the gap between that check and the bridge going live was seen by
+  neither, so the stream stayed **blind for its whole life** (the watch arms once, at SSE connect) and a
+  teammate's pulled log silently never refreshed the panel. Fix: **arm the bridge FIRST, unconditionally**, then
+  look — every ordering is then covered by one of the two arms. Second rule from the same bug: the watcher is
+  bound **by handle**, so a `.review/` removed and restored (a branch switch) leaves a watcher that can never
+  fire again — `OnArrived` replaces it rather than trusting a `Directory.Exists` that is true again by then.
+  Third: the `/events` keep-alive beat calls `ReviewLogWatch.Poll()` as a bounded safety net (one directory
+  stat per beat; a single `Directory.Exists` when there is no `.review/`), because the OS drops notifications
+  under buffer pressure and delivers none at all on some filesystems. Fourth, and it cost a second red CI:
+  **never assert an arm by waiting on a notification.** `Directory.Delete` raises its own `Deleted` events for
+  the files it removes, and the OS delivers them on its own schedule — measured at 3–4 in 40 arriving *after*
+  the test had already reset its event. A test that waits for "any callback" latches onto one of those and
+  then reads `IsArmed` an instant too early (`windows-latest`, 13 ms, deterministic loss of a race). Read the
+  arm state **inside** the callback instead: it asserts the real contract — *re-arm, THEN announce* — and is
+  the only way to tell the arrival apart from the removal's own noise. That noise is **wanted**, by the way:
+  the comments really did vanish, so a re-read then is correct — do not "fix" it by suppressing events from a
+  watcher you have replaced.
 - **Inline-JS must be script-parse-safe.** A big minified lib inlined between `<script>…</script>` can carry
   `<!--` / `<script` / `</script` (even inside string/regex literals) that flip the browser's script-data
   tokenizer, tearing the script apart — the lib's tail dumps as visible text and its `<iframe>` template

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -1315,6 +1316,10 @@ public sealed class ReviewServer : IReviewServer
         // created lazily (only when a record is actually written), so this ALSO watches for its arrival.
         using var logWatcher = new ReviewLogWatch(_reviewLog.Directory, () => Signal(ReviewLogEvent));
 
+        // The log watch's safety net beats on its OWN clock (Charter #88), not on whether an iteration was
+        // woken: a stream kept busy by plan edits must still re-check `.review/`.
+        var sinceRecheck = Stopwatch.StartNew();
+
         // Push the named events whenever something changed; otherwise a periodic keep-alive comment keeps the
         // connection observably alive. Exits on server shutdown or client disconnect.
         while (!ct.IsCancellationRequested)
@@ -1326,6 +1331,24 @@ public sealed class ReviewServer : IReviewServer
             catch (OperationCanceledException)
             {
                 break;
+            }
+
+            // FileSystemWatcher drops notifications under buffer pressure and delivers none at all on some
+            // filesystems, so the keep-alive beat doubles as the watch's safety net: it arms an inner watch
+            // that never armed, and reports an append nothing told us about. One directory stat every
+            // KeepAliveInterval — and a single Directory.Exists for the solo reviewer who has no `.review/`
+            // (§5.0). Added straight to `pending` rather than through Signal(), so it never costs an extra
+            // wake.
+            if (sinceRecheck.Elapsed >= KeepAliveInterval)
+            {
+                sinceRecheck.Restart();
+                if (logWatcher.Poll())
+                {
+                    lock (pending)
+                    {
+                        pending.Add(ReviewLogEvent);
+                    }
+                }
             }
 
             string[] due;
@@ -1359,134 +1382,6 @@ public sealed class ReviewServer : IReviewServer
     // panel to re-read the fold, so a teammate's comment arriving never discards a half-typed note.
     private const string ReloadEvent = "reload";
     private const string ReviewLogEvent = "review-log";
-
-    /// <summary>
-    /// Watches the plan's <c>.review/</c> directory for logs arriving (a teammate's <c>git pull</c>, or this
-    /// reviewer's own first comment) — and, because that directory is created <b>lazily</b>, watches the plan's
-    /// own directory for the moment it appears and arms itself then.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The laziness is §5.0's requirement, not an optimisation: a solo reviewer who writes nothing must leave no
-    /// trace beside their plan, so <c>charter review</c> can no longer materialise <c>.review/</c> up front and
-    /// a stream that armed only at start would be permanently blind on the very first session that needs it.
-    /// </para>
-    /// <para>
-    /// Both watches are name-filtered and non-recursive — the plan directory is watched for one directory NAME,
-    /// exactly as the plan watcher watches it for one file name. Never a tree walk (Lavish's lesson). Every arm
-    /// is best-effort: a watcher this stream could not create must never cost the reviewer their live-reload
-    /// connection.
-    /// </para>
-    /// </remarks>
-    private sealed class ReviewLogWatch : IDisposable
-    {
-        private readonly object _gate = new();
-        private readonly string _directory;
-        private readonly Action _onChange;
-        private FileSystemWatcher? _logs;
-        private FileSystemWatcher? _arrival;
-        private bool _disposed;
-
-        public ReviewLogWatch(string directory, Action onChange)
-        {
-            _directory = directory;
-            _onChange = onChange;
-
-            lock (_gate)
-            {
-                ArmLogs();
-                if (_logs is null)
-                {
-                    ArmArrival();
-                }
-            }
-        }
-
-        public void Dispose()
-        {
-            lock (_gate)
-            {
-                _disposed = true;
-                _logs?.Dispose();
-                _logs = null;
-                _arrival?.Dispose();
-                _arrival = null;
-            }
-        }
-
-        // The real watch: *.jsonl inside .review/. Only possible once the directory exists.
-        private void ArmLogs()
-        {
-            if (_disposed || _logs is not null || string.IsNullOrEmpty(_directory))
-            {
-                return;
-            }
-
-            try
-            {
-                if (!Directory.Exists(_directory))
-                {
-                    return;
-                }
-
-                var watcher = new FileSystemWatcher(_directory, ReviewLogPaths.LogSearchPattern)
-                {
-                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
-                        | NotifyFilters.CreationTime,
-                };
-                watcher.Changed += (_, _) => _onChange();
-                watcher.Created += (_, _) => _onChange();
-                watcher.Deleted += (_, _) => _onChange();
-                watcher.Renamed += (_, _) => _onChange();
-                watcher.EnableRaisingEvents = true;
-                _logs = watcher;
-            }
-            catch (Exception)
-            {
-                _logs = null;
-            }
-        }
-
-        // The bridge: the plan's own directory, filtered to the ONE directory name, so the log watch arms the
-        // instant .review/ is created instead of on the next page load. Deliberately left armed afterwards —
-        // disposing a watcher from inside its own callback is a needless hazard, and a `.review/` removed and
-        // restored (a branch switch) then re-arms the log watch for free.
-        private void ArmArrival()
-        {
-            try
-            {
-                var parent = Path.GetDirectoryName(_directory);
-                var name = Path.GetFileName(_directory);
-                if (string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name) || !Directory.Exists(parent))
-                {
-                    return;
-                }
-
-                var watcher = new FileSystemWatcher(parent, name)
-                {
-                    NotifyFilter = NotifyFilters.DirectoryName,
-                };
-                watcher.Created += (_, _) => OnArrived();
-                watcher.Renamed += (_, _) => OnArrived();
-                watcher.EnableRaisingEvents = true;
-                _arrival = watcher;
-            }
-            catch (Exception)
-            {
-                _arrival = null;
-            }
-        }
-
-        private void OnArrived()
-        {
-            lock (_gate)
-            {
-                ArmLogs();
-            }
-
-            _onChange();
-        }
-    }
 
     // The served-page Content-Security-Policy. Distinct from the export CSP: it keeps script-src
     // 'unsafe-inline' (injected Mermaid runtime + annotation SDK) and connect-src 'self' (same-origin /api/*
