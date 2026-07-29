@@ -85,7 +85,7 @@ hit immediately:
 | #37 — an un-interpolated JS template literal leaked into the served HTML, tearing the Mermaid script apart | a string containing the expected substrings |
 | #38 — the served page had no doctype, no `<head>`, and zero CSS | a valid fragment |
 | #57 — a `:::question` form had **no submit control**, so a human could not answer anything | inputs present, form present |
-| #68 — a wide table overflowed with no usable way to reach the hidden columns | markup unchanged |
+| #68 / #87 — five block types clipped their content with no way to reach it (a `:::diff` could not scroll on any platform) | markup unchanged |
 
 Worse, one golden **actively protected** a defect.
 `AnsweredQuestionRenderTests.Render_OpenQuestion_EmitsByteIdenticalMarkupToThePreFixRenderer` pinned a
@@ -125,7 +125,7 @@ Playwright evidence attached.
 Prefer `dotnet run --project src/Charter.Cli -- …` over the installed tool when investigating; after a tool
 update run `charter skills install --force` too.
 
-### 4. Playwright traps (all four are live)
+### 4. Browser-test traps — Playwright, and the assets the tests scan
 
 - **The served page's CSP refuses `WaitForFunctionAsync` once it has to POLL.** Playwright's polling loop
   `eval`s its predicate *inside* the page, and the served CSP is `script-src 'unsafe-inline'` with no
@@ -134,11 +134,17 @@ update run `charter skills install --force` too.
   `WaitForSelectorAsync` (the selector engine is CSP-safe) or a bounded C# poll over `EvaluateAsync`
   (`ReviewLoopBrowserTests.WaitForEventAsync`). `EvaluateAsync` itself is fine — it goes over CDP, not `eval`.
 - **Playwright passes `--hide-scrollbars` to headless Chromium by DEFAULT**, forcing every scrollbar to 0
-  width. A test measuring a scroll affordance (#68) measures the *flag*, not the stylesheet — it passes while
-  proving nothing. Opt out per-launch with `options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" }`
+  width. A test measuring a scroll affordance measures the *flag*, not the stylesheet — it passes while proving
+  nothing. Opt out per-launch with `options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" }`
   (`TryLaunchAsync(showScrollbars: true)`), and **only** for the tests that need it, so no existing layout
-  assertion shifts. Same trap for any `scrollWidth`/`clientWidth`/`offsetWidth` delta or scrollbar-gutter
-  assertion.
+  assertion shifts. **Five** tests do (`grep "showScrollbars: true"`) — #68's
+  `Wide_table_scrolls_in_its_wrapper_…`, #87's `Every_clipping_block_scrolls_and_is_keyboard_reachable_…` and
+  `Diff_line_annotation_still_posts_that_lines_own_sub_anchor_…`, and #5's
+  `Every_block_type_is_reachable_when_it_clips_…` / `Nothing_overlaps_or_occludes_…`. The two `Every_*` sweeps
+  **prove** the opt-out instead of asserting it in prose: each compares the reference region's *declared*
+  `::-webkit-scrollbar` height (10px, from `charter.css`) against its *laid-out* gutter, which can only agree
+  when a real bar exists. Copy that check into any new scrollbar test — and note the same trap governs any
+  `scrollWidth`/`clientWidth`/`offsetWidth` delta.
 - **Navigation timeout is set ONCE, on the context, by a single factory.** `NewContextAsync(browser)` applies
   `SetDefaultNavigationTimeout(90_000)`; a test calling `browser.NewContextAsync()` directly bypasses it and
   can reintroduce the #66 flake on a contended `windows-latest` runner. Only *navigation* is relaxed — every
@@ -156,6 +162,14 @@ update run `charter skills install --force` too.
   one — Charter #48 through the back door, with no error anywhere. Track a drag with document-level
   `pointermove`/`pointerup` listeners instead. (Falsified: adding the capture call turns
   `Diagram_node_and_background_still_anchor_to_the_block_after_a_zoom_and_a_pan` red.)
+- **`assets/charter.css` is heavily commented, and its comments NAME the selectors and properties the tests
+  search for** — so a raw-text scan finds prose and reports it as a declaration. It cost a red run: the comment
+  above the scrollbar rules explains why `scrollbar-width`/`scrollbar-color` must live in the
+  `@supports not selector(::-webkit-scrollbar)` branch, and it sits *before* that branch, so
+  `Stylesheet_TheFirefoxScrollbarBranchStaysMutuallyExclusive`'s "every occurrence is inside the branch" scan
+  failed on the *explanation*. `ClipAffordanceTests.Rules()` strips `/* … */` first
+  (`Regex.Replace(CharterStyles.Css, @"/\*.*?\*/", "", RegexOptions.Singleline)`); anything scanning that
+  stylesheet — or the artifact's inline `<style>` — must too.
 - **Wait on selectors/events, not network-idle.** The served page holds an open SSE `/events` stream, so
   `WaitUntil = NetworkIdle` never settles. Use `WaitUntilState.Load` + a selector/event wait. The suite
   SKIPS cleanly (`Xunit.SkippableFact`) when Chromium is unavailable; the deterministic served-doc-shell
@@ -231,10 +245,10 @@ update run `charter skills install --force` too.
   `02-architecture-b-living-document.md` (dual handoff), `03-git-mediated-team-review.md` (per-author JSONL
   logs, the fold rules, §5.0 solo primacy; **normative**, and its §9 build order says which steps exist).
 - Distribution + CI: `.github/workflows/`, mirrored from Guardrails' validated pipeline.
-- **Current state: `0.7.0`, release PENDING** — the version is in the csproj but **no `v0.7.0` tag exists**
-  (cut, unwound to take more fixes, to be re-cut; newest published tag is `v0.6.0`). Clean-tree baseline:
-  **623 tests green, 0 warnings** (`dotnet test Charter.sln -c Release`) — Core 355 · Server 196 · Cli 57 ·
-  Browser 15. On the unmerged `fix/panel-drain-parity` (#78/#79/#75): **679** — Core 370 · Server 230 ·
-  Cli 63 · Browser 16.
+- **Release state and the master test baseline are single-sourced in `charter-domain-knowledge`'s Status
+  block** — don't restate them here. The dev-side consequence is §3's trap sharpened: `v0.7.0` is **published**
+  while `<Version>` still reads `0.7.0`, so a local build reports a version already on NuGet and "csproj agrees
+  with `charter --version`" proves nothing about whether your binary matches the repo. Bump `<Version>` before
+  the next tag.
 - Product model, review-loop semantics, solo primacy, and the agent-facing consumption contract (poll exit
   codes, `drainError`, `reviewSubmitted`, `anchorStatus`): skill `charter-domain-knowledge`.

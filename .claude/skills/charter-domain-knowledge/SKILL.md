@@ -92,12 +92,28 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   adjacent identical siblings), so inserting an identical block elsewhere no longer renumbers existing ones
   onto each other's notes. Cost: a duplicate's id can change when a *neighbour* changes — which orphans
   (detectable) rather than misattributes (not).
-- **Chrome around a block must stay anchor-invisible.** A wide table renders inside
-  `<div class="table-scroll" tabindex="0" role="region" aria-label="Table">` (`CharterTableRenderer`, #68) and
-  that wrapper deliberately carries **no** anchor id — the `<table id="…">` keeps it, so annotation targeting
-  is unchanged. Any future wrapper must follow the same rule. The SDK's own chrome obeys the mirror rule: it
-  is marked with the `data-charter-ui` **attribute** and has **no ids at all**, so even a guard bug degrades to
-  "no anchor", never "the wrong anchor".
+- **Chrome around a block must stay anchor-invisible.** Every clipping block resolves to a **scroll region** —
+  a real element carrying `tabindex="0"`, `role="region"` and a name, single-sourced by `ScrollRegion`
+  (`src/Charter.Core/CharterRenderer.cs`, #68/#87). There are **five**, and one rule decides each one's shape:
+  **where the clipping element is one the renderer already owns, the affordance goes ON it and the anchor does
+  not move** (a code block's `pre`; `pre.unknown-directive-body`); where it is not — a `<table>`, a diff's
+  per-line rows, an author's verbatim HTML — the renderer emits a **wrapper** (`.table-scroll`, `.diff-scroll`,
+  `.custom-html-scroll`) carrying **no** `id`, `data-anchor` or `data-charter-anchor`, so `closestAnchored`
+  walks straight past it to the block's own anchor and `SourceMap` never sees it. A wrapper holding an anchor
+  would silently re-target every note on the block; any future one follows the same rule. The SDK's own chrome
+  obeys the mirror rule: marked with the `data-charter-ui` **attribute**, **no ids at all**, so even a guard bug
+  degrades to "no anchor", never "the wrong anchor".
+- **`:::diagram` is deliberately OUTSIDE all of it** (`pre:not(.mermaid)` in `assets/charter.css`): its oversize
+  failure is shrink-below-legibility, not clipping, and its answer is #51's **SDK-only** pan/zoom. A
+  shared-stylesheet rule reaching `pre.mermaid` would put part of that affordance into the exported artifact and
+  break invariant 1.
+- **`:::diff` renders `div.diff > div.diff-scroll > div.diff-line`, and the per-line sub-anchor stays on
+  `.diff-line`** — the region is invisible to `closestAnchored`, so a line annotation still posts that line's
+  own `Block.StableId` with a real `sourceLine`. **The scroll moved INWARD rather than flipping `.diff`'s
+  `overflow`**, and re-proposing that flip is the trap: the `hidden` is what clips each line's **full-bleed**
+  add/del background to the card's radius *while scrolled*, **and** the SDK's whole-block annotation badge is
+  `position: absolute` inside `.diff` — making the card the scroll container would make the badge **ride away
+  with the content** (the #51 lesson).
 
 ## Review-loop semantics
 
@@ -179,8 +195,8 @@ rendered width) and gives that block, and only that block, a zoom bar (`−` · 
 and the gestures: **Ctrl/⌘+wheel** zooms about the pointer (a plain wheel is never intercepted), a **drag**
 pans once there is somewhere to pan, and **arrow keys** pan the focused block. **Alt stays the annotate
 modifier at every zoom level** — a *drag* swallows the click that ends it, so panning can never open a
-composer, while a *click* annotates exactly as before. A diagram that fits gains none of it. Three rules
-make it safe:
+composer, while a *click* annotates exactly as before. A diagram that fits gains none of it. Two rules
+make it safe (the third, "never take pointer capture", is an SDK trap — `charter-dev-knowledge` §4):
 
 - **It is an SDK affordance, so the exported artifact still renders the diagram statically** (invariant 1).
   `charter.css` and the renderer are untouched by the feature; `Reset` and `dispose()` both restore the block
@@ -188,11 +204,9 @@ make it safe:
   carries none of it) and `ServedDocumentShellTests` (the served page does) — either alone would hold with
   the feature simply absent.
 - **Zooming WIDENS the `<svg>`; it never transforms it.** The block becomes an ordinary scroll container —
-  the same shape #68 gave a wide table. That keeps the label text vector-crisp, keeps `getBoundingClientRect`
+  the shape above, but built at runtime. That keeps the label text vector-crisp, keeps `getBoundingClientRect`
   and hit-testing simply correct so node annotation is unaffected, and makes a pan a real element scroll,
   which the overlay's existing capture-phase `scroll` listener already follows.
-- **The pan gesture must never take pointer capture.** Capture retargets the compatibility `click` at the
-  captured element, which silently turns a `diagram-node` note into a whole-block one — #48 by the back door.
 
 **"Unanswered" is a state a reviewer can return a `:::question` to.** Clicking the already-selected radio
 clears it (Space does too — Blink dispatches no click for that gesture, so the SDK handles `keyup` itself).
@@ -450,16 +464,17 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 - **Master is AHEAD of v0.7.0 and `<Version>` has not been bumped yet.** `src/Charter.Cli/Charter.Cli.csproj`
   still says `0.7.0`, so a local build reports a version already published. Everything in the *"Also landed"*
   bullet below is **unreleased** and heading for the next tag — bump `<Version>` before cutting it.
-- **Master baseline:** **735** tests green, 0 warnings — Core 389 · Server 244 · Cli 81 · Browser 21.
-- **Shipped in v0.7.0:** wide tables in a scroll wrapper (#68); team review steps 1–4 plus the `.review/`
-  tracked-gate; the #67 replaced-plan quarantine + `--keep-annotations`; text-range offsets in the block's own
-  frame (#56); the browser-flake fix (#66); diagram-node anchors to the block (#48); whole-diagram annotation
-  (#60); no accidental text-range from a diagram gesture (#61); radio deselect (#63).
-- **Also landed — merged to master but NOT YET RELEASED:** panel/drain anchor parity (#78); an unrecognised annotation `kind`
-  refused with 400 rather than coerced to `element` (#79); the three #75 quarantine follow-ups (panel
-  surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention) — PR #82. The
-  unattended `charter headless` verb (#7) — PR #83. Pan/zoom for an oversized `:::diagram` (#51), SDK-only —
-  PR #84. The #74 review-log staleness resolution (`base` + `baseStatus` on every review-log comment) — PR #80.
+- **Master baseline (`dc725b7`):** **755** tests green, 0 warnings — Core 405 · Server 244 · Cli 81 ·
+  Browser 25.
+- **Shipped in v0.7.0:** the #68 table scroll wrapper; team review steps 1–4 + the `.review/` tracked-gate; the
+  #67 quarantine + `--keep-annotations`; #56, #66, #48, #60, #61, #63. (`git log v0.7.0` is the history.)
+- **Also landed — merged to master but NOT YET RELEASED:** panel/drain anchor parity (#78); an unrecognised
+  annotation `kind` refused with 400 rather than coerced to `element` (#79); the three #75 quarantine
+  follow-ups (panel surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention) —
+  PR #82. The unattended `charter headless` verb (#7) — PR #83. Pan/zoom for an oversized `:::diagram` (#51),
+  SDK-only — PR #84. The #74 review-log staleness resolution (`base` + `baseStatus`) — PR #80. The #5 layout
+  regression gate — PR #86. The #87 reachable scroll affordances for `:::diff`, code blocks, an unknown
+  directive's body and `:::custom-html` — PR #89.
 - **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9):
   - **Built:** 1 (record + fold), 2 (writer), 3 (server-side fold + panel), 4 (server-less `poll` read path),
     7 (the two-author browser test — `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
@@ -470,7 +485,7 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
   - **Step 6 (agent voice) is not built.** `ReviewOpKind.Reply` and `Reopen` are understood by the fold and by
     `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
     `reopen` can only reach a log from outside Charter.
-- **Known-open follow-ups:** #46 (annotation lifecycle v2), #5 (layout-audit gate).
+- **Known-open follow-ups:** #46 (annotation lifecycle v2). (#5 and #87 are CLOSED — both landed above.)
 - **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
   their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

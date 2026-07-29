@@ -33,7 +33,7 @@ Primitives are plain CommonMark. The `:::` directives are the rich, validated bl
 
 | Block | Syntax | Semantics |
 |---|---|---|
-| prose / heading / list / table / code | plain CommonMark | Narrative and data. Annotatable (a whole block, or a text range inside it; a code block per line). |
+| prose / heading / list / table / code | plain CommonMark | Narrative and data. Annotatable as a whole block, or as a text range inside it. (Per-line sub-anchors exist only for `:::diff`; a code block has none.) |
 | note callout | `:::note` | An aside. Rendered as a callout; annotatable as a whole element. |
 | warn callout | `:::warn` | A risk the reviewer must not miss. A callout; annotatable as a whole element. |
 | comparison | `:::comparison` | Options weighed side by side — a pipe table or list body. Annotatable **per row**. |
