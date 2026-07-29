@@ -20,8 +20,15 @@ namespace Charter.Browser.Tests;
 /// is not; the deterministic server-side guards in <c>Charter.Server.Tests.ServedDocumentShellTests</c> cover
 /// the same symptoms cheaply on every OS.
 /// </summary>
+/// <remarks>
+/// <c>partial</c> so the layout regression gate (Charter #5) can live in its own file —
+/// <c>LayoutRegressionGateTests.cs</c> — while REUSING this suite's browser plumbing rather than forking it.
+/// That reuse is load-bearing, not tidiness: <see cref="TryLaunchAsync"/> owns the <c>--hide-scrollbars</c>
+/// opt-out and <see cref="NewContextAsync"/> owns the single navigation timeout, and a gate that rebuilt
+/// either would measure the flag instead of the stylesheet (#68) or reintroduce the #66 flake.
+/// </remarks>
 [Trait("Category", "BrowserAcceptance")]
-public sealed class ReviewLoopBrowserTests
+public sealed partial class ReviewLoopBrowserTests
 {
     // A plan exercising every surface the two bugs touch: prose (baseline for the CSS contrast assertion),
     // a note + warn callout (styled), a :::diagram (Mermaid render under CSP — the #37 subject), and a
