@@ -92,7 +92,11 @@ public class RendererGoldenTests
         var html = CharterRenderer.Render(markdown);
 
         Assert.Equal(BlockKind.Code, block.Kind);
-        Assert.Contains($"<pre id=\"{block.Id}\">", html);
+
+        // The stable id is the FIRST attribute on the <pre> root. Matched as a tag prefix rather than a whole
+        // tag, because that root also carries the scroll-region affordance (Charter #87 — tabindex/role/
+        // aria-label); what this golden pins is that the ANCHOR is on <pre>, not the exact attribute set.
+        Assert.Contains($"<pre id=\"{block.Id}\" ", html);
         Assert.Contains("<code class=\"language-csharp\">", html);
         Assert.Contains("var answer = 42;", html);
     }
