@@ -264,7 +264,13 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         var body = ContainerBody(obj);
         if (body.Trim().Length > 0)
         {
-            renderer.Write("<pre class=\"unknown-directive-body\">");
+            // The preserved body is a scroll region (Charter #87). It exists so a directive typo cannot lose
+            // real plan content, and a preserved body a reviewer cannot read to the end undercuts exactly
+            // that. It carries no id — the block's anchor is on the enclosing <div> — so it is anchor-invisible
+            // even though it is a tab stop.
+            renderer.Write("<pre class=\"unknown-directive-body\"");
+            renderer.Write(ScrollRegion.Attributes("Unknown directive body"));
+            renderer.Write('>');
             renderer.WriteEscape(body.Trim('\n', '\r'));
             renderer.Write("</pre>");
         }
@@ -278,6 +284,15 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// raw HTML is intentional — every other surface escapes it (the pipeline's <c>DisableHtml</c>), so bare
     /// prose HTML can never phone home or run, but a deliberate <c>:::custom-html</c> block still can. The
     /// block's stable id rides the wrapping <c>&lt;div&gt;</c> so the escape-hatch content stays annotatable.
+    /// <para>
+    /// The body is emitted inside an anchor-invisible <see cref="ScrollRegion"/> (Charter #87). The escape
+    /// hatch's containment used to sit on the author's own <c>&lt;table&gt;</c> via a stylesheet rule, which
+    /// could carry neither a visible scrollbar nor a tab stop — and the renderer cannot put an attribute on
+    /// markup it emits verbatim, so the region has to be a box Charter owns. Wrapping the body rather than
+    /// scrolling the anchored <c>div.custom-html</c> itself also keeps that <c>&lt;div&gt;</c> a plain
+    /// non-scrolling frame, so the SDK's absolutely-positioned whole-block badge stays pinned to its corner
+    /// instead of riding away with the horizontal scroll (the Charter #51 lesson).
+    /// </para>
     /// </summary>
     private void WriteCustomHtml(HtmlRenderer renderer, CustomContainer obj)
     {
@@ -290,7 +305,9 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         renderer.Write("<div class=\"custom-html\"");
         WriteId(renderer, obj.TryGetAttributes()?.Id);
         renderer.Write('>');
+        renderer.Write(ScrollRegion.Open("custom-html-scroll", "Custom HTML"));
         renderer.Write(ContainerBody(obj)); // RAW, not escaped — the escape hatch
+        renderer.Write("</div>");
         renderer.WriteLine("</div>");
     }
 
@@ -347,6 +364,25 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         return false;
     }
 
+    /// <summary>
+    /// Render a <c>:::diff</c> as an outer <c>&lt;div class="diff" id="…"&gt;</c> card holding an inner
+    /// <see cref="ScrollRegion"/>, one <c>&lt;div class="diff-line …"&gt;</c> per line (Charter #87).
+    /// <para>
+    /// WHY two boxes. <c>.diff { overflow: hidden }</c> is what clips the per-line FULL-BLEED add/del
+    /// backgrounds to the card's rounded corners, and that clip must hold unconditionally — including while
+    /// the content is scrolled — so it cannot simply become <c>auto</c>: one box cannot both hard-clip its own
+    /// painted corners and be the user-scrollable box whose scrollbar is laid out inside them. Keeping the
+    /// anchored card a NON-scrolling, positioned frame has a second payoff: the SDK's whole-block annotation
+    /// badge is absolutely positioned inside it, and an absolutely-positioned child of a scroll container
+    /// rides away with the content (the Charter #51 lesson) — here it stays pinned by construction.
+    /// </para>
+    /// <para>
+    /// The inner region is ANCHOR-INVISIBLE, which matters more here than anywhere else in the catalog: a
+    /// <c>:::diff</c> carries per-LINE sub-anchors, so <c>closestAnchored</c> must walk from a clicked line
+    /// straight past the region to that line's own <c>id</c>/<c>data-anchor</c>. The region therefore carries
+    /// neither, and <see cref="SourceMap"/> — built from the markdown — never sees it at all.
+    /// </para>
+    /// </summary>
     private void WriteDiff(HtmlRenderer renderer, CustomContainer obj)
     {
         renderer.EnsureLine();
@@ -356,6 +392,7 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             renderer.Write("<div class=\"diff\"");
             WriteId(renderer, obj.TryGetAttributes()?.Id);
             renderer.WriteLine(">");
+            renderer.WriteLine(ScrollRegion.Open("diff-scroll", "Diff"));
         }
 
         // Each diff LINE carries its OWN sub-anchor, read from the shared assignment by that line's markdown
@@ -387,7 +424,8 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 
         if (renderer.EnableHtmlForBlock)
         {
-            renderer.WriteLine("</div>");
+            renderer.WriteLine("</div>"); // the scroll region
+            renderer.WriteLine("</div>"); // the diff card
         }
     }
 
@@ -677,6 +715,47 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 }
 
 /// <summary>
+/// The ONE definition of the chrome that makes a clipping block reachable — a <c>tabindex="0"</c> tab stop,
+/// a <c>role="region"</c> and an accessible name — shared by every scroll region the renderer emits
+/// (Charter #68, #87). Single-sourced so a table, a diff, a code block, an unknown directive's preserved
+/// body and the <c>:::custom-html</c> escape hatch cannot drift into carrying different affordances.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>tabindex="0"</c> plus <c>role="region"</c> and a name is the established pattern for a scrollable
+/// region: without the tab stop a keyboard-only reviewer cannot scroll it (Chromium's focusable-scrollers
+/// behaviour is version-dependent and leaves <c>tabIndex</c> at -1), and a focusable element with no role or
+/// name announces as nothing. The cost is a tab stop and a landmark even on a block that FITS, which is the
+/// accepted trade — CSS cannot make either conditional on overflow, and doing it in script would break the
+/// SDK-free saved artifact (invariant 1). What a block that fits does NOT gain is any visible decoration:
+/// <c>overflow-x: auto</c> draws no bar and takes no gutter when there is nothing to scroll.
+/// </para>
+/// <para>
+/// A region that is a WRAPPER (rather than the clipping element itself) must be ANCHOR-INVISIBLE, so
+/// <see cref="Open"/> deliberately emits no <c>id</c>, no <c>data-anchor</c> and no
+/// <c>data-charter-anchor</c>: the SDK walks up from the clicked node to the nearest ancestor carrying one
+/// of those, so a wrapper holding an anchor of its own would silently re-target every note on the block —
+/// and, in a <c>:::diff</c>, would shadow the individual LINE the reviewer meant.
+/// </para>
+/// </remarks>
+internal static class ScrollRegion
+{
+    /// <summary>
+    /// The affordance attributes, ready to append to an opening tag (leading space included) — for a
+    /// clipping element the renderer already owns, such as a code block's <c>&lt;pre&gt;</c>.
+    /// </summary>
+    internal static string Attributes(string label)
+        => " tabindex=\"0\" role=\"region\" aria-label=\"" + label + "\"";
+
+    /// <summary>
+    /// An anchor-invisible <c>&lt;div&gt;</c> scroll-region opening tag — for a clipping element the renderer
+    /// cannot attribute directly (a <c>&lt;table&gt;</c>, a diff's per-line rows, an author's verbatim HTML).
+    /// </summary>
+    internal static string Open(string cssClass, string label)
+        => "<div class=\"" + cssClass + "\"" + Attributes(label) + ">";
+}
+
+/// <summary>
 /// Renders a GFM pipe table INSIDE a horizontal scroll container:
 /// <c>&lt;div class="table-scroll" tabindex="0" role="region" aria-label="Table"&gt;&lt;table id="..."&gt;…</c>.
 /// The table markup itself is the stock Markdig rendering, delegated to unchanged.
@@ -711,8 +790,7 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 /// </remarks>
 internal sealed class CharterTableRenderer : HtmlTableRenderer
 {
-    private const string Open =
-        "<div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Table\">";
+    private static readonly string Open = ScrollRegion.Open("table-scroll", "Table");
 
     protected override void Write(HtmlRenderer renderer, Table table)
     {
@@ -730,10 +808,19 @@ internal sealed class CharterTableRenderer : HtmlTableRenderer
 }
 
 /// <summary>
-/// Renders a fenced/indented code block as <c>&lt;pre id="..."&gt;&lt;code class="language-..."&gt;</c> —
-/// the block's stable id on the <c>&lt;pre&gt;</c> root (where every other block carries its anchor),
-/// with the fence's info string as the <c>language-</c> class on <c>&lt;code&gt;</c>.
+/// Renders a fenced/indented code block as
+/// <c>&lt;pre id="..." tabindex="0" role="region" aria-label="Code block"&gt;&lt;code
+/// class="language-..."&gt;</c> — the block's stable id on the <c>&lt;pre&gt;</c> root (where every other
+/// block carries its anchor), with the fence's info string as the <c>language-</c> class on
+/// <c>&lt;code&gt;</c>.
 /// </summary>
+/// <remarks>
+/// Charter #87. A code block clips: <c>pre { overflow: auto }</c>, over content whose whole point is that it
+/// has no line-break opportunity. Unlike a <c>&lt;table&gt;</c> (#68) a <c>&lt;pre&gt;</c> IS already the
+/// scroll container and IS a real element that can take a tab stop, so the affordance goes straight onto it
+/// and no wrapper is emitted — which keeps the block's DOM shape, and its anchor, exactly where they were.
+/// The stylesheet supplies the matching persistent scrollbar gutter and focus ring.
+/// </remarks>
 internal sealed class CharterCodeBlockRenderer : HtmlObjectRenderer<CodeBlock>
 {
     protected override void Write(HtmlRenderer renderer, CodeBlock obj)
@@ -754,6 +841,7 @@ internal sealed class CharterCodeBlockRenderer : HtmlObjectRenderer<CodeBlock>
                 renderer.Write('"');
             }
 
+            renderer.Write(ScrollRegion.Attributes("Code block"));
             renderer.Write("><code");
             if (obj is FencedCodeBlock fenced && !string.IsNullOrEmpty(fenced.Info))
             {

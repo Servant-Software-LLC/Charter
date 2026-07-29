@@ -113,55 +113,95 @@ li { margin: 0.2rem 0; }
 }
 
 /*
- * Tables (Charter #68).
+ * Reachable scroll regions (Charter #68, #87).
  *
- * A plan's tables carry exactly the content that is wide and must not be truncated — file paths, method
- * signatures — so they overflow the review column, and the review-notes panel narrows that column further.
- * `overflow-x` used to sit on the <table> element itself; that shape left the clipped columns unreachable in
- * practice, because Chromium draws that scrollbar as a fading OVERLAY (measured gutter: 0px) so nothing told
- * the reviewer the content could move, and a <table> takes no tab stop so a keyboard-only reviewer had no way
- * in at all.
+ * A plan's blocks carry exactly the content that is wide and must not be truncated — file paths, method
+ * signatures, diff hunks — so they overflow the review column, and the review-notes panel narrows that
+ * column further. Clipping that content is not by itself the defect; clipping it with NOTHING to say so is,
+ * and it has shipped in two shapes. `overflow-x` on the <table> element itself left the hidden columns
+ * unreachable in practice, because Chromium draws that scrollbar as a fading OVERLAY (measured gutter: 0px)
+ * and a <table> takes no tab stop (#68). `overflow: hidden` on a :::diff was worse still: no user-driven
+ * scrolling at all, on any platform, over exactly the paths and signatures a diff is made of (#87).
  *
- * The scroll now lives on the WRAPPING .table-scroll container the renderer emits around every table
- * (CharterTableRenderer), which is both the conventional shape and the only one that can carry an affordance.
- * All of it is plain CSS + markup with no SDK involvement, so the saved and exported artifacts behave
- * identically offline.
+ * Every clipping box in the catalog therefore resolves to one of the regions below, each a real element
+ * that can carry the whole affordance: a persistent scrollbar, a focus ring, a tab stop, a role and an
+ * accessible name. Where the clipping element is one the renderer already owns (a <pre>) the affordance goes
+ * straight onto it; where it is not — a <table>, a diff's per-line rows, an author's verbatim HTML — the
+ * renderer emits an ANCHOR-INVISIBLE wrapper (ScrollRegion), so annotation still binds to the block and, in
+ * a :::diff, to the individual line. All of it is plain CSS + markup with no SDK involvement, so the saved
+ * and exported artifacts behave identically offline (invariant 1).
+ *
+ * A rendered :::diagram is deliberately EXCLUDED (`:not(.mermaid)`). Its oversize failure mode is not
+ * clipping but shrink-below-legibility, and its answer is #51's review-time pan/zoom — which lives in the
+ * SDK precisely so the exported artifact stays byte-identical. A rule here that reached pre.mermaid would
+ * move part of that affordance into the shared stylesheet and break invariant 1.
  */
-.table-scroll {
-  margin: 1rem 0;
+.table-scroll,
+.diff-scroll,
+.custom-html-scroll {
   overflow-x: auto;
-  /* A horizontal wheel/trackpad gesture that runs out of table must not become browser back-navigation. */
+}
+/* The wrapper owns the table's block spacing (the table's own margin is zeroed below). */
+.table-scroll { margin: 1rem 0; }
+
+/* A horizontal wheel/trackpad gesture that runs out of content must not become browser back-navigation. */
+.table-scroll,
+.diff-scroll,
+.custom-html-scroll,
+pre:not(.mermaid) {
   overscroll-behavior-x: contain;
 }
 
 /*
  * Discoverability. Sizing ::-webkit-scrollbar opts the container OUT of Chromium/WebKit's fading overlay
- * scrollbars, so an overflowing table always shows a real, persistent bar — the signal that there is more
- * to see. It costs a table that FITS nothing at all: `overflow-x: auto` then draws no bar and takes no
- * gutter, so a narrow table gains no decoration and no false affordance.
+ * scrollbars, so an overflowing region always shows a real, persistent bar — the signal that there is more
+ * to see. It costs a region that FITS nothing at all: `overflow-x: auto` then draws no bar and takes no
+ * gutter, so a block that fits gains no decoration and no false affordance.
  * Firefox has no ::-webkit-scrollbar and gets the standard properties instead. The two live in
  * mutually-exclusive branches deliberately: Chromium ignores ::-webkit-scrollbar styling entirely once
  * scrollbar-width/scrollbar-color are set on the same element, so declaring both would cancel the first.
  */
-.table-scroll::-webkit-scrollbar { height: 10px; }
-.table-scroll::-webkit-scrollbar-track {
+.table-scroll::-webkit-scrollbar,
+.diff-scroll::-webkit-scrollbar,
+.custom-html-scroll::-webkit-scrollbar,
+pre:not(.mermaid)::-webkit-scrollbar {
+  height: 10px;
+}
+.table-scroll::-webkit-scrollbar-track,
+.diff-scroll::-webkit-scrollbar-track,
+.custom-html-scroll::-webkit-scrollbar-track,
+pre:not(.mermaid)::-webkit-scrollbar-track {
   background: var(--charter-code-bg);
   border-radius: 999px;
 }
-.table-scroll::-webkit-scrollbar-thumb {
+.table-scroll::-webkit-scrollbar-thumb,
+.diff-scroll::-webkit-scrollbar-thumb,
+.custom-html-scroll::-webkit-scrollbar-thumb,
+pre:not(.mermaid)::-webkit-scrollbar-thumb {
   background: var(--charter-scroll-thumb);
   border-radius: 999px;
 }
-.table-scroll::-webkit-scrollbar-thumb:hover { background: var(--charter-muted); }
+.table-scroll::-webkit-scrollbar-thumb:hover,
+.diff-scroll::-webkit-scrollbar-thumb:hover,
+.custom-html-scroll::-webkit-scrollbar-thumb:hover,
+pre:not(.mermaid)::-webkit-scrollbar-thumb:hover {
+  background: var(--charter-muted);
+}
 @supports not selector(::-webkit-scrollbar) {
-  .table-scroll {
+  .table-scroll,
+  .diff-scroll,
+  .custom-html-scroll,
+  pre:not(.mermaid) {
     scrollbar-width: thin;
     scrollbar-color: var(--charter-scroll-thumb) var(--charter-code-bg);
   }
 }
 
-/* The renderer makes the container focusable, so its focus stop has to be visible. */
-.table-scroll:focus-visible {
+/* The renderer makes every region focusable, so its focus stop has to be visible. */
+.table-scroll:focus-visible,
+.diff-scroll:focus-visible,
+.custom-html-scroll:focus-visible,
+pre:not(.mermaid):focus-visible {
   outline: 2px solid var(--charter-accent);
   outline-offset: 2px;
 }
@@ -174,11 +214,13 @@ table {
 /* The wrapper owns the block spacing; doubling it would push the table off its neighbours. */
 .table-scroll > table { margin: 0; }
 /*
- * The one <table> the renderer never wraps is a raw one an author put inside :::custom-html, which renders
- * its HTML verbatim by design. Keep it contained there so the escape hatch cannot blow the page out
- * horizontally — the same containment those tables had before the wrapper existed.
+ * The one <table> the renderer never wraps is a raw one an author put inside the :::custom-html escape
+ * hatch, which renders its HTML verbatim by design. It used to be contained by a rule of its own here
+ * (`display: block; overflow-x: auto`) — containment the page needed, but a clip box that could carry
+ * neither a visible scrollbar nor a tab stop, so it hid columns exactly the way #68's table did. The
+ * containment now lives one level out, on the .custom-html-scroll region the renderer wraps the whole raw
+ * body in (Charter #87); leaving a clipping box inside a scrolling one would just recreate the defect.
  */
-.custom-html table { display: block; overflow-x: auto; }
 
 th, td {
   border: 1px solid var(--charter-border);
@@ -215,11 +257,32 @@ pre > code { padding: 0; background: none; border: 0; }
   margin: 1rem 0;
   border: 1px solid var(--charter-border);
   border-radius: 6px;
+  /*
+   * The clip that rounds the per-line FULL-BLEED add/del backgrounds to the card's corners. It stays
+   * `hidden` — unconditionally, and deliberately NOT flipped to `auto` (Charter #87): the box that
+   * hard-clips its own painted corners cannot also be the user-scrollable box whose scrollbar is laid out
+   * inside them. Keeping the card a non-scrolling positioned frame is also what keeps the review-time
+   * whole-block annotation badge pinned to its corner rather than riding away with the content (#51). The
+   * scrolling lives one level in, on the anchor-invisible .diff-scroll region.
+   */
   overflow: hidden;
   font-family: var(--charter-mono);
   font-size: 0.875em;
 }
-.diff-line { padding: 0.05rem 0.75rem; white-space: pre-wrap; }
+.diff-line {
+  /*
+   * `pre-wrap` keeps an ordinary long line WRAPPING, so a diff only ever scrolls for content that genuinely
+   * cannot wrap — a path, a signature, which is what a diff is made of. `fit-content` then grows that one
+   * line's box to its unbreakable content, so its add/del background follows the text into the scrolled
+   * area instead of stopping at the fold and making the scrolled region look empty; `min-width: 100%` keeps
+   * every ordinary line full-bleed, and border-box sizing is what lets that 100% include the padding.
+   */
+  box-sizing: border-box;
+  width: fit-content;
+  min-width: 100%;
+  padding: 0.05rem 0.75rem;
+  white-space: pre-wrap;
+}
 .diff-add { background: var(--charter-diff-add-bg); color: var(--charter-diff-add-fg); }
 .diff-del { background: var(--charter-diff-del-bg); color: var(--charter-diff-del-fg); }
 .diff-context { color: var(--charter-muted); }

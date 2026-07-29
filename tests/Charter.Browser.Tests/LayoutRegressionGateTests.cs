@@ -156,41 +156,30 @@ public sealed partial class ReviewLoopBrowserTests
     private const int ViewportHeight = 800;
 
     /// <summary>
-    /// The clip sites that are ALREADY unreachable on master — found BY this gate, reported as Charter
-    /// product defects, and deliberately NOT fixed here (this slice may touch <c>tests/**</c> only). Each one
-    /// is the #68 shape in a block type the #68 fix did not reach: content that overflows a container which
-    /// clips it, with no author-sized scrollbar to make the overflow visible and no tab stop to reach it by
-    /// keyboard.
+    /// The clip sites that are known to be unreachable and are deliberately not fixed. <b>It is EMPTY, and
+    /// that is the point</b> — every block type in the catalog now answers for its own overflow.
     ///
-    /// <para>The assertion below matches this set EXACTLY, in both directions, which is what stops it
-    /// becoming a licence to rot:</para>
+    /// <para>It was not empty when this gate first ran. Its first pass found four sites, all pre-existing on
+    /// master, which became Charter #87 and were fixed there: a fenced code block and an unknown directive's
+    /// preserved body (a bare <c>&lt;pre&gt;</c> with no author-sized scrollbar and no tab stop — on a
+    /// platform with overlay scrollbars, the 0px gutter of #68), a <c>&lt;table&gt;</c> inside
+    /// <c>:::custom-html</c> (contained, but by a box that could carry neither affordance), and — the severe
+    /// one — a <c>:::diff</c>, whose <c>overflow: hidden</c> offered no user-driven scrolling at all, on any
+    /// platform, over exactly the paths and signatures a diff is made of.</para>
+    ///
+    /// <para>The assertion below matches this set EXACTLY, in both directions, which is what stopped it
+    /// becoming a licence to rot and is what drove it to empty:</para>
     /// <list type="bullet">
     ///   <item>a NEW unreachable clip site fails the gate — that is the regression this whole file is
     ///     for;</item>
-    ///   <item>fixing one of these ALSO fails the gate, naming the entry to delete — so the list can only
-    ///     ever shrink deliberately, and can never quietly outlive the defect it records.</item>
+    ///   <item>fixing one ALSO fails the gate, naming the entry to delete — so the list can only ever shrink
+    ///     deliberately, and can never quietly outlive the defect it records.</item>
     /// </list>
+    ///
+    /// <para>Keep it empty. An entry added here is a defect somebody chose to ship, and it needs an issue
+    /// number and a reason in the same commit.</para>
     /// </summary>
-    private static readonly string[] KnownUnreachableClipSites =
-    {
-        // A fenced code block. `pre { overflow: auto }` with no ::-webkit-scrollbar sizing and no tabindex:
-        // on a platform with overlay scrollbars (macOS — where #68 was reported) the gutter is 0px, so a long
-        // signature is clipped with nothing to say so and no keyboard route in.
-        "BODY > PRE",
-
-        // A :::diff line. `.diff { overflow: hidden }` — the STRONGEST form of this defect: the clipped text
-        // cannot be reached by mouse, keyboard, or gesture on any platform, because an overflow:hidden box
-        // provides no user-driven scrolling at all. Diffs are made of paths and signatures.
-        "BODY > DIV.diff",
-
-        // A table inside :::custom-html. `.custom-html table { display: block; overflow-x: auto }` contains
-        // the escape hatch (deliberately), but the containment carries neither affordance.
-        "DIV.custom-html > TABLE",
-
-        // An unknown directive's preserved body. `pre.unknown-directive-body` keeps the author's text rather
-        // than dropping it (#48/C5) — but a line with no break opportunity clips out of the same bare <pre>.
-        "DIV.unknown-directive > PRE.unknown-directive-body",
-    };
+    private static readonly string[] KnownUnreachableClipSites = Array.Empty<string>();
 
     /// <summary>
     /// What the fixture must actually have RENDERED, as the measured DOM reports it — every catalog member,
