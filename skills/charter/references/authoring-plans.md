@@ -64,8 +64,10 @@ annotation:
 
 ### Code & diffs — fenced blocks · `:::diff`
 
-A fenced ```` ```lang ```` block renders syntax-highlighted code, annotatable per line. Use `:::diff`
-to show a change (annotatable per line):
+A fenced ```` ```lang ```` block renders as monospaced code. The language tags the block but **nothing
+highlights it** — no colour carries meaning, so say in prose what matters about the snippet. Annotatable as a
+whole block, or as a text range inside it. `:::diff` shows a change, and is the one code surface annotatable
+**per line**:
 
 ````
 :::diff
