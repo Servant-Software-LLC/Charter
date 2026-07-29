@@ -201,8 +201,15 @@ update run `charter skills install --force` too.
   fire again — `OnArrived` replaces it rather than trusting a `Directory.Exists` that is true again by then.
   Third: the `/events` keep-alive beat calls `ReviewLogWatch.Poll()` as a bounded safety net (one directory
   stat per beat; a single `Directory.Exists` when there is no `.review/`), because the OS drops notifications
-  under buffer pressure and delivers none at all on some filesystems. **Never assert an arm by waiting on a
-  notification** — that is how #88 read as test flake for two releases; assert `IsArmed`.
+  under buffer pressure and delivers none at all on some filesystems. Fourth, and it cost a second red CI:
+  **never assert an arm by waiting on a notification.** `Directory.Delete` raises its own `Deleted` events for
+  the files it removes, and the OS delivers them on its own schedule — measured at 3–4 in 40 arriving *after*
+  the test had already reset its event. A test that waits for "any callback" latches onto one of those and
+  then reads `IsArmed` an instant too early (`windows-latest`, 13 ms, deterministic loss of a race). Read the
+  arm state **inside** the callback instead: it asserts the real contract — *re-arm, THEN announce* — and is
+  the only way to tell the arrival apart from the removal's own noise. That noise is **wanted**, by the way:
+  the comments really did vanish, so a re-read then is correct — do not "fix" it by suppressing events from a
+  watcher you have replaced.
 - **Inline-JS must be script-parse-safe.** A big minified lib inlined between `<script>…</script>` can carry
   `<!--` / `<script` / `</script` (even inside string/regex literals) that flip the browser's script-data
   tokenizer, tearing the script apart — the lib's tail dumps as visible text and its `<iframe>` template

@@ -210,6 +210,9 @@ internal sealed class ReviewLogWatch : IDisposable
             _fingerprint = Fingerprint();
         }
 
+        // Announced only AFTER the re-arm above: a change we tell the panel about is one we are already able
+        // to follow up on. (The `Deleted` notifications the removal itself raises still reach the panel
+        // through Changed() — the comments really did vanish, so a re-read then is correct.)
         _onChange();
     }
 

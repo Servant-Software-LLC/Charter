@@ -51,18 +51,21 @@ public class ReviewLogWatchTests : IDisposable
     /// does not exist yet — §5.0), and a teammate's log lands.
     /// </summary>
     [Fact]
-    public void ALogArrivingAfterTheWatchIsCreated_RaisesOnChange()
+    public void ALogArrivingAfterTheWatchIsCreated_ArmsTheWatchThenRaisesOnChange()
     {
         var review = PlanReviewDirectory();
-        using var changed = new ManualResetEventSlim(false);
-        using var watch = new ReviewLogWatch(review, () => changed.Set());
+        var box = new WatchBox();
+        using var armedWhenTold = new ManualResetEventSlim(false);
+        using var watch = new ReviewLogWatch(review, () => box.SetIfArmed(armedWhenTold));
+        box.Watch = watch;
 
         Assert.False(watch.IsArmed);
 
         WriteLog(review, "bob.deadbeef.jsonl");
 
-        Assert.True(changed.Wait(Budget), "the watch must notice a log arriving in a `.review/` created after it");
-        Assert.True(watch.IsArmed);
+        Assert.True(
+            armedWhenTold.Wait(Budget),
+            "the watch must notice a log arriving in a `.review/` created after it");
     }
 
     /// <summary>
@@ -74,13 +77,15 @@ public class ReviewLogWatchTests : IDisposable
     /// consequence.
     /// </summary>
     [Fact]
-    public void AReviewDirectoryRemovedAndRestored_ReArmsTheWatch()
+    public void AReviewDirectoryRemovedAndRestored_ReArmsTheWatchBeforeAnnouncingTheChange()
     {
         var review = PlanReviewDirectory();
         WriteLog(review, "alice.cafebabe.jsonl");
 
-        using var changed = new ManualResetEventSlim(false);
-        using var watch = new ReviewLogWatch(review, () => changed.Set());
+        var box = new WatchBox();
+        using var armedWhenTold = new ManualResetEventSlim(false);
+        using var watch = new ReviewLogWatch(review, () => box.SetIfArmed(armedWhenTold));
+        box.Watch = watch;
         Assert.True(watch.IsArmed);
 
         // A branch switch takes `.review/` away, and a beat lands while it is gone: the watcher is bound BY
@@ -88,13 +93,15 @@ public class ReviewLogWatchTests : IDisposable
         Directory.Delete(review, recursive: true);
         watch.Poll();
         Assert.False(watch.IsArmed);
-        changed.Reset();
+        armedWhenTold.Reset();
 
         // ...and the branch comes back. Only the arrival bridge can re-arm from here.
         WriteLog(review, "bob.deadbeef.jsonl");
 
-        Assert.True(changed.Wait(Budget), "a restored `.review/` must push the panel a re-read");
-        Assert.True(watch.IsArmed, "a restored `.review/` must re-arm the inner watch, not leave a dead handle");
+        Assert.True(
+            armedWhenTold.Wait(Budget),
+            "a restored `.review/` must re-arm the inner watch and THEN announce the change — never leave a dead handle");
+        Assert.True(watch.IsArmed);
     }
 
     /// <summary>
@@ -139,6 +146,36 @@ public class ReviewLogWatchTests : IDisposable
 
         Assert.False(Directory.Exists(review));
         Assert.Equal("team.charter.md", Path.GetFileName(Assert.Single(Directory.GetFileSystemEntries(_root))));
+    }
+
+    /// <summary>
+    /// Lets a change callback ask the watch it belongs to whether it is armed YET — the watch cannot be handed
+    /// to its own constructor. <b>Reading the arm state INSIDE the callback is the point</b>, not a
+    /// convenience: the contract is "re-arm, THEN announce", so a callback that arrives unarmed would be
+    /// announcing a change the watch cannot yet follow up on, and asserting <c>IsArmed</c> after an
+    /// event-wait instead reads it an instant too early. It is also the only way to tell the RESTORE apart
+    /// from the <c>Deleted</c> notifications the removal itself raises — those are real and wanted (the
+    /// panel's comments just vanished, so it should re-read), and the OS delivers them on its own schedule,
+    /// sometimes well after the removal call returns. A test that waits on "any callback" latches onto one of
+    /// those; measured at 4 in 40 locally, and it is what reddened this test on `windows-latest` after 13 ms.
+    /// </summary>
+    private sealed class WatchBox
+    {
+        private volatile ReviewLogWatch? _watch;
+
+        public ReviewLogWatch? Watch
+        {
+            get => _watch;
+            set => _watch = value;
+        }
+
+        public void SetIfArmed(ManualResetEventSlim signal)
+        {
+            if (_watch?.IsArmed == true)
+            {
+                signal.Set();
+            }
+        }
     }
 
     // The plan's `.review/` path — computed, never created, exactly as `charter review` leaves it.
