@@ -189,7 +189,25 @@ update run `charter skills install --force` too.
 - **Portability seam.** The renderer emits a standalone artifact; the annotation SDK is injected only at serve
   time — never write it into the saved file.
 - **Watch the file, not the tree,** for live reload (`FileSystemWatcher`), or a large parent directory
-  saturates the event loop (Lavish's lesson).
+  saturates the event loop (Lavish's lesson). `PlanWatch` is that watch, and it is a `FileSystemWatcher` on the
+  plan's DIRECTORY filtered to the one file name — so the handle survives the file's own round trips (an editor
+  saving by replace-and-rename, `git checkout -- plan.charter.md`) and dies only when the DIRECTORY goes.
+- **Both `/events` watches are best-effort, so both have the same keep-alive net (#88 `.review/`, #92 the plan
+  file).** `PlanWatch.Poll()` and `ReviewLogWatch.Poll()` are called on the one beat (`ReviewServer.Beat`, 15s)
+  — never a second timer, never per-request work. Four rules the plan-file half is built on: (1) the change
+  signal is the file's **length + last-write time**, which is exactly the pair the watcher's own `NotifyFilter`
+  (`Size | LastWrite | FileName`) is built from, so the net's blind spot is a *subset* of the fast path's — a
+  content hash per beat was rejected as reading the whole plan forever to buy a case the watcher misses anyway;
+  (2) the beat **re-arms whenever it finds a revision the watcher never reported**, since that is direct
+  evidence the handle is untrustworthy, and it is the only re-arm trigger that costs nothing on a quiet stream
+  (a quiet beat is ONE `FileInfo` stat, and `Directory.Exists` is consulted only when the plan is missing);
+  (3) **re-arm, THEN announce**, in every path, including the watcher callback — which re-bases the beat's
+  baseline *before* it notifies, or the next beat re-reports the same revision and the page navigates twice;
+  (4) a **missing plan file is silent** — no frame at all, last stamp held — because `reload` is a full
+  navigation and the reviewer is mid-`git checkout`. Pre-#92 this was a bare watcher armed once at SSE connect
+  with no fallback: one dropped notification ended live reload for the whole life of that connection.
+  `ReviewServerOptions.EventStreamBeat` is an **internal** test seam (same shape as `StartCore`'s injected port
+  supplier) so a stream-level test can prove a beat's report reaches the client in under a second.
 - **`FileSystemWatcher` is best-effort, and a check-then-arm chain has a window (#88).** `.review/` is created
   lazily (§5.0), so `ReviewLogWatch` is a TWO-STAGE watch: a directory-name bridge on the plan's own directory,
   then the inner `*.jsonl` watch. It used to look for the directory first and arm the bridge *only if it was

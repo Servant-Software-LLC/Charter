@@ -51,4 +51,17 @@ public sealed class ReviewServerOptions
     /// half of the keep-or-discard choice.
     /// </summary>
     public bool KeepStaleAnnotations { get; set; }
+
+    /// <summary>
+    /// How often the <c>/events</c> stream beats: it emits a keep-alive comment and re-checks the plan file and
+    /// the <c>.review/</c> directory, which is the safety net behind both best-effort
+    /// <see cref="FileSystemWatcher"/>s (Charter #88, #92). 15 seconds in production.
+    /// </summary>
+    /// <remarks>
+    /// INTERNAL — a test seam, not a knob for callers, exactly like the ephemeral-port supplier
+    /// <c>ReviewServer.StartCore</c> takes. It lets a test prove that a beat's report really does reach the
+    /// browser as a frame without spending three real beats waiting for it; the public
+    /// <see cref="ReviewServer.Start(ReviewSession, ReviewServerOptions?)"/> path always gets the default.
+    /// </remarks>
+    internal TimeSpan EventStreamBeat { get; set; } = TimeSpan.FromSeconds(15);
 }

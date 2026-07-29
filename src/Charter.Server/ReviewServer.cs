@@ -50,8 +50,10 @@ public sealed class ReviewServer : IReviewServer
     // when one is already queued, so this only bounds an otherwise-idle wait.
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(30);
 
-    // How often the /events stream emits a keep-alive comment when the source file is not changing.
-    private static readonly TimeSpan KeepAliveInterval = TimeSpan.FromSeconds(15);
+    // How often the /events stream beats when nothing is changing: it emits a keep-alive comment AND re-checks
+    // both best-effort file watches (Charter #88, #92). Per-server rather than a constant only so a test can
+    // prove the re-check reaches the client without spending three real beats — production always gets 15s.
+    private TimeSpan Beat { get; init; } = TimeSpan.FromSeconds(15);
 
     private readonly ReviewSession _session;
     private readonly AnnotationStore _store;
@@ -200,6 +202,7 @@ public sealed class ReviewServer : IReviewServer
         return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address)
         {
             StaleAnnotations = stale,
+            Beat = options.EventStreamBeat,
         };
     }
 
@@ -1299,25 +1302,19 @@ public sealed class ReviewServer : IReviewServer
             }
         }
 
-        // Watch the plan FILE, never its tree — a large parent directory saturates the event loop.
-        var directory = Path.GetDirectoryName(_session.SourcePath) ?? Directory.GetCurrentDirectory();
-        var fileName = Path.GetFileName(_session.SourcePath) ?? "*";
-        using var planWatcher = new FileSystemWatcher(directory, fileName)
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
-        };
-        planWatcher.Changed += (_, _) => Signal(ReloadEvent);
-        planWatcher.Created += (_, _) => Signal(ReloadEvent);
-        planWatcher.Renamed += (_, _) => Signal(ReloadEvent);
-        planWatcher.EnableRaisingEvents = true;
+        // Watch the plan FILE, never its tree — a large parent directory saturates the event loop. Behind the
+        // watcher sits the same keep-alive safety net the `.review/` watch got in #88, because this one had the
+        // identical single-arm shape: one dropped notification and live reload was silently over for the life
+        // of the connection, with the reviewer reading a stale render while the agent revised underneath them.
+        using var planWatcher = new PlanWatch(_session.SourcePath, () => Signal(ReloadEvent));
 
         // ...and the .review/ DIRECTORY, filtered to *.jsonl. Without this, a `git pull` landing a teammate's
         // log mid-session would leave the panel silently showing the fold taken at startup. The directory is
         // created lazily (only when a record is actually written), so this ALSO watches for its arrival.
         using var logWatcher = new ReviewLogWatch(_reviewLog.Directory, () => Signal(ReviewLogEvent));
 
-        // The log watch's safety net beats on its OWN clock (Charter #88), not on whether an iteration was
-        // woken: a stream kept busy by plan edits must still re-check `.review/`.
+        // Both safety nets beat on their OWN clock (Charter #88, #92), not on whether an iteration was woken: a
+        // stream kept busy by teammates' logs must still re-check the plan, and vice versa.
         var sinceRecheck = Stopwatch.StartNew();
 
         // Push the named events whenever something changed; otherwise a periodic keep-alive comment keeps the
@@ -1326,7 +1323,7 @@ public sealed class ReviewServer : IReviewServer
         {
             try
             {
-                await wake.WaitAsync(KeepAliveInterval, ct).ConfigureAwait(false);
+                await wake.WaitAsync(Beat, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -1334,19 +1331,30 @@ public sealed class ReviewServer : IReviewServer
             }
 
             // FileSystemWatcher drops notifications under buffer pressure and delivers none at all on some
-            // filesystems, so the keep-alive beat doubles as the watch's safety net: it arms an inner watch
-            // that never armed, and reports an append nothing told us about. One directory stat every
-            // KeepAliveInterval — and a single Directory.Exists for the solo reviewer who has no `.review/`
-            // (§5.0). Added straight to `pending` rather than through Signal(), so it never costs an extra
-            // wake.
-            if (sinceRecheck.Elapsed >= KeepAliveInterval)
+            // filesystems, so the keep-alive beat doubles as BOTH watches' safety net: it re-arms a watcher
+            // that never armed or went dead with the directory it was bound to, and reports a change nothing
+            // told us about. Two stats every Beat — one for the plan file, one for `.review/` (a single
+            // Directory.Exists for the solo reviewer who has no `.review/` at all, §5.0) — and neither ever
+            // CREATES anything. Added straight to `pending` rather than through Signal(), so it never costs an
+            // extra wake.
+            if (sinceRecheck.Elapsed >= Beat)
             {
                 sinceRecheck.Restart();
-                if (logWatcher.Poll())
+                var planMoved = planWatcher.Poll();
+                var logsMoved = logWatcher.Poll();
+                if (planMoved || logsMoved)
                 {
                     lock (pending)
                     {
-                        pending.Add(ReviewLogEvent);
+                        if (planMoved)
+                        {
+                            pending.Add(ReloadEvent);
+                        }
+
+                        if (logsMoved)
+                        {
+                            pending.Add(ReviewLogEvent);
+                        }
                     }
                 }
             }
