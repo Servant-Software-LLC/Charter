@@ -115,7 +115,7 @@ tool.
 brew install servant-software-llc/tap/charter
 ```
 
-**`dotnet` tool** (any OS with .NET 8+):
+**`dotnet` tool** (any OS with .NET 10+):
 
 ```bash
 dotnet tool install --global ServantSoftware.Charter
@@ -132,10 +132,21 @@ dotnet tool install --global ServantSoftware.Charter
 
 ## Build from source
 
+Requires the **.NET 10 SDK** ([download](https://dotnet.microsoft.com/download/dotnet/10.0)) — and
+nothing else. A .NET 10 SDK carries the .NET 10 runtime, so the same install covers building,
+testing, and running the tool.
+
 ```bash
 dotnet build Charter.sln -c Release
 dotnet test  Charter.sln -c Release
 dotnet run   --project src/Charter.Cli -- --version
+```
+
+The headless-browser tests drive Chromium via Playwright. Without it they **skip** rather than
+fail, so a run can look green while covering nothing — a complete run is **759 passed, 0 skipped**:
+
+```bash
+pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install chromium
 ```
 
 ## Acknowledgements — the prior art this combines

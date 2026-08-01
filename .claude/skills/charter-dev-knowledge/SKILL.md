@@ -17,10 +17,10 @@ description: |
 
 ```
 Charter.sln                     # classic .sln (NOT .slnx — see gotchas)
-global.json                     # pins the .NET 8 SDK band (8.0.100, rollForward latestFeature)
-Directory.Build.props           # ImplicitUsings, Nullable, TreatWarningsAsErrors, AnalysisLevel 8.0
+global.json                     # pins the .NET 10 SDK band (10.0.100, rollForward latestFeature)
+Directory.Build.props           # ImplicitUsings, Nullable, TreatWarningsAsErrors, AnalysisLevel 10.0
 src/
-  Charter.Core/                 # renderer, block catalog, session model, exporter, shared doc shell (net8.0 lib)
+  Charter.Core/                 # renderer, block catalog, session model, exporter, shared doc shell (net10.0 lib)
     assets/mermaid.min.js       # vendored Mermaid v11.16.0 (MIT), embedded → Charter.Core.mermaid.min.js
     assets/charter.css          # bundled stylesheet, embedded → Charter.Core.charter.css (CharterStyles/CharterDocument)
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
@@ -39,7 +39,7 @@ src/
     ReviewLogWatch.cs           # the two-stage `.review/` watch behind /events + its keep-alive re-check (#88)
 sdk/charter-annotate.js         # the ONLY browser JS (annotation SDK, adapted from Lavish, MIT); serve-time only
 tests/
-  Charter.Core.Tests/           # xunit (net8.0) — renderer/exporter/format golden + security tests
+  Charter.Core.Tests/           # xunit (net10.0) — renderer/exporter/format golden + security tests
   Charter.Server.Tests/         # xunit — loopback serve, annotation/answer API, sidecar, served-doc-shell guard
   Charter.Cli.Tests/            # xunit — CLI process + poll/resolve + skills + solo-footprint
   Charter.Browser.Tests/        # xunit + Microsoft.Playwright (Chromium) — headless review-loop acceptance (#8)
@@ -49,7 +49,7 @@ install.sh / install.ps1        # SDK-free binary installers
 .github/workflows/              # ci.yml (Playwright chromium install step), release.yml, bump-tap.yml
 ```
 
-TFM `net8.0`; `TreatWarningsAsErrors=true`. Deterministic locked restore (`packages.lock.json`) is deferred
+TFM `net10.0`; `TreatWarningsAsErrors=true`. Deterministic locked restore (`packages.lock.json`) is deferred
 until the dependency set is real — add it the Guardrails way when ready.
 
 **Render contract (SSOT `CharterDocument`):** `CharterRenderer.Render` = `CharterDocument.Wrap(RenderBody(md),
@@ -71,7 +71,7 @@ dotnet publish src/Charter.Cli -c Release -r osx-arm64 --self-contained true `
   -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
   -p:IncludeNativeLibrariesForSelfExtract=true -o publish/osx-arm64
 # browser acceptance test (Charter.Browser.Tests) needs Chromium installed once, after build:
-pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install --with-deps chromium
+pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
 ```
 
 ## Testing lessons (the expensive ones)

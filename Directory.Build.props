@@ -8,7 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <AnalysisLevel>8.0</AnalysisLevel>
+
+    <!-- Pin the SDK code-quality analyzer wave so an SDK roll-forward cannot silently introduce new
+         diagnostics that break a previously-green build — which, with TreatWarningsAsErrors above,
+         would be a hard failure rather than noise. Keep this in step with the TargetFramework: it
+         is a separate knob, so a TFM bump that forgets it leaves the analyzers a wave behind. -->
+    <AnalysisLevel>10.0</AnalysisLevel>
   </PropertyGroup>
 
 </Project>
