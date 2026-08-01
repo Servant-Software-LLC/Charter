@@ -132,10 +132,32 @@ dotnet tool install --global ServantSoftware.Charter
 
 ## Build from source
 
+Requires the **.NET 8 SDK or newer** — `global.json` accepts any SDK from 8.0.100 up, so a
+current SDK is fine.
+
 ```bash
 dotnet build Charter.sln -c Release
 dotnet test  Charter.sln -c Release
 dotnet run   --project src/Charter.Cli -- --version
+```
+
+The projects target `net8.0`, so `dotnet test` needs the **.NET 8 runtime** to launch the test
+host — a newer SDK alone is not enough, because .NET's default roll-forward policy does not cross
+a major version. If your machine has only a newer runtime, either install the .NET 8 runtime
+alongside it (they coexist), or opt into roll-forward for the session:
+
+```bash
+export DOTNET_ROLL_FORWARD=LatestMajor     # PowerShell: $env:DOTNET_ROLL_FORWARD = "LatestMajor"
+```
+
+That runs the `net8.0` test assemblies on your newer runtime. It is a local convenience, not a
+repo setting: CI pins 8.0.x, so if a result ever differs, CI is the authority.
+
+The headless-browser tests drive Chromium via Playwright. Without it they **skip** rather than
+fail, so a run can look green while covering nothing:
+
+```bash
+pwsh tests/Charter.Browser.Tests/bin/Release/net8.0/playwright.ps1 install chromium
 ```
 
 ## Acknowledgements — the prior art this combines
