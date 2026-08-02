@@ -24,3 +24,6 @@ dist/
 ## `Distribution/Release/` was silently swallowed by `[Rr]elease/`. Re-include the whole tree so
 ## a topic name can never make a saved context disappear without a word.
 !.claude/contexts/**
+
+## Demo scratch output (examples/*/demo.* recreate this per run)
+examples/**/.work/

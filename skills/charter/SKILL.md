@@ -1,6 +1,6 @@
 ---
 name: charter
-description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Covers the author → review → handoff workflow and the block catalog.
+description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Triggers on planning language ("draft a plan I can review", "write this up before you build it") and equally on CHARTING WORK ("chart this out", "make me a chart for this feature", "chart the refactor") — "chart" here means charting a piece of work a human will approve, NOT drawing a data visualization. Covers the author → review → handoff workflow and the block catalog.
 ---
 
 # Charter — author → review → handoff
@@ -23,6 +23,28 @@ executes** — anything of the form "draft a plan I can look over," "write this 
 "put this in front of me before you build it," or "get this ready for Guardrails." Reach for it whenever
 the deliverable is a *plan a human approves in the browser*, not code you write directly.
 
+**"Chart" is a first-class trigger too.** The tool is called Charter, so once someone knows it by name the
+verb they reach for is *chart*: "chart this out," "make me a chart for this feature," "chart the refactor
+before you touch anything," "let's chart it." Treat every one of those exactly as a planning request — the
+deliverable is the same `.charter.md`, and the word choice signals nothing except familiarity with the tool.
+A "chart" and a "plan" are the same artifact here.
+
+> **Do not confuse charting *work* with charting *data*.** "Chart" is heavily overloaded with data
+visualization, and this skill must stay out of the way for that. The signal is the **object** of the verb,
+not the verb:
+
+| This skill | Not this skill |
+|---|---|
+| chart **work that hasn't happened yet** — a feature, a change, a task, a migration | chart **data that already exists** — numbers, metrics, a series, a column |
+| "chart out how we'd add auth" | "chart our signup numbers by region" |
+| "chart this refactor before you start" | "chart this CSV" / "add a bar chart to the dashboard" |
+
+The test: is the thing being charted **work a human should approve before it happens**? Then it's Charter.
+Is it **data to be visualized**? Then it is a plotting task and this skill does not apply — reach for a
+charting library, not `.charter.md`. When a request is genuinely ambiguous ("chart the response times"),
+ask which one they mean rather than guessing; authoring a plan for someone who wanted a graph wastes their
+time in a way that is obvious and annoying.
+
 This also covers **"convert this into a plan"** — the human hands you a document, a PDF, a link, a
 Confluence page, or pasted prose and asks you to turn it into a reviewable Charter plan. That is an
 **agent** task (choosing what becomes a diagram, a comparison, or an open question is judgment, and the
@@ -30,8 +52,9 @@ LLM lives in *you*, never in the binary) — `references/authoring-from-source.m
 `charter convert` verb below is the mechanical seed it builds on. The human won't type a file path at a
 shell; they ask *you*, and you drive the skill.
 
-Do **not** use it for work that should just be done, for prose with no decisions to elicit, or for
-reporting on work already finished.
+Do **not** use it for work that should just be done, for prose with no decisions to elicit, for
+reporting on work already finished, or for **drawing a chart from data** (see the warning above —
+that is a plotting task, not a Charter deliverable).
 
 ## The CLI surface (the only verbs that exist)
 
