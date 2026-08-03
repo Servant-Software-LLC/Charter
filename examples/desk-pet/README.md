@@ -22,9 +22,8 @@ charter --version      # 0.9.0 or newer
 ```
 
 Install with `brew install servant-software-llc/tap/charter` or
-`dotnet tool install -g ServantSoftware.Charter`. The demo scripts also accept `--local` /
-`-Local` to run a locally-built CLI instead, which is the safer choice if you're demoing from a
-machine you haven't set up.
+`dotnet tool install -g ServantSoftware.Charter`. If `charter` isn't on PATH, every command works as
+`dotnet run --project src/Charter.Cli -c Release -- <verb> …` from the repo root.
 
 For the live-authoring opening you also need the `charter` skill installed in Claude Code:
 
@@ -37,14 +36,15 @@ mid-session won't trigger.
 
 ## Running it
 
-```bash
-./demo.sh          # macOS / Linux
-./demo.ps1         # Windows
-```
+**[`RUNBOOK.md`](RUNBOOK.md) is the demo** — a sequence of real `charter` commands, typed as a user
+would type them.
 
-Both work on a **copy** in `.work/`, so the committed chart stays pristine and you can rehearse as
-many times as you like. That's deliberate: `resolve` writes answers back into the chart, so a run
-against the committed file would leave your next rehearsal starting from an already-answered plan.
+There is deliberately **no driver script**. A wrapper would hide the very thing the audience came to
+see: someone typing `charter review desk-pet.charter.md`. The commands *are* the demo.
+
+Work in a scratch copy so the committed chart stays pristine and you can rehearse repeatedly —
+`resolve` writes answers *into* the chart, so a run against the committed file leaves the next
+rehearsal starting from an already-answered plan.
 
 ## The two ways to open
 
@@ -87,5 +87,4 @@ Everything else is setup. These are the beats worth slowing down for:
 |---|---|
 | [`PROMPT.md`](PROMPT.md) | The single prompt that starts everything, and why it elicits each block |
 | `desk-pet.charter.md` | The chart that prompt produced — committed as the known-good fallback |
-| `demo.sh` / `demo.ps1` | Stepped drivers for the loop |
-| `.work/` | Scratch output, git-ignored, recreated per run |
+| [`RUNBOOK.md`](RUNBOOK.md) | The demo itself: real commands, what to click, what to say, what to do when it breaks |

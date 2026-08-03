@@ -25,5 +25,5 @@ dist/
 ## a topic name can never make a saved context disappear without a word.
 !.claude/contexts/**
 
-## Demo scratch output (examples/*/demo.* recreate this per run)
+## Scratch output from rehearsing an example (see examples/*/RUNBOOK.md)
 examples/**/.work/

@@ -13,8 +13,8 @@ drive it through the author → review → handoff loop.
 <name>/
   PROMPT.md            # the prompt a human actually types — the entry point
   <name>.charter.md    # the chart that prompt produced (committed, known-good)
-  demo.sh / demo.ps1   # a stepped driver for the loop, both shells
-  README.md            # runbook: prerequisites, what to click, what to say, what to do when it breaks
+  RUNBOOK.md           # the real charter commands, in order, with what to click and what to say
+  README.md            # what the example is, prerequisites, and how to run it
 ```
 
 Two conventions worth keeping:
@@ -23,6 +23,9 @@ Two conventions worth keeping:
 example whose chart was authored by hand proves nothing about whether the prompt works. Regenerate
 it rather than editing it in place.
 
-**Drivers work on a copy.** `charter resolve` writes answers back into the chart, so a script that
-runs against the committed file leaves the next run starting from an already-answered plan. Copy to
-a scratch directory first — `desk-pet/demo.sh` shows the pattern.
+**No driver scripts.** An example teaches the tool's actual surface, so the runbook lists real
+`charter` commands rather than wrapping them. A wrapper hides the journey and implies Charter needs
+one.
+
+**Run against a scratch copy.** `charter resolve` writes answers back into the chart, so working
+directly on the committed file leaves the next run starting from an already-answered plan.
