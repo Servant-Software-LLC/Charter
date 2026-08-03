@@ -159,8 +159,23 @@ public class PlanWatchTests : IDisposable
         }
 
         File.WriteAllText(plan, "# Plan\n\nback from the other branch\n");
-        Assert.True(watch.Poll(), "the restored plan must be reported");
-        Assert.False(watch.Poll(), "and only once");
+
+        // EITHER arm may observe the restore, and which one wins is a genuine race the contract does not
+        // constrain. Asserting `Poll()` specifically asserts the race, not the behaviour: the watcher
+        // re-bases the baseline BEFORE it announces, so a notification delivered ahead of this beat
+        // legitimately leaves the beat with nothing left to report. That is what made this test flaky —
+        // it failed on macOS and on Windows in different runs of the same code.
+        var beatReported = watch.Poll();
+        Assert.True(
+            beatReported || SpinWait.SpinUntil(() => Volatile.Read(ref told) > 0, Budget),
+            "the restore must be reported — by the beat, or by the watcher notification it raced");
+
+        // The half that IS a contract: whichever arm reported it, the BEAT must not report it again.
+        // (A cross-arm total is deliberately not asserted. Changed() announces unconditionally once a
+        // notification arrives — see the double-announce question raised alongside this fix — so a
+        // beat-wins run can still take a late notification, and pinning a total here would re-introduce
+        // exactly the race this test just stopped asserting.)
+        Assert.False(watch.Poll(), "and the beat must not report the same restore a second time");
     }
 
     /// <summary>
