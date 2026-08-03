@@ -344,10 +344,14 @@ the plan, so review travels by git instead of dying in a machine-local sidecar. 
   marks one round of one live session.
 - The `/events` stream names its frames: **`reload`** (the plan changed — navigate) vs **`review-log`** (a
   teammate's log landed — re-read the fold only). Keeping them distinct is what stops a pulled log discarding a
-  half-typed note or an unsaved answer. The `review-log` guarantee is **eventual, not notification-dependent**
-  (#88): the file watch is the fast path, and the stream's keep-alive beat re-checks `.review/` so a
-  notification the OS never delivered still reaches the panel on the next beat. Frames stay coalesced and
-  idempotent — a client must treat `review-log` as "re-read", never as a delta.
+  half-typed note or an unsaved answer. **BOTH frames are guaranteed EVENTUALLY, not notification-dependently**
+  (#88 for `review-log`, #92 for `reload`): the file watch is the fast path, and the stream's keep-alive beat
+  re-checks the `.review/` directory *and* the plan file, so a notification the OS never delivered still reaches
+  the client on the next beat. Frames stay coalesced and idempotent — a client must treat `review-log` as
+  "re-read", never as a delta. One asymmetry, because a `reload` is a full navigation and a `review-log` is not:
+  **a plan file that is momentarily MISSING pushes nothing at all** (the reviewer is mid-`git checkout`, and
+  navigating them to an error page would lose their place); the beat holds the last known revision and reports
+  the restore exactly once.
 - `charter poll <plan>` has a **server-less read path**: with no live session it folds `<plan>.review/*.jsonl`
   into the same envelope with the additive `source: "review-log"` (else `"session"`) and a per-annotation
   `review { authorName, authorEmail, actor, status, ts }`. Consumption is tracked in a **machine-local** ledger
