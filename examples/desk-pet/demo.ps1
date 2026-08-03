@@ -19,10 +19,14 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo = Resolve-Path (Join-Path $here '..\..')
 $work = Join-Path $here '.work'
 
+# Deliberately a SIMPLE function with no param block. Declaring
+# [Parameter(ValueFromRemainingArguments)] would make this an ADVANCED function, which gains the
+# common parameters — and PowerShell then binds `-o` against -OutVariable/-OutBuffer and dies with
+# "parameter name 'o' is ambiguous" before charter ever runs. With no param block, $args collects
+# everything verbatim, `-o` included.
 function Invoke-Charter {
-    param([Parameter(ValueFromRemainingArguments)] [string[]]$Args)
-    if ($Local) { & dotnet run --project (Join-Path $repo 'src\Charter.Cli') -c Release -- @Args }
-    else        { & charter @Args }
+    if ($Local) { & dotnet run --project (Join-Path $repo 'src\Charter.Cli') -c Release -- @args }
+    else        { & charter @args }
 }
 
 function Step  { param($m) Write-Host "`n== $m" -ForegroundColor Cyan }
