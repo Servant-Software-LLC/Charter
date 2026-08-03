@@ -1,6 +1,6 @@
 ---
 name: charter
-description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Covers the author → review → handoff workflow and the block catalog.
+description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Triggers on CHARTERING WORK ("charter this work", "charter the refactor", "charter a plan for this"), on CHARTING WORK ("chart this out", "make me a chart for this feature"), and on planning language ("draft a plan I can review", "write this up before you build it") — in every case the object is a piece of WORK a human will approve before it happens, NOT drawing a data visualization from existing data. Covers the author → review → handoff workflow and the block catalog.
 ---
 
 # Charter — author → review → handoff
@@ -23,6 +23,45 @@ executes** — anything of the form "draft a plan I can look over," "write this 
 "put this in front of me before you build it," or "get this ready for Guardrails." Reach for it whenever
 the deliverable is a *plan a human approves in the browser*, not code you write directly.
 
+**"Charter" and "chart" are first-class triggers too**, and in practice they are the *more reliable* ones —
+see the note on plan-mode contention below. Three layers, strongest first:
+
+| Trigger | Example | Why it's here |
+|---|---|---|
+| **charter** (verb) | "charter this work," "charter the refactor," "charter a plan for this" | Collision-free. Nobody says *charter* for a graph, and it doesn't trip plan mode. |
+| **chart** (verb) | "chart this out," "make me a chart for this feature," "let's chart it" | What people reach for once they know the tool by name. |
+| **plan** (verb/noun) | "draft a plan I can look over," "write this up as a reviewable plan" | Covers first-timers who don't know the product name. |
+
+All three mean the same request and produce the same artifact — the word choice signals only how familiar
+the human is with the tool. **The noun never changes: the deliverable is always "the plan"**, the file is
+always `<name>.charter.md`. "Chart" and "charter" are verbs for *making* one, not new names for it.
+
+On *"charter a plan"* specifically: strictly you charter the **work**, not the plan — the plan is the
+artifact chartering produces, the same way a *project charter* is the document that authorizes a project to
+begin. Prefer "charter the work" when you phrase it yourself. But **accept "charter a plan" without
+hesitation** when a human says it; the intent is unmistakable and correcting their grammar is not your job.
+
+> **Why not rely on "plan" alone?** In an agentic harness, planning language is heavily contested — Claude
+> Code's own **plan mode**, a `Plan` agent, `plan-reviewer`, and Guardrails' `plan-breakdown` all compete for
+> it, and plan mode is a *harness* feature that can preempt skill matching entirely. "Charter" and "chart"
+> are the triggers that reliably reach this skill; "plan" is kept as a fallback, not depended on.
+
+> **Do not confuse charting *work* with charting *data*.** "Chart" is heavily overloaded with data
+visualization, and this skill must stay out of the way for that. The signal is the **object** of the verb,
+not the verb:
+
+| This skill | Not this skill |
+|---|---|
+| chart **work that hasn't happened yet** — a feature, a change, a task, a migration | chart **data that already exists** — numbers, metrics, a series, a column |
+| "chart out how we'd add auth" | "chart our signup numbers by region" |
+| "chart this refactor before you start" | "chart this CSV" / "add a bar chart to the dashboard" |
+
+The test: is the thing being charted **work a human should approve before it happens**? Then it's Charter.
+Is it **data to be visualized**? Then it is a plotting task and this skill does not apply — reach for a
+charting library, not `.charter.md`. When a request is genuinely ambiguous ("chart the response times"),
+ask which one they mean rather than guessing; authoring a plan for someone who wanted a graph wastes their
+time in a way that is obvious and annoying.
+
 This also covers **"convert this into a plan"** — the human hands you a document, a PDF, a link, a
 Confluence page, or pasted prose and asks you to turn it into a reviewable Charter plan. That is an
 **agent** task (choosing what becomes a diagram, a comparison, or an open question is judgment, and the
@@ -30,8 +69,9 @@ LLM lives in *you*, never in the binary) — `references/authoring-from-source.m
 `charter convert` verb below is the mechanical seed it builds on. The human won't type a file path at a
 shell; they ask *you*, and you drive the skill.
 
-Do **not** use it for work that should just be done, for prose with no decisions to elicit, or for
-reporting on work already finished.
+Do **not** use it for work that should just be done, for prose with no decisions to elicit, for
+reporting on work already finished, or for **drawing a chart from data** (see the warning above —
+that is a plotting task, not a Charter deliverable).
 
 ## The CLI surface (the only verbs that exist)
 
