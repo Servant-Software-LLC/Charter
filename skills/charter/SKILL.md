@@ -1,6 +1,6 @@
 ---
 name: charter
-description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Triggers on planning language ("draft a plan I can review", "write this up before you build it") and equally on CHARTING WORK ("chart this out", "make me a chart for this feature", "chart the refactor") — "chart" here means charting a piece of work a human will approve, NOT drawing a data visualization. Covers the author → review → handoff workflow and the block catalog.
+description: Use when you must turn a task into a reviewable plan with Charter — author a block-structured .charter.md, render/serve it for a human to annotate in the browser, then hand off plain CommonMark to Guardrails. Triggers on CHARTERING WORK ("charter this work", "charter the refactor", "charter a plan for this"), on CHARTING WORK ("chart this out", "make me a chart for this feature"), and on planning language ("draft a plan I can review", "write this up before you build it") — in every case the object is a piece of WORK a human will approve before it happens, NOT drawing a data visualization from existing data. Covers the author → review → handoff workflow and the block catalog.
 ---
 
 # Charter — author → review → handoff
@@ -23,11 +23,28 @@ executes** — anything of the form "draft a plan I can look over," "write this 
 "put this in front of me before you build it," or "get this ready for Guardrails." Reach for it whenever
 the deliverable is a *plan a human approves in the browser*, not code you write directly.
 
-**"Chart" is a first-class trigger too.** The tool is called Charter, so once someone knows it by name the
-verb they reach for is *chart*: "chart this out," "make me a chart for this feature," "chart the refactor
-before you touch anything," "let's chart it." Treat every one of those exactly as a planning request — the
-deliverable is the same `.charter.md`, and the word choice signals nothing except familiarity with the tool.
-A "chart" and a "plan" are the same artifact here.
+**"Charter" and "chart" are first-class triggers too**, and in practice they are the *more reliable* ones —
+see the note on plan-mode contention below. Three layers, strongest first:
+
+| Trigger | Example | Why it's here |
+|---|---|---|
+| **charter** (verb) | "charter this work," "charter the refactor," "charter a plan for this" | Collision-free. Nobody says *charter* for a graph, and it doesn't trip plan mode. |
+| **chart** (verb) | "chart this out," "make me a chart for this feature," "let's chart it" | What people reach for once they know the tool by name. |
+| **plan** (verb/noun) | "draft a plan I can look over," "write this up as a reviewable plan" | Covers first-timers who don't know the product name. |
+
+All three mean the same request and produce the same artifact — the word choice signals only how familiar
+the human is with the tool. **The noun never changes: the deliverable is always "the plan"**, the file is
+always `<name>.charter.md`. "Chart" and "charter" are verbs for *making* one, not new names for it.
+
+On *"charter a plan"* specifically: strictly you charter the **work**, not the plan — the plan is the
+artifact chartering produces, the same way a *project charter* is the document that authorizes a project to
+begin. Prefer "charter the work" when you phrase it yourself. But **accept "charter a plan" without
+hesitation** when a human says it; the intent is unmistakable and correcting their grammar is not your job.
+
+> **Why not rely on "plan" alone?** In an agentic harness, planning language is heavily contested — Claude
+> Code's own **plan mode**, a `Plan` agent, `plan-reviewer`, and Guardrails' `plan-breakdown` all compete for
+> it, and plan mode is a *harness* feature that can preempt skill matching entirely. "Charter" and "chart"
+> are the triggers that reliably reach this skill; "plan" is kept as a fallback, not depended on.
 
 > **Do not confuse charting *work* with charting *data*.** "Chart" is heavily overloaded with data
 visualization, and this skill must stay out of the way for that. The signal is the **object** of the verb,
