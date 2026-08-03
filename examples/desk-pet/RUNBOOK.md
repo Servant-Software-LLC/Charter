@@ -134,6 +134,56 @@ charter resolve desk-pet.charter.md
 
 Same fold-back, built for exactly this case: a human reviewer and no agent running `poll`.
 
+---
+
+## Beat 4 — variant B: agent in the loop (no terminal at the climax)
+
+The stronger version, if your rehearsal goes cleanly. **Set this up before you start.**
+
+In a second terminal, have your agent (Claude Code with the `charter` skill) run the drain in
+**wait** mode:
+
+```bash
+charter poll desk-pet.charter.md --wait --apply
+```
+
+`--wait` blocks on the server's wake signal. Clicking **Send to agent** in the browser completes
+that signal, so `poll` returns *immediately* with the round — the agent revises the plan, and the
+page **live-reloads in front of the audience**.
+
+What they see: you comment, you click one button, and the plan changes. **No terminal at the
+climax.** That reframes Charter from a file format into a loop, which is the harder thing to
+convey.
+
+> **Why the button can't just call `poll` itself.** The plan file is single-writer — the drafting
+> agent. The server never writes it and never invokes an agent. `Send to agent` hands the round
+> over; the agent, already listening, picks it up. That constraint is deliberate, not an oversight.
+
+### The honest caveats — know these before someone asks
+
+- **It needs an agent actually running.** If nothing is listening, the click sets `submitted: true`
+  and nothing happens.
+- **The agent cannot push back.** If it thinks a comment is wrong or unclear, it has no channel to
+  say so — it revises, or it doesn't.
+- **Those two failures look identical to success.** A reviewer cannot currently distinguish
+  *agreed and revised* / *declined* / *misread and revised the wrong thing* / *nobody listening*.
+
+If you're asked *"what if the agent disagrees?"* — that gap is real and tracked as
+[#106](https://github.com/Servant-Software-LLC/Charter/issues/106). Answer it plainly; it lands
+better than improvising, and it's a roadmap item rather than a flaw in the idea.
+
+### Which variant to run
+
+| | Variant A (`poll --apply` by hand) | Variant B (agent in the loop) |
+|---|---|---|
+| Moving parts | one terminal, one command | an agent running live |
+| Shows the drain explicitly | **yes** — the envelope is on screen | no, it happens off-camera |
+| Shows Charter as a *loop* | no | **yes** |
+| Risk | low | a live model on stage |
+
+Rehearse A first. Only reach for B if B also rehearses clean — A is a good demo, and a stalled B
+in front of an audience is not.
+
 > **Only `charter poll` clears the queue.** `charter resolve` and the `/api/...` endpoints are
 > peeks. So don't run a bare `charter poll` first "to look" — it drains, and a following `resolve`
 > will find nothing. Run **one** of `poll --apply` *or* `resolve`.
