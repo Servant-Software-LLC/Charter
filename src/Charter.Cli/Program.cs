@@ -117,6 +117,17 @@ if (args.Length >= 1 && args[0] == "resolve")
     return BuildResolveRoot().Parse(args).Invoke();
 }
 
+// `charter reply <plan.charter.md> --to <comment-id> --body <text>`: the AGENT's voice in the review thread
+// (#106). Until now feedback was one-way — a reviewer commented, and the agent either revised the plan or did
+// not, which are indistinguishable from the browser. This appends a `reply` record to the agent's own author
+// log, so it can accept a comment, push back on it, or ask what was meant, WITHOUT touching the plan (the plan
+// stays single-writer) and without the server writing anything. A reviewer with the page open sees it arrive
+// over the review-log watch that already exists.
+if (args.Length >= 1 && args[0] == "reply")
+{
+    return BuildReplyRoot().Parse(args).Invoke();
+}
+
 // Unknown-verb guard: any non-empty first token that reaches here is neither a known verb/flag (those all
 // returned above) nor a help flag — so it is a typo'd or unknown command. Emit a clean error plus the command
 // list to stderr and exit NON-ZERO instead of silently falling through to the help banner + exit 0. That
@@ -125,7 +136,7 @@ if (args.Length >= 1 && args[0] == "resolve")
 if (args.Length >= 1 && !string.IsNullOrEmpty(args[0]) && args[0] is not ("--help" or "-h" or "-?" or "help"))
 {
     Console.Error.WriteLine($"charter: unknown command '{args[0]}'");
-    Console.Error.WriteLine("Commands: render, review, export, headless, handoff, convert, skills, poll, resolve. Flags: --version, --help.");
+    Console.Error.WriteLine("Commands: render, review, export, headless, handoff, convert, skills, poll, resolve, reply. Flags: --version, --help.");
     return 1;
 }
 
@@ -833,6 +844,93 @@ static RootCommand BuildPollRoot()
 
 // Builds the root command hosting the `resolve` subcommand wired to Charter.Cli.ResolveCommand (which applies
 // a solo reviewer's queued answers inline, via a live server or the durable sidecar).
+// `charter reply` — the agent's reply into a review thread (#106). Deliberately a WRITE of one record to the
+// agent's own author log and nothing else: it never edits the plan (single-writer), never contacts the review
+// server, and never settles the comment (a reply is not a state op — deciding a comment is DONE stays a
+// separate, deliberate `resolve`). That is what lets it be safe to call mid-review with a page open.
+static RootCommand BuildReplyRoot()
+{
+    var inputArgument = new Argument<string>("input")
+    {
+        Description = "Path to the Charter plan (.charter.md) whose review thread to reply in.",
+    };
+
+    var toOption = new Option<string>("--to")
+    {
+        Description =
+            "The id of the comment being replied to (the `id` on a review-log comment, as delivered on the "
+            + "`charter poll` envelope).",
+        Required = true,
+    };
+
+    var bodyOption = new Option<string>("--body")
+    {
+        Description =
+            "The reply text. Say what you did about the comment — accepted it, disagreed and why, or what you "
+            + "need clarified. A reviewer reads this in the panel next to their own note.",
+        Required = true,
+    };
+
+    var humanOption = new Option<bool>("--as-human")
+    {
+        Description =
+            "Attribute the reply to the human reviewer rather than to an agent. Off by default: this verb "
+            + "exists for the AGENT's voice, and mislabelling it would put words in the reviewer's mouth.",
+    };
+
+    var reply = new Command(
+        "reply",
+        "Reply to a review comment in its thread — the agent's channel to accept, push back, or ask for clarification without touching the plan.")
+    {
+        inputArgument,
+        toOption,
+        bodyOption,
+        humanOption,
+    };
+
+    reply.SetAction(parseResult => RunVerb("reply", () =>
+    {
+        string inputPath = parseResult.GetValue(inputArgument)!;
+
+        if (!File.Exists(inputPath))
+        {
+            Console.Error.WriteLine($"charter reply: input plan not found: {inputPath}");
+            return 1;
+        }
+
+        string target = parseResult.GetValue(toOption)!;
+        string body = parseResult.GetValue(bodyOption)!;
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            Console.Error.WriteLine("charter reply: --body is empty; a reply with nothing in it tells the reviewer nothing.");
+            return 1;
+        }
+
+        // A review must never fail for want of a log (same contract as `charter review`), but `reply` is a
+        // verb whose ENTIRE purpose is to write one — so here a null writer is a real failure, not a silent
+        // no-op. Reporting success while saying nothing to the reviewer is the exact defect #106 is about.
+        ReviewLogWriter? writer = OpenReviewLog(inputPath);
+        if (writer is null)
+        {
+            Console.Error.WriteLine(
+                $"charter reply: could not open the review log beside {inputPath}; nothing was written.");
+            return 1;
+        }
+
+        string actor = parseResult.GetValue(humanOption) ? ReviewActors.Human : ReviewActors.Agent;
+        ReviewRecord written = writer.AppendReply(target, body, actor);
+
+        Console.WriteLine($"Replied to {target} as {actor} ({written.Id}) -> {writer.LogPath}");
+        return 0;
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        reply,
+    };
+}
+
 static RootCommand BuildResolveRoot()
 {
     var inputArgument = new Argument<string>("input")

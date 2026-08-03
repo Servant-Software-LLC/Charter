@@ -125,10 +125,17 @@ dotnet tool install --global ServantSoftware.Charter
 [latest release](https://github.com/Servant-Software-LLC/Charter/releases/latest), extract, and run
 `charter --version`.
 
-> **macOS:** the binaries are not yet code-signed. `brew install` runs them without a prompt, but a
-> browser-downloaded binary is quarantined by Gatekeeper — clear it with
-> `xattr -d com.apple.quarantine ./charter` (or right-click → Open once). Signing is tracked in
-> [#9](https://github.com/Servant-Software-LLC/Charter/issues/9).
+> **macOS:** `brew install` and `dotnet tool install` need no extra steps — Gatekeeper's notarization
+> check keys off the `com.apple.quarantine` attribute, which package managers don't set. Only a binary
+> you download **in a browser** is quarantined. Clear it after extracting:
+>
+> ```sh
+> xattr -dr com.apple.quarantine ./charter
+> ```
+>
+> macOS 15 removed the Control-click → Open bypass; the GUI route is now System Settings → Privacy &
+> Security → "Open Anyway". The binaries carry an ad-hoc signature (which is what Apple Silicon
+> requires to run them at all) but are not Developer ID signed or notarized.
 
 ## Build from source
 

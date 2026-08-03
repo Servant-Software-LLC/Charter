@@ -82,16 +82,65 @@ jobs:
             .github/templates/charter.rb.tmpl > tap/Formula/charter.rb
           echo "----- rendered formula -----"; cat tap/Formula/charter.rb
 
-      - name: Open PR to the tap
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.TAP_PAT }}
-          path: tap
-          branch: bump-charter-${{ steps.v.outputs.version }}
-          # No `base:` — defaults to the tap's checked-out default branch (this org uses `master`).
-          title: "charter ${{ steps.v.outputs.version }}"
-          commit-message: "charter ${{ steps.v.outputs.version }}"
-          delete-branch: true
-          body: |
-            Automated formula bump for Charter **${{ steps.v.outputs.version }}**,
-            generated from the release assets' checksums by `.github/workflows/bump-tap.yml`.
+      # PUBLISH DIRECTLY — do not open a PR. (#95)
+      #
+      # This step used to `peter-evans/create-pull-request`, and nothing ever merged the result. By
+      # 2026-08-01 the tap had 21 open bump PRs: `charter.rb` was pinned at v0.1.0 while the current release
+      # was 0.8.0, and `guardrails.rb` did not exist in the tap AT ALL. `brew install` was serving a version
+      # eight releases stale, and the whole time the release workflow reported success — it builds the
+      # binaries, uploads the assets, and opens the PR. Every step it is asked to do succeeds. The publish
+      # simply never completes.
+      #
+      # The PR gate bought nothing to offset that. The formula is generated from a template by substituting a
+      # version and four checksums read straight from the release's own .sha256 assets — there is no human
+      # judgement in it, nothing to review, and nobody staffed to review it. It was a publish step wearing a
+      # code-review costume.
+      - name: Publish the formula to the tap
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- Formula/charter.rb; then
+            echo "Formula already at ${{ steps.v.outputs.version }} — nothing to publish."
+            exit 0
+          fi
+
+          git add Formula/charter.rb
+          git commit -m "charter ${{ steps.v.outputs.version }}"
+
+          # A concurrent guardrails bump can land between our checkout and this push; rebase and retry rather
+          # than fail a release for a race on a two-formula repo.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Published charter ${{ steps.v.outputs.version }} to the tap."
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt) — rebasing onto the tap's tip and retrying"
+            git pull --rebase
+          done
+          echo "::error::Could not publish the formula to the tap after 3 attempts."
+          exit 1
+
+  # The check the PR gate was only pretending to be. A bad checksum or a malformed template is the ACTUAL
+  # failure mode for a formula, and an unmerged PR never caught either — this does, loudly, right after
+  # publishing. Runs on macOS because that is the platform the tap exists to serve; a Linux `brew install`
+  # would exercise a different bottle and prove the wrong thing.
+  #
+  # This job runs AFTER the release is already published, so failing it cannot unpublish anything — that is
+  # the point. A red box here means "the tap is serving something broken", which is exactly the state that
+  # went unnoticed for 21 releases.
+  verify:
+    name: verify the tap installs (macos)
+    needs: bump
+    runs-on: macos-latest
+    steps:
+      - name: brew install from the tap
+        run: |
+          set -euo pipefail
+          brew tap servant-software-llc/tap
+          brew audit --strict --formula servant-software-llc/tap/charter \
+            || echo "::warning::brew audit reported issues — see above (not fatal)."
+          brew install servant-software-llc/tap/charter
+          charter --version

@@ -97,6 +97,26 @@ jobs:
             mv "$DIR/Charter.Cli" "$DIR/charter" && chmod +x "$DIR/charter"
           fi
 
+      # Apple Silicon refuses to exec a Mach-O carrying NO signature — a kernel requirement, separate from
+      # notarization. An AD-HOC signature satisfies it, is free, and needs no certificate or Apple account.
+      # Today that happens by accident: the osx-* legs run on macos-latest, so the .NET SDK ad-hoc signs the
+      # apphost during publish. Nothing said the runner was load-bearing, so a future change that looks purely
+      # like a cost optimisation — cross-building osx-* on ubuntu — would silently ship an arm64 binary that
+      # dies with a bare `zsh: killed` on every Mac. The `--verify` below is the real value: it turns
+      # "signature silently absent" into a FAILED RELEASE. (#97)
+      #
+      # Runs BEFORE the Developer ID step so that, when those secrets eventually exist, `codesign --force`
+      # there simply replaces this signature with the real one.
+      - name: Ad-hoc sign (macOS — free; satisfies the Apple Silicon exec requirement)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="publish/${{ matrix.rid }}/charter"
+          codesign --force --sign - "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          echo "Ad-hoc signed and verified: $BIN"
+
       - name: Codesign + notarize (macOS — auto-skips until signing secrets exist)
         if: startsWith(matrix.rid, 'osx-')
         shell: bash
