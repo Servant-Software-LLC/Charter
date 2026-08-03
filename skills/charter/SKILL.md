@@ -85,6 +85,7 @@ that is a plotting task, not a Charter deliverable).
 | `charter headless <plan.charter.md> [--out-dir <dir>]` | The **unattended** sibling of `charter review` — for a crewmate or any run with no human present. Serves nothing and waits for nothing: writes `export`'s artifact (**same exporter, byte-identical**) plus a **forensic JSON record**, at names **derived** from the plan (`storage.charter.md` → `storage.charter.html` + `storage.charter.headless.json`), then exits. **Its exit codes are their own vocabulary, not the drain's**: `0` nothing outstanding · `2` both files are on disk **and** a human must decide or fix something (an **escalation**, not a failure) · `1` verb error. |
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
 | `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the **autonomous** Guardrails `plan-breakdown` path. (That path is also called "headless" — an unrelated sense of the word from the `charter headless` verb above. `handoff` writes no record; `headless` writes no CommonMark.) |
+| `charter reply <plan.charter.md> --to <comment-id> --body <text>` | **Answer a review comment in its thread** — your voice back to the reviewer. Accept it, **push back on it**, or ask what was meant. Writes one `reply` record to your own author log: it does **not** touch the plan (single-writer), does not contact the review server, and does **not** settle the comment (that stays a deliberate `resolve`). A reviewer with the page open sees it arrive over the review-log watch. Attributed to `actor: agent` by default; `--as-human` only if you are writing on the human's behalf. |
 | `charter skills install [--project] [--force]` | Install the bundled `charter` + `charter-format` skills so Guardrails `plan-breakdown` can discover them. |
 | `charter --version` | Print the version. |
 
@@ -165,6 +166,19 @@ Edit the markdown source in response; the server re-renders from source on the n
 reload), so the human sees your revision without restarting. Loop — poll, revise, let them re-review —
 until the plan is approved. The JSON envelope shapes, the exit codes, the long-poll semantics, and a
 concrete drain loop are in `references/review-loop.md`.
+
+**Say something back — silence is indistinguishable from failure.** Revising the plan is not a reply. From
+the reviewer's side, "I agreed and changed it", "I disagreed and left it", "I misread you and changed the
+wrong thing", and "nobody was listening" all look identical. Use `charter reply` on any comment you do not
+simply action:
+
+```
+charter reply plan.charter.md --to <comment-id> --body "Disagree — the read path is append-only, so Postgres buys nothing here. Left as-is; say the word and I'll change it."
+```
+
+Reply when you **push back**, when you **need clarification**, or when you acted in a way the diff alone
+won't explain. It costs one line and it is the difference between a review loop and a suggestion box. It
+writes only to your own author log — the plan stays single-writer, and you remain its only writer.
 
 `charter review` also writes each comment to a durable per-author log at `<plan>.review/*.jsonl` beside the
 plan. Those records travel to teammates **by git** and are permanent in history — Charter reads git for the

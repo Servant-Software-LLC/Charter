@@ -120,6 +120,77 @@ public class ReviewLogWriterTests : IDisposable
             ReviewLogPaths.FileNameForAuthor("こんにちは@例.日本"));
     }
 
+    // ---- agent replies (#106) ----------------------------------------------------------------------------
+
+    /// <summary>
+    /// The agent's voice in a review thread. Before this the feedback channel was one-way: a reviewer
+    /// commented, and the agent either revised the plan or did not — two outcomes that are indistinguishable
+    /// from the browser, so "I disagree with this note" had no way to reach the human at all.
+    /// </summary>
+    [Fact]
+    public void AppendReply_RecordsTheAgentAsTheActor_TargetingTheCommentItAnswers()
+    {
+        var writer = WriterFor("plan.charter.md", Alice);
+        var comment = writer.AppendCreate(Anchor("b1"), "Use Postgres here.");
+
+        var reply = writer.AppendReply(comment.Id, "Disagree — the read path is append-only.", ReviewActors.Agent);
+
+        Assert.Equal(ReviewOpKind.Reply, reply.OpKind);
+        Assert.Equal(comment.Id, reply.Target);
+        Assert.Equal(ReviewActors.Agent, reply.Actor);
+        Assert.Equal("Disagree — the read path is append-only.", reply.Body);
+
+        // A reply ADDS to the thread; it does not settle the item. Only the four state ops carry `prev`
+        // (§4.2), so a reply carrying one would claim to have observed — and therefore settled — a state it
+        // never changed. Deciding a comment is done stays a separate, deliberate `resolve`.
+        Assert.Null(reply.Prev);
+        Assert.False(ReviewOps.IsStateOp(reply.OpKind));
+    }
+
+    /// <summary>
+    /// The default is the HUMAN, matching every other <c>Append*</c>. `charter reply` opts into
+    /// <see cref="ReviewActors.Agent"/> explicitly — a default of "agent" would silently attribute a
+    /// reviewer's own words to a machine everywhere else in the writer.
+    /// </summary>
+    [Fact]
+    public void AppendReply_DefaultsToTheHumanActor()
+    {
+        var writer = WriterFor("plan.charter.md", Alice);
+        var comment = writer.AppendCreate(Anchor("b1"), "Why this datastore?");
+
+        Assert.Equal(ReviewActors.Human, writer.AppendReply(comment.Id, "Because of the write volume.").Actor);
+    }
+
+    /// <summary>
+    /// The point of the feature, end to end: a reply the AGENT wrote is a real line in the durable log that
+    /// parses back with its actor intact. That is what the fold attaches to the comment's thread and what the
+    /// SDK renders beside the reviewer's own note — no server involvement, and the plan file untouched.
+    /// </summary>
+    [Fact]
+    public void AppendReply_RoundTripsThroughTheDurableLog_WithItsActorPreserved()
+    {
+        var writer = WriterFor("plan.charter.md", Alice);
+        var comment = writer.AppendCreate(Anchor("b1"), "This retry loop looks unbounded.");
+        writer.AppendReply(comment.Id, "It is bounded by maxAttempts; want me to name it in the diagram?", ReviewActors.Agent);
+
+        var lines = ReadLines(writer.LogPath);
+        Assert.Equal(2, lines.Count);
+
+        var parsed = ReviewRecord.Parse(lines[1]);
+        Assert.Equal(ReviewOpKind.Reply, parsed.OpKind);
+        Assert.Equal(comment.Id, parsed.Target);
+        Assert.Equal(ReviewActors.Agent, parsed.Actor);
+        Assert.Contains("maxAttempts", parsed.Body, StringComparison.Ordinal);
+    }
+
+    /// <summary>An empty target has no thread to join — refuse it rather than write an orphan the fold reports.</summary>
+    [Fact]
+    public void AppendReply_RefusesAnEmptyTarget()
+    {
+        var writer = WriterFor("plan.charter.md", Alice);
+        Assert.ThrowsAny<ArgumentException>(() => writer.AppendReply(string.Empty, "orphaned"));
+    }
+
     // ---- append discipline -------------------------------------------------------------------------------
 
     [Fact]

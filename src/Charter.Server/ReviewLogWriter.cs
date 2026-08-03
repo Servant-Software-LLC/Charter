@@ -137,6 +137,32 @@ public sealed class ReviewLogWriter
         });
     }
 
+    /// <summary>
+    /// Reply in <paramref name="target"/>'s thread. Open to anyone — review is collaborative (§4.2).
+    /// <para>
+    /// This is how an <b>agent</b> answers a reviewer's comment (<see cref="ReviewActors.Agent"/>): accept it,
+    /// push back on it, or ask for clarification — <b>without touching the plan file</b>. The plan stays
+    /// single-writer and the server writes nothing; the agent appends to its own author log, and the
+    /// reviewer's open page picks it up over the existing review-log watch. Before this, an agent that
+    /// disagreed with a comment had no way to say so — it revised the plan or it did not, and those two look
+    /// identical to the reviewer (issue #106).
+    /// </para>
+    /// <para>
+    /// A reply is <b>not</b> a state op (<see cref="ReviewOps.IsStateOp"/>), so it carries no <c>prev</c>: it
+    /// adds to the thread, it does not settle the item. Deciding a comment is <i>done</i> stays a separate,
+    /// deliberate <c>resolve</c>.
+    /// </para>
+    /// </summary>
+    public ReviewRecord AppendReply(string target, string body, string actor = ReviewActors.Human)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(target);
+        return Append(NewRecord(ReviewOpKind.Reply, actor) with
+        {
+            Target = target,
+            Body = body ?? string.Empty,
+        });
+    }
+
     /// <summary>Close <paramref name="target"/>. Open to anyone — review is collaborative (§4.2).</summary>
     public ReviewRecord AppendResolve(string target, string? prev, string actor = ReviewActors.Human)
     {
