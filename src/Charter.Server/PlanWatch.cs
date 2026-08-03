@@ -79,6 +79,7 @@ internal sealed class PlanWatch : IDisposable
             // is already in the stamp; one landing after is a stamp the next beat differs against.
             Rearm();
             _stamp = Read();
+            BaselineAtArm = (_stamp.Present, _stamp.Length, _stamp.LastWriteUtcTicks);
         }
     }
 
@@ -96,6 +97,22 @@ internal sealed class PlanWatch : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// The revision this watch's baseline was established at: the plan exactly as the constructor found it,
+    /// captured once and never re-based.
+    /// </summary>
+    /// <remarks>
+    /// INTERNAL — a test seam, for the same reason <see cref="IsArmed"/> is one. "The change was not lost" is a
+    /// DISJUNCTION (the constructor states both halves): a write landing after this baseline was read gets
+    /// ANNOUNCED, and one landing before it "is already in the stamp" — nothing is outstanding, and there is
+    /// nothing to announce. From outside, a watch reporting nothing because it took the second half is
+    /// indistinguishable from one reporting nothing because the notification was LOST, so a test sweeping a
+    /// write across the arming window can only assert the real contract if it can tell which half it got.
+    /// Deliberately NOT the live baseline, which reads as "already had it" the instant an announce re-bases
+    /// <c>_stamp</c> — that would let a watch which re-bases WITHOUT announcing pass.
+    /// </remarks>
+    internal (bool Present, long Length, long LastWriteUtcTicks) BaselineAtArm { get; }
 
     /// <summary>
     /// Re-check the plan on the stream's keep-alive beat. Returns <see langword="true"/> when the client should

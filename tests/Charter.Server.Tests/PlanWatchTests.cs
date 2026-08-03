@@ -190,11 +190,35 @@ public class PlanWatchTests : IDisposable
 
     /// <summary>
     /// The #88 pattern that caught the original: sweep the write across the arming window. No ordering of "arm"
-    /// against "the agent writes" may lose the change — which is the whole argument for the beat, because no
+    /// against "the agent writes" may LOSE the change — which is the whole argument for the beat, because no
     /// arming order can fix a best-effort notifier.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>"Not lost" is a disjunction</b>, and the constructor names both halves of it: a write landing after
+    /// the baseline read is ANNOUNCED (by the watcher, or by the beat that differs against that baseline), and
+    /// one landing before it "is already in the stamp" — the baseline IS that revision, so there is nothing
+    /// outstanding for this watch to announce and demanding a notification would be demanding a report of a
+    /// change relative to itself. Asserting only the first half asserts a stricter contract than the feature
+    /// has: at offset 0 the writer spins zero ticks and wins that race on an idle machine every time, which is
+    /// why the earlier form of this test failed 25/25 in isolation on Windows and on the macOS runner, while
+    /// passing under the contention of a full suite run that happened to delay the writer thread.
+    /// </para>
+    /// <para>
+    /// Which half a run took is READ from <see cref="PlanWatch.BaselineAtArm"/>, never inferred from the
+    /// offset: arming does real work (a <see cref="FileSystemWatcher"/> is syscalls, not ticks), so which side
+    /// of the baseline read a given spin count lands on is a property of the machine. The two halves cannot be
+    /// confused for one another — the plan starts at 7 bytes and every revision written here is longer, so a
+    /// baseline equal to the landed file can only have been read after that write completed.
+    /// </para>
+    /// <para>
+    /// The second half is not a free pass. A run taking it still has to leave a watch that is armed, that stays
+    /// SILENT about the revision its baseline already holds (a spurious <c>reload</c> is a page navigation),
+    /// and that delivers the NEXT one — so a watch that loses changes satisfies neither half at any offset.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task AWriteSweptAcrossTheArmingWindow_IsAlwaysDelivered()
+    public async Task AWriteSweptAcrossTheArmingWindow_IsNeverLost()
     {
         for (var offset = 0; offset < 12; offset++)
         {
@@ -221,9 +245,36 @@ public class PlanWatchTests : IDisposable
             using var watch = new PlanWatch(plan, told.Set);
             await writer;
 
+            var landed = new FileInfo(plan);
+            var alreadyInTheBaseline =
+                watch.BaselineAtArm == (true, landed.Length, landed.LastWriteTimeUtc.Ticks);
+
+            if (!alreadyInTheBaseline)
+            {
+                Assert.True(
+                    WaitForChange(watch, told),
+                    $"a write landing {offset} tick-steps into the arming window must still reach the stream");
+                continue;
+            }
+
+            // The write beat the baseline read, so this watch owes the client nothing for it. That is only an
+            // acceptable answer while it stays true of the NEXT revision too, so prove the watch is live and
+            // quiet rather than accepting "nothing to report" from something that has stopped watching.
+            Assert.True(
+                watch.IsArmed,
+                $"a write landing {offset} tick-steps in beat the baseline read, so the watch must be armed "
+                    + "for the next revision rather than reporting nothing because it is dead");
+            Assert.False(
+                watch.Poll(),
+                $"a write landing {offset} tick-steps in is already the baseline, so no beat may push a "
+                    + "reload for it");
+
+            told.Reset();
+            File.WriteAllText(plan, "# Plan\n\nrevision " + spin + ", and one after the arm\n");
             Assert.True(
                 WaitForChange(watch, told),
-                $"a write landing {offset} tick-steps into the arming window must still reach the stream");
+                $"a watch whose baseline already held the write at {offset} tick-steps must still deliver the "
+                    + "revision that follows it");
         }
     }
 
