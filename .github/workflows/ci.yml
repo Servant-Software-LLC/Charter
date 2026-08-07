@@ -67,7 +67,8 @@ jobs:
           dotnet test tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj -c Release --no-build \
             --logger "console;verbosity=normal" | tee webkit.log
           # These tests SKIP rather than fail when a browser is missing, so a green tick proves nothing on its
-          # own — assert the counts. 2 skips are the #111 quarantine; anything else means WebKit silently did
-          # not run, which is the exact blindness this job exists to remove.
+          # own — assert the counts. The 3 skips are the #111 quarantine (free-text, radio ArrowRight, and the
+          # #109 Something-else hatch, which shares free-text's root cause); anything else means WebKit silently
+          # did not run, which is the exact blindness this job exists to remove. Bump these when #111 lands.
           grep -qE "Passed: +23" webkit.log || { echo "::error::expected 23 WebKit passes"; exit 1; }
-          grep -qE "Skipped: +2"  webkit.log || { echo "::error::expected exactly 2 skips (#111)"; exit 1; }
+          grep -qE "Skipped: +3"  webkit.log || { echo "::error::expected exactly 3 skips (#111)"; exit 1; }

@@ -862,18 +862,38 @@ window.CharterAnnotate = (function () {
   //
   // An UNANSWERED control yields an EMPTY array, never ['']: an empty string is not an answer, and
   // the submit-enabled rule below is built on being able to tell those apart.
+  // The "Something else" escape hatch (#109). Its control carries value="" and is paired with a text
+  // input, so the ANSWER is whatever the reviewer typed, not the control's own value. An Other that is
+  // checked but empty yields NOTHING — deliberately: the rule above ("an empty string is not an answer")
+  // is what keeps the Save button honest, and a blank Other reads as resolved while saying less than
+  // leaving the question open.
+  function effectiveValue(control) {
+    if (!control.getAttribute || control.getAttribute('data-answer-other') !== '1') {
+      return control.value;
+    }
+    var label = control.closest ? control.closest('label') : null;
+    var text = label ? label.querySelector('[data-answer-other-text]') : null;
+    return text ? String(text.value).trim() : '';
+  }
+
   function collectValues(form, mode) {
     if (mode === 'multi' || mode === 'multi-select') {
       var picked = [];
       var boxes = form.querySelectorAll('input[type="checkbox"][name="answer"]:checked');
-      for (var i = 0; i < boxes.length; i++) picked.push(boxes[i].value);
+      for (var i = 0; i < boxes.length; i++) {
+        var boxValue = effectiveValue(boxes[i]);
+        // Other COMBINES with declared options — "these two, plus this other thing" is a real answer.
+        if (boxValue !== '') picked.push(boxValue);
+      }
       return picked;
     }
     // bool shares the single-select shape: two mutually-exclusive radios valued "true"/"false"
     // (Charter #43), NOT the lone checkbox the SDK used to look for. Explicit, not incidental.
     if (mode === 'single' || mode === 'single-select' || mode === 'bool') {
       var radio = form.querySelector('input[type="radio"][name="answer"]:checked');
-      return radio ? [radio.value] : [];
+      if (!radio) return [];
+      var radioValue = effectiveValue(radio);
+      return radioValue === '' ? [] : [radioValue];
     }
     var field = form.querySelector(
       'textarea, input[type="number"], input[type="text"], ' +

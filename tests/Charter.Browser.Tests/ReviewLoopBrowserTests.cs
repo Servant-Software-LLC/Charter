@@ -2059,6 +2059,83 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+
+    // ---- #109: the free-text escape hatch on a select --------------------------------------------------
+
+    /// <summary>
+    /// The agent authoring a select's options is the party LEAST qualified to know they are exhaustive — it is
+    /// asking precisely because it does not know the answer. Without an escape hatch a reviewer who disagrees
+    /// with the framing must pick a wrong option or abandon the form, and either way the real decision is lost.
+    /// <para>
+    /// The renderer therefore appends a "Something else" control to every single/multi form, and the typed text
+    /// — not the control's own empty value — becomes the answer. An Other that is checked but EMPTY must yield
+    /// nothing: "an empty string is not an answer" is what keeps the Save button honest, and a blank Other
+    /// would read as resolved while saying less than leaving the question open.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Something_else_lets_a_reviewer_answer_outside_the_offered_options()
+    {
+        // #111 — same WebKit defect as free-text: an answer whose value comes from a TEXT FIELD never
+        // reaches the server. Value collection is fine on WebKit (Save correctly enables once text is typed);
+        // it is the submit that is lost. Quarantined so the WebKit leg stays blocking for everything else.
+        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
+
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-other-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var other = Control("q-open", "input[data-answer-other]");
+            var otherText = Control("q-open", "input[data-answer-other-text]");
+
+            // The hatch exists on a select the agent never authored one into.
+            await page.WaitForSelectorAsync(other);
+            await AssertSaveDisabledAsync(page, "q-open");
+
+            // Checked but empty is NOT an answer — Save must stay disabled.
+            await page.CheckAsync(other);
+            await AssertSaveDisabledAsync(page, "q-open");
+
+            // Type the answer the agent did not think of.
+            await page.FillAsync(otherText, "Commits, but only on the default branch");
+            Assert.True(
+                await page.IsEnabledAsync(SaveButton("q-open")),
+                "typing into Something else must make the answer saveable");
+
+            await SaveAsync(page, "q-open");
+
+            // The TYPED TEXT reaches the server, not the control's empty value — and it is deliberately a
+            // value that matches no declared option, which the schema already tolerates.
+            Assert.Equal(
+                new[] { "Commits, but only on the default branch" },
+                await WaitForAnswerValuesAsync(server, session, "q-open"));
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
     // ---- Charter #63: a reviewer can clear an accidental radio answer -----------------------------------
 
     /// <summary>

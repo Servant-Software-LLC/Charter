@@ -149,6 +149,10 @@ public class AnsweredQuestionRenderTests
             + "<fieldset><legend>A single question</legend>\n"
             + "<label><input type=\"radio\" name=\"answer\" value=\"A\" /> A</label>\n"
             + "<label><input type=\"radio\" name=\"answer\" value=\"B\" /> B</label>\n"
+            // #109 - the renderer always appends a free-text escape hatch to a select. Emitted HERE
+            // rather than authored into `options`, so the option list handed to Guardrails stays
+            // exactly the choices the agent proposed.
+            + "<label class=\"charter-answer-other\"><input type=\"radio\" name=\"answer\" value=\"\" data-answer-other=\"1\" /> Something else: <input type=\"text\" class=\"charter-answer-other-text\" data-answer-other-text=\"1\" placeholder=\"your answer\" /></label>\n"
             + "<div class=\"question-actions\">"
             + "<button type=\"submit\" class=\"question-submit\" disabled>Save answer</button></div>\n"
             + "</fieldset>\n"

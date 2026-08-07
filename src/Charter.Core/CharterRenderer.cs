@@ -595,12 +595,49 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     private static void WriteOptionControls(
         HtmlRenderer renderer, IReadOnlyList<string> options, string inputType, IReadOnlyList<string> answer)
     {
+        WriteOptionControlsCore(renderer, options, inputType, answer);
+    }
+
+    /// <summary>
+    /// The escape hatch every select needs (#109): a final "Something else" control paired with a text input,
+    /// so a reviewer can answer in their own words.
+    /// <para>
+    /// The agent authoring the options is the party <b>least</b> qualified to know they are exhaustive — it is
+    /// asking precisely because it does not know the answer. Without this, a reviewer who disagrees with the
+    /// framing must pick a wrong option or abandon the form, and either way the real decision is lost.
+    /// </para>
+    /// <para>
+    /// Emitted by the RENDERER, deliberately not authored into <see cref="QuestionSpec.Options"/> by the agent.
+    /// <see cref="HandoffMarkdown"/> emits the option list verbatim into the CommonMark Guardrails consumes, so
+    /// an authored "Other" would become a real option in the data model — handed downstream as though the agent
+    /// had proposed it. Doing it here keeps <c>options</c> meaning exactly what it claims, cannot be forgotten,
+    /// and retrofits every chart that already exists.
+    /// </para>
+    /// <para>
+    /// No schema change is required: nothing validates that an answer is one of the options, <c>answer</c> is
+    /// already a string array, and <see cref="WriteWriteIns"/> already renders a value matching no declared
+    /// option as a checked write-in. This simply gives the reviewer a way to CREATE one.
+    /// </para>
+    /// </summary>
+    private static void WriteOtherControl(HtmlRenderer renderer, string inputType)
+    {
+        renderer.Write("<label class=\"charter-answer-other\"><input type=\"");
+        renderer.WriteEscape(inputType);
+        renderer.Write("\" name=\"answer\" value=\"\" data-answer-other=\"1\" /> Something else: ");
+        renderer.Write("<input type=\"text\" class=\"charter-answer-other-text\" data-answer-other-text=\"1\" ");
+        renderer.WriteLine("placeholder=\"your answer\" /></label>");
+    }
+
+    private static void WriteOptionControlsCore(
+        HtmlRenderer renderer, IReadOnlyList<string> options, string inputType, IReadOnlyList<string> answer)
+    {
         foreach (var option in options)
         {
             WriteChoice(renderer, inputType, option, option, IsChosen(answer, option), cssClass: null);
         }
 
         WriteWriteIns(renderer, inputType, answer, options);
+        WriteOtherControl(renderer, inputType);
     }
 
     /// <summary>
