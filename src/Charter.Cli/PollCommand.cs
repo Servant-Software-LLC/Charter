@@ -230,6 +230,16 @@ internal static class PollCommand
                 + $"as delivered ({ex.Message}); they will be reported again on the next poll.");
         }
 
+        // #81 — say it. The defect this guards was that a replaced checkout silently inherited the previous
+        // one's consumption ledger and never saw its teammates' committed comments. A reset that is itself
+        // silent would only relocate the surprise: the reader would get a burst of history with no idea why.
+        // Not an error and not an exit-code change — the drain succeeded, and more completely than it would
+        // have.
+        if (drain.LedgerReset is not null)
+        {
+            Console.Error.WriteLine($"charter poll: {drain.LedgerReset}");
+        }
+
         if (drain.DrainError is not null)
         {
             Console.Error.WriteLine(
