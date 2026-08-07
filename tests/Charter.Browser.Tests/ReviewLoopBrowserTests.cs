@@ -2742,6 +2742,10 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Oversized_diagram_zooms_and_pans_and_a_drag_never_becomes_an_annotation()
     {
+        // #113 — WebKit SVG hit-testing after a zoom/pan. Reproduces on Linux WebKit (CI) but NOT on
+        // Windows WebKit, so the engine diverges by host OS too — see the issue.
+        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #113.");
+
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-diagram-panzoom-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
@@ -2872,6 +2876,10 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Diagram_node_and_background_still_anchor_to_the_block_after_a_zoom_and_a_pan()
     {
+        // #113 — WebKit SVG hit-testing after a zoom/pan. Reproduces on Linux WebKit (CI) but NOT on
+        // Windows WebKit, so the engine diverges by host OS too — see the issue.
+        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #113.");
+
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-diagram-zoom-anchor-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
