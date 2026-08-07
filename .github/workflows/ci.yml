@@ -70,5 +70,8 @@ jobs:
           # own — assert the counts. The 5 skips are the #111 quarantine (free-text, radio ArrowRight, the
           # #109 Something-else hatch) plus #113 (diagram zoom/pan anchoring); anything else means WebKit silently
           # did not run, which is the exact blindness this job exists to remove. Bump when #111/#113 land.
-          grep -qE "Failed: +0" webkit.log     || { echo "::error::WebKit had real failures"; exit 1; }
-          grep -qE "Skipped: +5" webkit.log    || { echo "::error::expected exactly 5 skips (#111 + #113) - a different number means WebKit silently did not run, or a quarantine changed without updating this gate"; exit 1; }
+          # NOTE: with verbosity=normal there is NO "Failed:" line when nothing fails, so grepping for
+          # "Failed: 0" reports a failure precisely when there is none. "Test Run Successful." is the
+          # authoritative signal; the skip count is what proves WebKit actually ran.
+          grep -q "Test Run Successful." webkit.log             || { echo "::error::WebKit run was not successful"; exit 1; }
+          grep -qE "Skipped: +5$" webkit.log             || { echo "::error::expected exactly 5 WebKit skips (#111 + #113) - a different number means WebKit silently did not run, or a quarantine changed without updating this gate"; exit 1; }
