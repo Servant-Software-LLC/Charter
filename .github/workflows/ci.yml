@@ -30,3 +30,48 @@ jobs:
         run: ./tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
       - name: Test
         run: dotnet test Charter.sln -c Release --no-build
+
+  # #110 — the review loop on WEBKIT, the engine macOS reviewers actually get.
+  #
+  # `charter review` hands the URL to the platform's DEFAULT browser (Process.Start("open", url) on macOS), so
+  # on a stock Mac that is Safari. Until now every browser test was Chromium-only, which left the entire
+  # annotation loop unverified on a first-class target — and the SDK leans on exactly the APIs where WebKit
+  # diverges (getSelection/createRange for text-range anchoring, getBoundingClientRect for hit-testing inside
+  # rendered SVG, EventSource for live reload). All of those fail SILENTLY: a comment lands on the wrong text,
+  # or the page stops updating, and nothing throws.
+  #
+  # BLOCKING, not advisory. Two known WebKit defects are quarantined in-test with a pointer to #111, precisely
+  # so this leg can gate: a NEW engine regression fails here immediately instead of hiding behind them.
+  #
+  # Ubuntu because WebKit runs headless there and it is the cheapest runner; the engine is what is under test,
+  # not the OS. Only the browser suite runs — the rest of the solution is engine-independent and already
+  # covered three times over by the matrix above.
+  webkit:
+    name: review loop on WebKit (#110)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build
+        run: dotnet build Charter.sln -c Release
+      - name: Install Playwright browser (WebKit)
+        shell: pwsh
+        run: ./tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps webkit
+      - name: Test (browser suite, CHARTER_BROWSER=webkit)
+        env:
+          CHARTER_BROWSER: webkit
+        run: |
+          dotnet test tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj -c Release --no-build \
+            --logger "console;verbosity=normal" | tee webkit.log
+          # These tests SKIP rather than fail when a browser is missing, so a green tick proves nothing on its
+          # own — assert the counts. The 5 skips are the #111 quarantine (free-text, radio ArrowRight, the
+          # #109 Something-else hatch) plus #113 (diagram zoom/pan anchoring); anything else means WebKit silently
+          # did not run, which is the exact blindness this job exists to remove. Bump when #111/#113 land.
+          # NOTE: with verbosity=normal there is NO "Failed:" line when nothing fails, so grepping for
+          # "Failed: 0" reports a failure precisely when there is none. "Test Run Successful." is the
+          # authoritative signal; the skip count is what proves WebKit actually ran.
+          grep -q "Test Run Successful." webkit.log             || { echo "::error::WebKit run was not successful"; exit 1; }
+          grep -qE "Skipped: +5$" webkit.log             || { echo "::error::expected exactly 5 WebKit skips (#111 + #113) - a different number means WebKit silently did not run, or a quarantine changed without updating this gate"; exit 1; }

@@ -760,6 +760,8 @@ public sealed class ReviewServer : IReviewServer
         WriteJson(response, JsonSerializer.Serialize(annotation, AnnotationApi.JsonOptions));
     }
 
+    private readonly AgentPresence _presence = new();
+
     private async Task HandlePollAsync(HttpListenerContext context)
     {
         var response = context.Response;
@@ -768,6 +770,10 @@ public sealed class ReviewServer : IReviewServer
             response.StatusCode = (int)HttpStatusCode.Unauthorized;
             return;
         }
+
+        // #107 — any drain is evidence an agent is here, long-polling or not. A one-shot poller in a shell
+        // loop is every bit as live as a blocked one and must not read as dead between polls.
+        _presence.Seen();
 
         // `wait=0` skips the long-poll wait and drains whatever is queued right now (returns [] fast when
         // empty). The browser SDK never sends it, so the default long-poll and every existing test are
@@ -819,6 +825,12 @@ public sealed class ReviewServer : IReviewServer
         // the window has elapsed for all three. Cancelling on the way out releases the losers' timers at once
         // (they settle Canceled, never Faulted, so an abandoned wait cannot surface as an unobserved fault).
         using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // #107 — for the duration of this wait an agent is CERTAINLY listening. Disposed in the using's
+        // finally, so a cancelled or abandoned wait releases too: a crashed agent must not leave the panel
+        // claiming someone is home.
+        using var listening = _presence.BeginWait();
+
         var annotations = _store.WaitForPendingAsync(PollTimeout, window.Token);
         var answers = _answers.WaitForPendingAsync(PollTimeout, window.Token);
         var handoff = _handoff.WaitForPendingAsync(PollTimeout, window.Token);
@@ -910,6 +922,11 @@ public sealed class ReviewServer : IReviewServer
             Submitted: submission is not null,
             Submission: submission,
             Pending: new ReviewStatus.PendingCounts(_store.Snapshot().Count, _answers.Peek().Count),
+            Agent: new ReviewStatus.AgentPresenceView(
+                _presence.Waiting,
+                _presence.LastSeenUtc is { } seen
+                    ? (long)Math.Max(0, (DateTimeOffset.UtcNow - seen).TotalSeconds)
+                    : null),
             // Charter #75 item 2: the replaced-plan quarantine used to be announced on stderr only, which an
             // agent-launched review hides from the human entirely. Reporting it here puts it in the panel, where
             // the reviewer is. Omitted from the wire when there is nothing to say, so the shipped shape of this
@@ -928,10 +945,26 @@ public sealed class ReviewServer : IReviewServer
         ReviewSubmission? Submission,
         ReviewStatus.PendingCounts Pending,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        StaleQueueNotice? StaleQueue)
+        StaleQueueNotice? StaleQueue,
+        ReviewStatus.AgentPresenceView Agent)
     {
         /// <summary>What is queued right now, per store — what "Send to agent" would be sending.</summary>
         public sealed record PendingCounts(int Annotations, int Answers);
+
+        /// <summary>
+        /// Whether anything is draining this session (#107). <c>Waiting</c> is certain — an agent is blocked in
+        /// a long poll right now. <c>LastSeenSecondsAgo</c> is evidence, and covers the agent that polls in a
+        /// loop and is therefore absent between polls; null means one has never been seen.
+        /// <para>
+        /// Reported as FACTS, not as a verdict. A solo reviewer running `charter resolve` is a fully supported
+        /// workflow, so "no agent" must never render as an error — the panel decides what, if anything, is
+        /// worth saying, and only once the reviewer has actually handed a round over.
+        /// </para>
+        /// </summary>
+        public sealed record AgentPresenceView(
+            bool Waiting,
+            [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+            long? LastSeenSecondsAgo);
     }
 
     private void HandleAnnotationsList(HttpListenerContext context)

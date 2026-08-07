@@ -82,8 +82,10 @@ public class QuestionFormTests
 
         // single -> a native radio per option (RED today: no <input> at all).
         Assert.Contains("type=\"radio\"", html);
+        // +1 for the "Something else" escape hatch the renderer always appends to a select (#109).
         var radioCount = CountOccurrences(html, "type=\"radio\"");
-        Assert.Equal(SingleOptions.Length, radioCount);
+        Assert.Equal(SingleOptions.Length + 1, radioCount);
+        Assert.Contains("data-answer-other=\"1\"", html);
 
         // Every option label appears in the rendered form.
         foreach (var option in SingleOptions)
@@ -100,7 +102,9 @@ public class QuestionFormTests
         // multi -> a native checkbox per option (RED today: no <input> at all).
         Assert.Contains("type=\"checkbox\"", html);
         var checkboxCount = CountOccurrences(html, "type=\"checkbox\"");
-        Assert.Equal(MultiOptions.Length, checkboxCount);
+        // +1 for the "Something else" escape hatch the renderer always appends to a select (#109).
+        Assert.Equal(MultiOptions.Length + 1, checkboxCount);
+        Assert.Contains("data-answer-other=\"1\"", html);
 
         foreach (var option in MultiOptions)
         {

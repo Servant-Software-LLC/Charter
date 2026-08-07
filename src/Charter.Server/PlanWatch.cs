@@ -227,6 +227,28 @@ internal sealed class PlanWatch : IDisposable
     // otherwise the next beat would report the very same revision a second time and the reviewer's page would
     // navigate twice. Deliberately does NOT re-base over a plan that has just vanished: holding the last known
     // stamp is what makes a restore-to-identical-bytes silent instead of a spurious reload.
+    /// <remarks>
+    /// <para>
+    /// <b>The announce is UNCONDITIONAL, and that is deliberate (#105).</b> Only the re-base is guarded: this
+    /// calls <c>_onChange()</c> whether or not the stamp actually moved, where <see cref="Poll"/> announces
+    /// only on a real delta. The asymmetry looks like an oversight and is not.
+    /// </para>
+    /// <para>
+    /// The stamp is <c>(Present, Length, LastWriteUtcTicks)</c>, so a <b>same-length edit inside one
+    /// filesystem timestamp tick is invisible to it</b> — swap a character, save twice in the same tick, and
+    /// the stamp is identical while the plan is not. In that case the OS notification is the ONLY evidence
+    /// anything happened. Guarding the announce on a stamp delta would silently drop exactly those edits, and
+    /// a revision the reviewer never sees is a far worse failure than the one below.
+    /// </para>
+    /// <para>
+    /// The cost is that the beat and the watcher can both report one edit: the beat polls first, re-bases, and
+    /// returns <see langword="true"/>; the notification for that same edit then lands here and announces
+    /// again. In practice the transport absorbs it — <c>ReviewServer.Signal</c> coalesces into a pending set
+    /// (<c>if (!pending.Add(eventName)) return;</c>), so a second reload only escapes if that set happens to
+    /// be drained between the two announces. A rare duplicate navigation is the accepted price of never
+    /// missing a change.
+    /// </para>
+    /// </remarks>
     private void Changed()
     {
         lock (_gate)

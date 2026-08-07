@@ -68,6 +68,7 @@ window.CharterAnnotate = (function () {
     // null. `charter review` is frequently launched BY an agent, so the stderr notice it also writes may reach
     // no human at all — this is what puts "your earlier notes were set aside, here is how to get them back"
     // where the reviewer actually is. Runtime-only DOM, like every other piece of SDK chrome.
+    agent: null,
     staleQueue: null,
     staleQueueShown: false,
     composer: null,      // the open composer, or null
@@ -701,8 +702,35 @@ window.CharterAnnotate = (function () {
         answers: pending.answers || 0
       }
     };
+    state.agent = (status && status.agent) || null;
     applyStaleQueue(status && status.staleQueue);
     syncSendButton();
+  }
+
+  // ---- #107: is anything actually listening? ------------------------------------------------------
+  // The panel knew `submitted` and the pending counts but nothing about whether an agent exists, so a
+  // reviewer who clicked Send to agent could not tell a working agent from no agent — both are silence, and
+  // the second is indistinguishable from patience until far too much of it has passed.
+  //
+  // Said ONLY after a round has been handed over, and only as a plain statement of fact. A solo reviewer
+  // running `charter resolve` is a fully supported workflow, not a degraded one: "no agent connected" as a
+  // standing warning would be wrong for them, and alarming for everyone else. The question "did anyone
+  // receive this?" only exists once you have actually sent something.
+  function agentHint() {
+    if (!state.round.submitted) return '';
+    var agent = state.agent;
+    if (agent && agent.waiting) return ' An agent is listening.';
+    if (agent && typeof agent.lastSeenSecondsAgo === 'number') {
+      return ' An agent last checked ' + describeAgo(agent.lastSeenSecondsAgo) + '.';
+    }
+    return ' No agent has checked this session yet — run `charter poll <plan> --wait --apply`, ' +
+           'or fold the answers in yourself with `charter resolve <plan>`.';
+  }
+
+  function describeAgo(seconds) {
+    if (seconds < 10) return 'just now';
+    if (seconds < 90) return seconds + 's ago';
+    return Math.round(seconds / 60) + 'm ago';
   }
 
   // ---- the replaced-plan quarantine notice (#75 item 2) -------------------------------------------
@@ -817,7 +845,7 @@ window.CharterAnnotate = (function () {
     send.disabled = state.round.submitted || nothingToSend;
     send.setAttribute('data-charter-sent', state.round.submitted ? 'true' : 'false');
     send.title = state.round.submitted
-      ? 'Sent — the agent is revising this round.'
+      ? 'Sent.' + agentHint()
       : (nothingToSend
         ? 'Nothing to send yet — add a note or answer a question first.'
         : 'Hand this round of feedback to the agent');
@@ -862,18 +890,38 @@ window.CharterAnnotate = (function () {
   //
   // An UNANSWERED control yields an EMPTY array, never ['']: an empty string is not an answer, and
   // the submit-enabled rule below is built on being able to tell those apart.
+  // The "Something else" escape hatch (#109). Its control carries value="" and is paired with a text
+  // input, so the ANSWER is whatever the reviewer typed, not the control's own value. An Other that is
+  // checked but empty yields NOTHING — deliberately: the rule above ("an empty string is not an answer")
+  // is what keeps the Save button honest, and a blank Other reads as resolved while saying less than
+  // leaving the question open.
+  function effectiveValue(control) {
+    if (!control.getAttribute || control.getAttribute('data-answer-other') !== '1') {
+      return control.value;
+    }
+    var label = control.closest ? control.closest('label') : null;
+    var text = label ? label.querySelector('[data-answer-other-text]') : null;
+    return text ? String(text.value).trim() : '';
+  }
+
   function collectValues(form, mode) {
     if (mode === 'multi' || mode === 'multi-select') {
       var picked = [];
       var boxes = form.querySelectorAll('input[type="checkbox"][name="answer"]:checked');
-      for (var i = 0; i < boxes.length; i++) picked.push(boxes[i].value);
+      for (var i = 0; i < boxes.length; i++) {
+        var boxValue = effectiveValue(boxes[i]);
+        // Other COMBINES with declared options — "these two, plus this other thing" is a real answer.
+        if (boxValue !== '') picked.push(boxValue);
+      }
       return picked;
     }
     // bool shares the single-select shape: two mutually-exclusive radios valued "true"/"false"
     // (Charter #43), NOT the lone checkbox the SDK used to look for. Explicit, not incidental.
     if (mode === 'single' || mode === 'single-select' || mode === 'bool') {
       var radio = form.querySelector('input[type="radio"][name="answer"]:checked');
-      return radio ? [radio.value] : [];
+      if (!radio) return [];
+      var radioValue = effectiveValue(radio);
+      return radioValue === '' ? [] : [radioValue];
     }
     var field = form.querySelector(
       'textarea, input[type="number"], input[type="text"], ' +

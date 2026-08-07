@@ -38,16 +38,25 @@ public sealed class ReviewLogLedger
     private readonly HashSet<string> _consumed;
     private readonly string _path;
     private readonly string _planPath;
+    private readonly string? _checkoutId;
 
-    private ReviewLogLedger(string path, string planPath, HashSet<string> consumed)
+    private ReviewLogLedger(string path, string planPath, HashSet<string> consumed, string? checkoutId)
     {
         _path = path;
         _planPath = planPath;
         _consumed = consumed;
+        _checkoutId = checkoutId;
     }
 
     /// <summary>How many record ids this machine has recorded as delivered.</summary>
     public int Count => _consumed.Count;
+
+    /// <summary>
+    /// Set when the ledger on disk belonged to a <b>different checkout</b> at this same path and was therefore
+    /// discarded (#81). Null on a normal load. The caller should SAY this — the whole defect was that the
+    /// withholding happened silently, and a reset that is equally silent only moves the surprise.
+    /// </summary>
+    public string? ResetReason { get; private init; }
 
     /// <summary>
     /// The ledger file for <paramref name="planPath"/> inside <paramref name="directory"/>:
@@ -69,6 +78,7 @@ public sealed class ReviewLogLedger
     {
         var path = PathForPlan(directory, planPath);
         var canonical = Path.GetFullPath(planPath);
+        var checkoutId = CheckoutIdentity.ForPlan(canonical);
 
         try
         {
@@ -77,8 +87,31 @@ public sealed class ReviewLogLedger
                 var document = JsonSerializer.Deserialize<LedgerDocument>(File.ReadAllText(path), LedgerJson);
                 if (document?.Consumed is not null)
                 {
+                    // #81 — the ledger is keyed by absolute PATH, which stops identifying the reader the moment
+                    // a checkout is replaced at that path (re-clone, rebuilt container, recreated worktree).
+                    // The re-cloned tree brings the same committed records back with the same ids, so nothing
+                    // about the ledger LOOKS wrong — it just belongs to a reader that no longer exists, and
+                    // every record it consumed would be withheld from the new one. Both ids must be present to
+                    // judge that: a null on either side means "cannot tell" (not a repo, or a ledger written
+                    // before this field existed), and cannot-tell must never discard a valid ledger.
+                    if (checkoutId is not null
+                        && document.CheckoutId is not null
+                        && !string.Equals(document.CheckoutId, checkoutId, StringComparison.Ordinal))
+                    {
+                        return new ReviewLogLedger(
+                            path, canonical, new HashSet<string>(StringComparer.Ordinal), checkoutId)
+                        {
+                            ResetReason =
+                                $"the consumption ledger at {path} was written by a DIFFERENT checkout at this "
+                                + "path (the working tree was replaced — a fresh clone, a rebuilt container, or "
+                                + "a recreated worktree). It has been discarded rather than used, so this "
+                                + "checkout receives the full committed review history instead of silently "
+                                + "inheriting what the previous one had already consumed (issue #81).",
+                        };
+                    }
+
                     return new ReviewLogLedger(
-                        path, canonical, new HashSet<string>(document.Consumed, StringComparer.Ordinal));
+                        path, canonical, new HashSet<string>(document.Consumed, StringComparer.Ordinal), checkoutId);
                 }
             }
         }
@@ -87,7 +120,7 @@ public sealed class ReviewLogLedger
             // Corrupt / partially written / unreadable: an empty ledger re-delivers, which is the safe error.
         }
 
-        return new ReviewLogLedger(path, canonical, new HashSet<string>(StringComparer.Ordinal));
+        return new ReviewLogLedger(path, canonical, new HashSet<string>(StringComparer.Ordinal), checkoutId);
     }
 
     /// <summary>Whether every id in <paramref name="recordIds"/> has already been delivered on this machine.</summary>
@@ -121,7 +154,10 @@ public sealed class ReviewLogLedger
 
         var json = JsonSerializer.Serialize(
             new LedgerDocument(
-                CurrentSchema, _planPath, _consumed.OrderBy(id => id, StringComparer.Ordinal).ToArray()),
+                CurrentSchema,
+                _planPath,
+                _consumed.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+                _checkoutId),
             LedgerJson);
 
         var temp = _path + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -157,6 +193,12 @@ public sealed class ReviewLogLedger
         }
     }
 
-    /// <summary>The on-disk shape: schema, the plan it belongs to, and the delivered record ids.</summary>
-    private sealed record LedgerDocument(int Schema, string PlanPath, IReadOnlyList<string> Consumed);
+    /// <summary>
+    /// The on-disk shape: schema, the plan it belongs to, the delivered record ids, and the CHECKOUT that
+    /// delivered them (#81). <c>CheckoutId</c> is nullable and additive — a ledger written before it existed,
+    /// or by a plan outside a git repo, deserializes to null and is honoured exactly as before. That is why
+    /// the schema does not bump: absence means "cannot tell", not "invalid".
+    /// </summary>
+    private sealed record LedgerDocument(
+        int Schema, string PlanPath, IReadOnlyList<string> Consumed, string? CheckoutId = null);
 }

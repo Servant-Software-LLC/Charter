@@ -24,6 +24,13 @@ namespace Charter.Server;
 public sealed record ReviewLogDrainResult(
     IReadOnlyList<Annotation> Annotations, bool HasLog, string? DrainError, IReadOnlyList<string> Delivered)
 {
+    /// <summary>
+    /// Set when the consumption ledger was discarded because it belonged to a DIFFERENT checkout at this path
+    /// (#81). Not an error — the drain succeeded, and succeeded MORE completely than it would have. Additive
+    /// and init-only so existing construction sites are untouched.
+    /// </summary>
+    public string? LedgerReset { get; init; }
+
     /// <summary>No review directory, or no logs in it — not an error, just nothing to read.</summary>
     public static ReviewLogDrainResult NoLog { get; } =
         new(Array.Empty<Annotation>(), false, null, Array.Empty<string>());
@@ -111,7 +118,10 @@ public static class ReviewLogDrain
             annotations,
             HasLog: true,
             DrainError: DescribeUnreadable(read.Unreadable),
-            Delivered: fresh.SelectMany(RecordIdsOf).ToList());
+            Delivered: fresh.SelectMany(RecordIdsOf).ToList())
+        {
+            LedgerReset = ledger.ResetReason,
+        };
     }
 
     /// <summary>

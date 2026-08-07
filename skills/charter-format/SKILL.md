@@ -113,6 +113,18 @@ The body is a JSON object (JSON is a subset of YAML, so the parser stays depende
 The `answer` shape mirrors a submitted answer's values: a `single`/`bool`/`number` answer is one element, a
 `multi` answer is the selected values, and `free-text` is the text as one element.
 
+**An answer value may legitimately fall OUTSIDE `options`.** The renderer appends a "Something else" free-text
+escape hatch to every `single`/`multi` form, because the agent writing the options is the party least
+qualified to know they are exhaustive — it is asking precisely because it does not know. A reviewer can
+therefore answer in their own words, and that answer arrives as an ordinary `answer` element that matches no
+declared option. **Treat it as the decision, not as corruption**: do not validate `answer ⊆ options`, do not
+drop it, and do not "correct" it to the nearest option. Nothing in Charter enforces membership, and the
+renderer already displays such a value as a checked write-in.
+
+Note this hatch is **emitted by the renderer, never authored**. Do not add an "Other" string to `options`
+yourself: `charter handoff` emits the option list verbatim into the CommonMark Guardrails consumes, so an
+authored "Other" would become a real choice in the data model — one the agent never actually proposed.
+
 **Open** (as authored):
 
 ````markdown
