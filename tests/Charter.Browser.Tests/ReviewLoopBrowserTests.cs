@@ -70,14 +70,14 @@ public sealed partial class ReviewLoopBrowserTests
             try
             {
                 playwright = await Playwright.CreateAsync();
-                browser = await playwright.Chromium.LaunchAsync(
+                browser = await BrowserEngine.For(playwright).LaunchAsync(
                     new BrowserTypeLaunchOptions { Headless = true });
             }
             catch (Exception ex)
             {
                 // No Chromium / no Playwright driver on this host — skip cleanly (never fail). The deterministic
                 // server-side guards still assert the same symptoms on this OS.
-                Skip.If(true, "Chromium/Playwright unavailable on this host: " + ex.Message);
+                Skip.If(true, $"{BrowserEngine.Name}/Playwright unavailable on this host: " + ex.Message);
                 return;
             }
 
@@ -236,6 +236,10 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Every_question_mode_answers_through_its_save_button_and_reaches_the_server()
     {
+        // #111 — known WebKit defects, quarantined so the WebKit leg stays BLOCKING for everything else:
+        // a new engine regression must fail CI immediately rather than hide behind these two.
+        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
+
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-question-modes-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, ModesPlan);
@@ -247,7 +251,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -350,7 +354,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -416,7 +420,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -510,7 +514,7 @@ public sealed partial class ReviewLoopBrowserTests
             // Scrollbars VISIBLE: the discoverability half of this fix is a persistent scrollbar, and
             // Playwright's default --hide-scrollbars would zero every one of them.
             var launched = await TryLaunchAsync(showScrollbars: true);
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -875,7 +879,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1074,7 +1078,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1187,7 +1191,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1303,7 +1307,7 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.NotNull(server.StaleAnnotations);
 
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1382,7 +1386,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1515,7 +1519,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1763,7 +1767,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -1875,7 +1879,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2091,6 +2095,10 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Clicking_the_selected_radio_clears_it_and_an_answered_question_can_be_returned_to_open()
     {
+        // #111 — known WebKit defects, quarantined so the WebKit leg stays BLOCKING for everything else:
+        // a new engine regression must fail CI immediately rather than hide behind these two.
+        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
+
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-clear-answer-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
@@ -2102,7 +2110,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2238,7 +2246,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2320,7 +2328,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2543,7 +2551,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2668,7 +2676,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2798,7 +2806,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2908,7 +2916,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -2986,7 +2994,7 @@ public sealed partial class ReviewLoopBrowserTests
         try
         {
             var launched = await TryLaunchAsync();
-            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
 
             await using var browser = launched!.Browser;
             var instrumented = await NewInstrumentedPageAsync(launched);
@@ -3333,12 +3341,15 @@ public sealed partial class ReviewLoopBrowserTests
         {
             var playwright = await Playwright.CreateAsync();
             var options = new BrowserTypeLaunchOptions { Headless = true };
-            if (showScrollbars)
+
+            // --hide-scrollbars is a Chromium flag; WebKit and Firefox reject unknown args outright, so this
+            // opt-out is only meaningful (and only safe) on the Chromium family (#110).
+            if (showScrollbars && BrowserEngine.IsChromium)
             {
                 options.IgnoreDefaultArgs = new[] { "--hide-scrollbars" };
             }
 
-            var browser = await playwright.Chromium.LaunchAsync(options);
+            var browser = await BrowserEngine.For(playwright).LaunchAsync(options);
             return new Launched(playwright, browser);
         }
         catch (Exception)
