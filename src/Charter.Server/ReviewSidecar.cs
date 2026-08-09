@@ -122,7 +122,10 @@ public sealed class ReviewSidecar
     {
         lock (_gate)
         {
-            WriteState(_path, _sourcePath, _annotations.Snapshot(), _answers.Peek());
+            // #117 — the DURABLE view, which includes the in-flight batch. A batch handed to a caller that then
+            // crashed is owed to the next one; persisting only the pending queue would lose exactly the
+            // annotations the ack exists to protect.
+            WriteState(_path, _sourcePath, _annotations.DurableSnapshot(), _answers.Peek());
         }
     }
 

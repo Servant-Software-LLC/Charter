@@ -25,6 +25,20 @@ namespace Charter.Server.Tests;
 [Trait("Category", "AnnotationStore")]
 public class AnnotationStoreTests
 {
+
+    /// <summary>
+    /// Drain AND acknowledge, which is what a healthy caller does (#117). The concurrency guarantees below —
+    /// loses nothing, duplicates nothing — are properties of acknowledged delivery. An unacknowledged drain is
+    /// a REDELIVERY by design, so a concurrency harness that never acked would observe duplicates and be
+    /// asserting the absence of the very safety net that makes the store lossless.
+    /// </summary>
+    private static IReadOnlyList<Annotation> DrainAcked(AnnotationStore store)
+    {
+        var batch = store.DrainBatch();
+        store.Ack(batch.Sequence);
+        return batch.Annotations;
+    }
+
     // ---- Enqueue + Drain --------------------------------------------------------------------------------
 
     [Fact]
@@ -46,16 +60,25 @@ public class AnnotationStoreTests
     }
 
     [Fact]
-    public void Drain_ClearsTheBuffer_SoASecondDrainIsEmpty()
+    public void Drain_ClearsTheBuffer_OnceTheBatchIsAcknowledged()
     {
-        var store = new AnnotationStore();
+        var store = new AnnotationStore(TimeSpan.Zero);
         store.Enqueue(MakeAnnotation(1));
 
-        var first = store.Drain();
-        var second = store.Drain();
+        // #117 — a drain HANDS OVER; it no longer discards. Delivery is at-least-once, so the batch is only
+        // forgotten once the caller says it has it. This test used to assert the second drain was empty with
+        // no ack at all, which is precisely the at-most-once hole that lost a reviewer's comments whenever a
+        // caller died between the server's socket write and its own read.
+        var first = store.DrainBatch();
+        Assert.Single(first.Annotations);
 
-        Assert.Single(first);   // the first Drain returns the enqueued annotation...
-        Assert.Empty(second);   // ...and clears it, so the second Drain (no new Enqueue) is empty.
+        // Unacknowledged and past its visibility window: still owed, so it comes back.
+        Assert.Single(store.DrainBatch().Annotations);
+
+        // Acknowledged: now, and only now, is it gone.
+        var held = store.DrainBatch();
+        Assert.Equal(1, store.Ack(held.Sequence));
+        Assert.Empty(store.DrainBatch().Annotations);
     }
 
     // ---- Concurrency race (load-bearing: the flagged store-concurrency open item) -----------------------
@@ -76,7 +99,7 @@ public class AnnotationStoreTests
         var enqueueTasks = toEnqueue.Select(a => Task.Run(() => store.Enqueue(a)));
         var drainTasks = Enumerable.Range(0, count).Select(_ => Task.Run(() =>
         {
-            foreach (var a in store.Drain())
+            foreach (var a in DrainAcked(store))
             {
                 observed.Add(a);
             }
@@ -85,7 +108,7 @@ public class AnnotationStoreTests
         await Task.WhenAll(enqueueTasks.Concat(drainTasks));
 
         // A final Drain sweeps up any annotations the interleaved Drains had not yet observed.
-        foreach (var a in store.Drain())
+        foreach (var a in DrainAcked(store))
         {
             observed.Add(a);
         }
@@ -118,7 +141,7 @@ public class AnnotationStoreTests
         var enqueueTasks = toEnqueue.Select(a => Task.Run(() => store.Enqueue(a)));
         var drainTasks = Enumerable.Range(0, count).Select(_ => Task.Run(() =>
         {
-            foreach (var a in store.Drain())
+            foreach (var a in DrainAcked(store))
             {
                 observed.Add(a);
             }
@@ -141,7 +164,7 @@ public class AnnotationStoreTests
         await Task.WhenAll(enqueueTasks.Concat(drainTasks).Concat(updateTasks).Concat(removeTasks));
 
         // A final Drain sweeps up anything the interleaved Drains had not yet observed.
-        foreach (var a in store.Drain())
+        foreach (var a in DrainAcked(store))
         {
             observed.Add(a);
         }

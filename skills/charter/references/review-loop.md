@@ -329,9 +329,22 @@ Put the drains together and iterate until the plan is approved:
    `answer` field by `--apply`. **Check the exit code first**: `2` is a genuine clean-empty (poll again),
    `4` means the drain failed and you know nothing (retry — do *not* proceed). (A solo human
    reviewer with no looping agent uses `charter resolve` to fold in their own answers instead.)
-   Add `--wait` to block until something arrives instead of polling in a loop: it returns as soon as the
-   reviewer annotates, answers, or clicks **Send to agent** — all three wake it, so a reviewer's *decision*
-   reaches you immediately rather than on the ~30 s timeout.
+   `--wait` makes ONE long-poll cycle responsive: it returns as soon as the reviewer annotates, answers, or
+   clicks **Send to agent** — all three wake it — rather than after the ~30 s timeout. **It is one cycle, not
+   a durable block**: after ~30 s of silence it returns exit `2`, which means *nothing arrived in this
+   window*, NOT *the review is over*. A human review lasts minutes to hours, so a single `--wait` covers a
+   fraction of it.
+
+   **Use `--watch` for a real review.** It re-arms across cycles inside ONE invocation, emitting an envelope
+   per cycle that has something in it, until `--for` elapses (default 2 h) or you stop it:
+
+   ```
+   charter poll plan.charter.md --watch --apply
+   ```
+
+   Do **not** hand-roll `until charter poll --wait; do :; done`. A harness that kills the shell at its
+   command timeout kills it mid-drain, and while the batch is now re-delivered rather than lost (#117), the
+   loop simply stops and the reviewer is left talking to nobody. `--watch` is the supported shape.
 3. Check `reviewSubmitted`. `true` means the human handed you the round — revise properly. `false` means
    you caught feedback mid-review; a small correction is fine, but a large rewrite under a reviewer who is
    still reading is the thing to be careful about.

@@ -28,6 +28,39 @@ public sealed class AnnotationStore
     private readonly object _gate = new();
     private readonly List<Annotation> _pending = new();
 
+    // #117 — the batch a caller has been HANDED but has not yet acknowledged. A drain used to clear the
+    // buffer outright, which made delivery at-most-once past the socket write: for the few-KB payloads
+    // Charter produces, Stream.Write lands in the kernel send buffer and returns success whether or not the
+    // peer ever reads it, so a Ctrl-C, a harness-killed shell loop, or a laptop sleep in that window lost the
+    // reviewer's annotations with no error and no trace. Answers (`/answers/ack`) and the round hand-off
+    // (`/review/ack`) both had an ack; annotations — the payload that exists nowhere else once cleared — did
+    // not.
+    //
+    // In-flight is DELIBERATELY excluded from SyncSignalLocked: it must not keep the wake signal hot, or a
+    // caller that never acks would spin every later `poll --wait`.
+    private readonly List<Annotation> _inFlight = new();
+    private long _sequence;
+    private DateTimeOffset _inFlightSince;
+
+    // How long a handed-over batch is left alone before it is presumed abandoned and re-offered.
+    //
+    // Without a window, reclaiming on EVERY drain makes concurrent callers thrash: two polls microseconds
+    // apart both take the same batch, because the second reclaims what the first is still about to
+    // acknowledge. That turns a safety net into a duplicate generator. With one, delivery stays effectively
+    // exactly-once for healthy callers (they ack in milliseconds) and falls back to at-least-once only for a
+    // caller that genuinely died. Recovery latency is irrelevant next to the 30s poll cycle.
+    private readonly TimeSpan _visibility;
+
+    /// <summary>Default visibility window for a handed-over batch.</summary>
+    public static readonly TimeSpan DefaultVisibility = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// <paramref name="visibility"/> is how long a drained-but-unacknowledged batch is withheld from other
+    /// callers before being re-offered. <see cref="TimeSpan.Zero"/> re-offers immediately, which is what a
+    /// test wanting to exercise the redelivery path passes.
+    /// </summary>
+    public AnnotationStore(TimeSpan? visibility = null) => _visibility = visibility ?? DefaultVisibility;
+
     // The wake signal for WaitForPendingAsync. Its state is a function of _pending (see SyncSignalLocked):
     // completed while annotations are pending, fresh/incomplete while the buffer is empty.
     private readonly PendingSignal _pendingSignal = new();
@@ -60,21 +93,91 @@ public sealed class AnnotationStore
     /// <see cref="Drain"/> that observes no further <see cref="Enqueue(Annotation)"/> returns empty. Safe to
     /// call concurrently with <see cref="Enqueue(Annotation)"/> and other <see cref="Drain"/> calls.
     /// </summary>
-    public IReadOnlyList<Annotation> Drain()
+    public IReadOnlyList<Annotation> Drain() => DrainBatch().Annotations;
+
+    /// <summary>
+    /// Hand over the pending annotations together with the <b>sequence</b> that acknowledges them (#117).
+    /// <para>
+    /// Anything still in flight from a previous drain was never acknowledged — the caller died, or its
+    /// envelope never reached it — so it is put back at the FRONT and handed over again. That makes delivery
+    /// AT-LEAST-ONCE: a duplicate is recoverable, a silently dropped comment is not, and the same asymmetry is
+    /// already the documented posture elsewhere in the review path.
+    /// </para>
+    /// </summary>
+    public AnnotationBatch DrainBatch()
     {
         lock (_gate)
         {
+            if (_inFlight.Count > 0)
+            {
+                // Still inside the window: the batch is with a caller who has not had time to acknowledge.
+                // Hand back NOTHING rather than a duplicate — this drain has nothing of its own to give.
+                if (DateTimeOffset.UtcNow - _inFlightSince < _visibility)
+                {
+                    return AnnotationBatch.Empty;
+                }
+
+                // Presumed abandoned: put it back at the FRONT and offer it again.
+                _pending.InsertRange(0, _inFlight);
+                _inFlight.Clear();
+            }
+
             if (_pending.Count == 0)
             {
                 SyncSignalLocked();
-                return Array.Empty<Annotation>();
+                return AnnotationBatch.Empty;
             }
 
-            var drained = _pending.ToArray();
+            _inFlight.AddRange(_pending);
+            _inFlightSince = DateTimeOffset.UtcNow;
             _pending.Clear();
-            SyncSignalLocked();
 
-            return drained;
+            // Syncs on _pending only — the batch is in flight, not queued, so an unacked hand-over leaves the
+            // signal cold and a later `poll --wait` blocks normally instead of spinning.
+            SyncSignalLocked();
+            return new AnnotationBatch(++_sequence, _inFlight.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// Acknowledge the batch identified by <paramref name="sequence"/> — the caller has the envelope and it is
+    /// safe to forget. A stale or unknown sequence commits nothing: an ack for a batch that was already
+    /// superseded must never discard the newer one. Returns how many were released.
+    /// </summary>
+    public int Ack(long sequence)
+    {
+        lock (_gate)
+        {
+            if (sequence != _sequence || _inFlight.Count == 0)
+            {
+                return 0;
+            }
+
+            var released = _inFlight.Count;
+            _inFlight.Clear();
+            return released;
+        }
+    }
+
+    /// <summary>
+    /// Everything that must survive a crash: the in-flight batch FIRST (it was handed over but never
+    /// acknowledged, so on restart it is owed to the next caller) followed by what is still queued. This is
+    /// what the durability sidecar persists — <see cref="Snapshot"/> stays pending-only because the panel must
+    /// keep showing the reviewer their PRE-DRAIN queue.
+    /// </summary>
+    public IReadOnlyList<Annotation> DurableSnapshot()
+    {
+        lock (_gate)
+        {
+            if (_inFlight.Count == 0)
+            {
+                return _pending.Count == 0 ? Array.Empty<Annotation>() : _pending.ToArray();
+            }
+
+            var all = new List<Annotation>(_inFlight.Count + _pending.Count);
+            all.AddRange(_inFlight);
+            all.AddRange(_pending);
+            return all;
         }
     }
 
@@ -172,6 +275,11 @@ public sealed class AnnotationStore
 
         lock (_gate)
         {
+            // An explicit requeue supersedes whatever is in flight — this is the write-failed path, and the
+            // caller demonstrably did NOT get the envelope. Restoring to _pending (rather than leaving it in
+            // flight) re-arms the wake signal, so the next `poll --wait` re-delivers immediately instead of
+            // waiting out a full 30s window.
+            _inFlight.Clear();
             _pending.InsertRange(0, annotations);
             SyncSignalLocked();
         }
@@ -202,4 +310,15 @@ public sealed class AnnotationStore
 
         return await PendingSignal.AwaitAsync(signalTask, timeout, cancellationToken).ConfigureAwait(false);
     }
+}
+
+/// <summary>
+/// One handed-over batch of annotations and the sequence that acknowledges it (#117). The sequence is what
+/// makes the ack safe: it names the batch being released, so an ack that arrives late — after a newer batch
+/// has been handed out — commits nothing rather than discarding work the caller never saw.
+/// </summary>
+public sealed record AnnotationBatch(long Sequence, IReadOnlyList<Annotation> Annotations)
+{
+    /// <summary>Nothing to hand over. Sequence 0 is never issued, so it can never be acknowledged.</summary>
+    public static AnnotationBatch Empty { get; } = new(0, Array.Empty<Annotation>());
 }

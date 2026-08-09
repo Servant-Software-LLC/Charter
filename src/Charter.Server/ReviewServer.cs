@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -500,6 +501,19 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/annotations/ack?sequence=N — release the batch the caller has now safely emitted
+        // (#117). Until this arrives the batch stays IN FLIGHT and the next drain re-delivers it, which is what
+        // makes annotation delivery at-least-once instead of at-most-once. Mirrors answers/ack exactly:
+        // capability key in the path, CSRF gated, and a missing/invalid sequence releases nothing.
+        if (segments.Length == 4 &&
+            string.Equals(segments[2], "annotations", StringComparison.Ordinal) &&
+            string.Equals(segments[3], "ack", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            HandleAnnotationsAck(context, segments[1]);
+            return;
+        }
+
         // POST /api/{key}/review/submit — the in-page "Send to agent" hand-off: record that the reviewer
         // marked this round complete and WAKE the long-poll (state-changing: capability key + CSRF gated).
         // It signals only — the drafting agent remains the single writer of the plan.
@@ -796,7 +810,8 @@ public sealed class ReviewServer : IReviewServer
         // WriteDrainedJson rethrows on a write failure (after requeueing in-memory), so the durability persist
         // below runs ONLY on a successful delivery — until then the sidecar still lists the annotations, so a
         // crash after a failed write rehydrates them (never a loss; at most an at-least-once re-delivery).
-        var drained = _store.Drain();
+        var batch = _store.DrainBatch();
+        var drained = batch.Annotations;
 
         // THE handoff moment: re-resolve every anchor against the plan as it is RIGHT NOW (Charter #49). The
         // line stored at submit time is a snapshot for the reviewer's panel; by the time an agent drains, an
@@ -808,7 +823,7 @@ public sealed class ReviewServer : IReviewServer
 
         // The REQUEUE puts the store's own records back — the submit-time line the panel shows — not the
         // handoff projection; a re-drain re-resolves them anyway.
-        WriteDrainedJson(response, resolved, _ => _store.Requeue(drained));
+        WriteDrainedJson(response, resolved, _ => _store.Requeue(drained), batch.Sequence);
         _sidecar?.Persist();
     }
 
@@ -1248,6 +1263,36 @@ public sealed class ReviewServer : IReviewServer
         WriteJson(response, JsonSerializer.Serialize(_answers.Peek(), AnnotationApi.JsonOptions));
     }
 
+    private void HandleAnnotationsAck(HttpListenerContext context, string keyFromPath)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        // A missing or unparseable sequence releases nothing. Holding a batch one cycle too long costs a
+        // duplicate; releasing one that was never received costs the reviewer their comment.
+        if (!long.TryParse(request.QueryString["sequence"], out var sequence) || sequence <= 0)
+        {
+            WriteJson(response, JsonSerializer.Serialize(new { released = 0 }, AnnotationApi.JsonOptions));
+            return;
+        }
+
+        var released = _store.Ack(sequence);
+        _sidecar?.Persist();
+        WriteJson(response, JsonSerializer.Serialize(new { released }, AnnotationApi.JsonOptions));
+    }
+
     private void HandleAnswersAck(HttpListenerContext context, string keyFromPath)
     {
         var request = context.Request;
@@ -1471,12 +1516,29 @@ public sealed class ReviewServer : IReviewServer
     /// response headers; only the body write can fail here, and the exception is rethrown so the shared
     /// handler closes the broken response as before.
     /// </summary>
+    /// <summary>
+    /// The drain sequence rides a RESPONSE HEADER, not the body (#117). The poll body is a bare JSON array and
+    /// several consumers parse it as one; wrapping it in an object to carry the sequence would be a breaking
+    /// wire change for every existing agent. A header is additive and invisible to anything that does not look
+    /// for it, so an old client keeps working — it simply never acks, and its batch is re-delivered, which is
+    /// the safe direction.
+    /// </summary>
+    public const string DrainSequenceHeader = "X-Charter-Drain-Sequence";
+
     private static void WriteDrainedJson<T>(
-        HttpListenerResponse response, IReadOnlyList<T> drained, Action<IReadOnlyList<T>> requeue)
+        HttpListenerResponse response,
+        IReadOnlyList<T> drained,
+        Action<IReadOnlyList<T>> requeue,
+        long sequence = 0)
     {
         var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(drained, AnnotationApi.JsonOptions));
         response.StatusCode = (int)HttpStatusCode.OK;
         response.ContentType = "application/json; charset=utf-8";
+        if (sequence > 0)
+        {
+            response.Headers[DrainSequenceHeader] = sequence.ToString(CultureInfo.InvariantCulture);
+        }
+
         response.ContentLength64 = payload.Length;
         WriteBodyOrRequeue(response.OutputStream, payload, () => requeue(drained));
     }

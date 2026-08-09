@@ -812,6 +812,19 @@ static RootCommand BuildPollRoot()
         Description = "Write the drained answers INLINE into the plan's :::question blocks (atomic in-place write), resolving them.",
     };
 
+    // #118 — `--wait` is ONE ~30s cycle, so covering a human review with it means re-invoking the verb 30-100
+    // times, and nothing told an agent to. The workaround agents actually wrote — a shell loop inside one tool
+    // call — is killable by a harness timeout, which used to lose the reviewer's annotations outright (#117).
+    // `--watch` re-arms across cycles inside a single invocation, so one command covers a whole review.
+    var watchOption = new Option<bool>("--watch")
+    {
+        Description = "Keep draining across long-poll cycles in ONE invocation until --for elapses or the process is stopped, emitting an envelope per cycle that has something in it. Implies --wait. Live sessions only.",
+    };
+    var forOption = new Option<string?>("--for")
+    {
+        Description = "How long --watch keeps listening, e.g. 45m, 2h, 90s. Default 2h. A review that outlives it just needs the command run again.",
+    };
+
     var poll = new Command(
         "poll",
         "Drain queued review feedback (annotations + answers) from a live review session, or -- with no live "
@@ -823,6 +836,8 @@ static RootCommand BuildPollRoot()
         urlOption,
         waitOption,
         applyOption,
+        watchOption,
+        forOption,
     };
 
     poll.SetAction(parseResult => RunVerb("poll", () =>
@@ -832,8 +847,26 @@ static RootCommand BuildPollRoot()
         string? url = parseResult.GetValue(urlOption);
         bool wait = parseResult.GetValue(waitOption);
         bool apply = parseResult.GetValue(applyOption);
+        bool watch = parseResult.GetValue(watchOption);
+        string? forValue = parseResult.GetValue(forOption);
 
-        return PollCommand.Execute(input, sessionPath, url, wait, apply);
+        if (!watch && forValue is not null)
+        {
+            Console.Error.WriteLine("charter poll: --for only means anything with --watch.");
+            return 1;
+        }
+
+        TimeSpan budget = PollCommand.DefaultWatchBudget;
+        if (forValue is not null && !PollCommand.TryParseDuration(forValue, out budget))
+        {
+            Console.Error.WriteLine(
+                $"charter poll: could not read --for '{forValue}'. Use a duration like 90s, 45m, or 2h.");
+            return 1;
+        }
+
+        return watch
+            ? PollCommand.Watch(input, sessionPath, url, apply, budget)
+            : PollCommand.Execute(input, sessionPath, url, wait, apply);
     }));
 
     return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")

@@ -24,6 +24,118 @@ internal static class PollCommand
     private static readonly TimeSpan WaitDrainDeadline = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan ImmediateDrainDeadline = TimeSpan.FromSeconds(15);
 
+
+    /// <summary>How long <c>--watch</c> listens when <c>--for</c> is not given.</summary>
+    public static readonly TimeSpan DefaultWatchBudget = TimeSpan.FromHours(2);
+
+    /// <summary>
+    /// Parse a duration like <c>90s</c>, <c>45m</c>, <c>2h</c>. A bare number is seconds. Deliberately tiny —
+    /// this is a CLI convenience, not a scheduling language.
+    /// </summary>
+    public static bool TryParseDuration(string? text, out TimeSpan value)
+    {
+        value = default;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.Trim();
+        var unit = char.ToLowerInvariant(trimmed[^1]);
+        var digits = char.IsDigit(unit) ? trimmed : trimmed[..^1];
+
+        if (!double.TryParse(digits, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var amount) || amount <= 0)
+        {
+            return false;
+        }
+
+        value = unit switch
+        {
+            's' => TimeSpan.FromSeconds(amount),
+            'm' => TimeSpan.FromMinutes(amount),
+            'h' => TimeSpan.FromHours(amount),
+            _ when char.IsDigit(unit) => TimeSpan.FromSeconds(amount),
+            _ => TimeSpan.Zero,
+        };
+
+        return value > TimeSpan.Zero;
+    }
+
+    /// <summary>
+    /// Keep draining across long-poll cycles in ONE invocation until <paramref name="budget"/> elapses (#118).
+    /// <para>
+    /// <c>--wait</c> is a single ~30s cycle, so covering a human review with it meant re-invoking the verb
+    /// 30-100 times — and nothing told an agent to, or gave it a stopping condition. The workaround agents
+    /// actually wrote, a shell loop inside one tool call, is killable by a harness timeout; before #117 that
+    /// silently lost the reviewer's annotations. This is the primitive that should have existed.
+    /// </para>
+    /// <para>
+    /// Each cycle that has something emits its own envelope on its own line, so a consumer reads the stream
+    /// exactly as it reads repeated <c>poll</c> invocations — no new wire shape. A quiet cycle emits nothing
+    /// rather than a run of empty envelopes an agent would have to filter.
+    /// </para>
+    /// </summary>
+    public static int Watch(string? input, string? sessionPath, string? url, bool apply, TimeSpan budget)
+    {
+        var deadline = DateTimeOffset.UtcNow + budget;
+        var drainedAnything = false;
+
+        // Ctrl-C must be a clean stop, not a kill: the current cycle is allowed to finish so a batch already
+        // in flight is acknowledged rather than left to be re-delivered.
+        var stopping = false;
+        ConsoleCancelEventHandler onCancel = (_, e) => { e.Cancel = true; stopping = true; };
+        Console.CancelKeyPress += onCancel;
+
+        try
+        {
+            while (!stopping && DateTimeOffset.UtcNow < deadline)
+            {
+                var exit = Execute(input, sessionPath, url, wait: true, apply);
+
+                switch (exit)
+                {
+                    case ReviewExitCodes.Drained:
+                        drainedAnything = true;
+                        break;
+
+                    // A quiet cycle is the NORMAL case — the reviewer is still reading. It is not the end of
+                    // the review, and treating it as one is how an agent silently stops listening while the
+                    // human believes it is there.
+                    case ReviewExitCodes.CleanEmpty:
+                        break;
+
+                    // The session is gone: the reviewer closed `charter review`. That IS terminal for a watch,
+                    // and continuing would spin against nothing.
+                    case ReviewExitCodes.NoSession:
+                        Console.Error.WriteLine("charter poll --watch: the review session ended; stopping.");
+                        return drainedAnything ? ReviewExitCodes.Drained : ReviewExitCodes.NoSession;
+
+                    // Anything else (drain unknown, apply refused/failed) is the caller's to decide about, and
+                    // is loud by contract. Surface it rather than swallowing it in a loop.
+                    default:
+                        return exit;
+                }
+            }
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCancel;
+        }
+
+        if (stopping)
+        {
+            Console.Error.WriteLine("charter poll --watch: stopped.");
+        }
+        else
+        {
+            Console.Error.WriteLine(
+                $"charter poll --watch: listened for {budget}; run it again to keep watching.");
+        }
+
+        return drainedAnything ? ReviewExitCodes.Drained : ReviewExitCodes.CleanEmpty;
+    }
+
     /// <summary>Run the verb synchronously (the System.CommandLine action is sync). Returns the exit code.</summary>
     public static int Execute(string? input, string? sessionPath, string? url, bool wait, bool apply)
         => ExecuteAsync(input, sessionPath, url, wait, apply).GetAwaiter().GetResult();
@@ -118,6 +230,20 @@ internal static class PollCommand
 
             Console.WriteLine(
                 PollEnvelope.Serialize(resolution.Session, reported, answers.Items, drainError, submission));
+        }
+
+        // #117 — the annotations are now on stdout, so the batch is safe to release. Ordering is the whole
+        // point and it matches what the review-log path already does: EMIT, then commit. Acking before the
+        // write would restore the at-most-once hole this fixes — a broken pipe, a Ctrl-C, or a harness-killed
+        // shell loop in that window would lose the reviewer's comments permanently, with the queue reporting
+        // empty and the plan unchanged. Until the ack lands the batch stays in flight and the next drain
+        // re-delivers it; a duplicate is recoverable, a dropped comment is not.
+        //
+        // Skipped on a failed drain for the same reason the hand-off ack is: when the queue state is unknown,
+        // nothing has really been delivered.
+        if (drainError is null)
+        {
+            await client.AckAnnotationsAsync(annotations.Sequence, drainCts.Token).ConfigureAwait(false);
         }
 
         // The hand-off has now been REPORTED, so clear it: it marks one round, not a standing state, and an
