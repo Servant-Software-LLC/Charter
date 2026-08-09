@@ -1052,13 +1052,25 @@ window.CharterAnnotate = (function () {
     // before it is pressed — the reviewer must not discover which one they did afterwards.
     var clearing = changed && current === EMPTY_ANSWER;
 
-    button.disabled = !changed;
-    button.textContent = clearing ? 'Clear answer' : button.charterSaveLabel;
-    button.title = clearing
+    var label = clearing ? 'Clear answer' : button.charterSaveLabel;
+    var title = clearing
       ? 'Clear the recorded answer \u2014 this question goes back to unanswered'
       : (changed
         ? 'Save this answer to the Charter review session'
         : 'Choose or change an answer to enable saving');
+
+    // WRITE ONLY WHAT ACTUALLY CHANGED (#111). Assigning `textContent` destroys the button's text node and
+    // builds a new one even when the label is identical \u2014 and this runs on every `input`/`change`, including
+    // the `change` a text field fires ON BLUR. Clicking Save from a textarea therefore lands that mutation
+    // BETWEEN the button's mousedown and its mouseup, and WebKit then declines to synthesize the `click` at
+    // all: no click, no submit, no POST, and the reviewer's answer is silently lost. Chromium tolerated the
+    // swap, which is why this survived until the engine was actually tested.
+    //
+    // Guarding each write is the fix, and it is right independently of the bug: re-rendering a label to the
+    // same string is gratuitous DOM churn that also resets any in-progress selection or IME composition.
+    if (button.disabled !== !changed) button.disabled = !changed;
+    if (button.textContent !== label) button.textContent = label;
+    if (button.title !== title) button.title = title;
   }
 
   function wireQuestionForms() {
@@ -2356,6 +2368,16 @@ window.CharterAnnotate = (function () {
     ev.preventDefault();
     pan.view.el.scrollLeft = pan.scrollLeft - dx;
     pan.view.el.scrollTop = pan.scrollTop - dy;
+
+    // Re-pin SYNCHRONOUSLY, in the same turn as the scroll we just caused (#113). The `scroll` listener that
+    // normally does this is dispatched ASYNCHRONOUSLY — the spec fires scroll at the next rendering
+    // opportunity, not at the assignment above — so between these two lines and that event the zoom bar and
+    // the annotation badges are still sitting at the OLD offset, riding away with the content. It reads as
+    // jitter that trails the cursor during a drag, and how visible it is comes down to how the engine
+    // schedules that event: Linux WebKit leaves a wide enough window to catch the chrome 7px adrift, while
+    // Chromium and Windows WebKit hid it. The scroll listener stays as the backstop for every scroll this
+    // handler does NOT cause — keyboard, wheel, scrollbar.
+    pinDiagramChrome(pan.view);
   }
 
   function onDiagramPointerUp(ev) {
