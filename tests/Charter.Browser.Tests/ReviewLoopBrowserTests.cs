@@ -236,10 +236,6 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Every_question_mode_answers_through_its_save_button_and_reaches_the_server()
     {
-        // #111 — known WebKit defects, quarantined so the WebKit leg stays BLOCKING for everything else:
-        // a new engine regression must fail CI immediately rather than hide behind these two.
-        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
-
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-question-modes-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, ModesPlan);
@@ -2076,11 +2072,6 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Something_else_lets_a_reviewer_answer_outside_the_offered_options()
     {
-        // #111 — same WebKit defect as free-text: an answer whose value comes from a TEXT FIELD never
-        // reaches the server. Value collection is fine on WebKit (Save correctly enables once text is typed);
-        // it is the submit that is lost. Quarantined so the WebKit leg stays blocking for everything else.
-        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
-
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-other-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
@@ -2172,10 +2163,6 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Clicking_the_selected_radio_clears_it_and_an_answered_question_can_be_returned_to_open()
     {
-        // #111 — known WebKit defects, quarantined so the WebKit leg stays BLOCKING for everything else:
-        // a new engine regression must fail CI immediately rather than hide behind these two.
-        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #111.");
-
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-clear-answer-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
@@ -2225,6 +2212,14 @@ public sealed partial class ReviewLoopBrowserTests
             var blue = Control("q-open", "input[type=radio][value=\"Blue\"]");
             await page.ClickAsync(green);
             Assert.True(await page.IsCheckedAsync(green));
+
+            // Focus EXPLICITLY rather than relying on the click to have done it. Clicking a radio focuses it
+            // in Chromium but NOT in WebKit, which mirrors macOS's native rule that clicking a non-text
+            // control does not move keyboard focus — so on WebKit the ArrowRight below went to <body> and
+            // nothing moved. That is Safari behaviour for every radio group on the web, not a Charter defect,
+            // and depending on it made this test assert the engine's focus policy instead of the SDK's
+            // deselect rule. Focusing here keeps the assertion about the rule, on both engines.
+            await page.FocusAsync(green);
 
             await page.Keyboard.PressAsync("ArrowRight");
             Assert.True(
@@ -2742,10 +2737,6 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Oversized_diagram_zooms_and_pans_and_a_drag_never_becomes_an_annotation()
     {
-        // #113 — WebKit SVG hit-testing after a zoom/pan. Reproduces on Linux WebKit (CI) but NOT on
-        // Windows WebKit, so the engine diverges by host OS too — see the issue.
-        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #113.");
-
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-diagram-panzoom-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
@@ -2876,10 +2867,6 @@ public sealed partial class ReviewLoopBrowserTests
     [SkippableFact]
     public async Task Diagram_node_and_background_still_anchor_to_the_block_after_a_zoom_and_a_pan()
     {
-        // #113 — WebKit SVG hit-testing after a zoom/pan. Reproduces on Linux WebKit (CI) but NOT on
-        // Windows WebKit, so the engine diverges by host OS too — see the issue.
-        Skip.If(BrowserEngine.Name == "webkit", "Known WebKit defect - see issue #113.");
-
         var planPath = Path.Combine(
             Path.GetTempPath(), "charter-diagram-zoom-anchor-" + Guid.NewGuid().ToString("N") + ".charter.md");
         await File.WriteAllTextAsync(planPath, PanZoomDiagramPlan);
