@@ -120,6 +120,20 @@ internal static class PollCommand
                 PollEnvelope.Serialize(resolution.Session, reported, answers.Items, drainError, submission));
         }
 
+        // #117 — the annotations are now on stdout, so the batch is safe to release. Ordering is the whole
+        // point and it matches what the review-log path already does: EMIT, then commit. Acking before the
+        // write would restore the at-most-once hole this fixes — a broken pipe, a Ctrl-C, or a harness-killed
+        // shell loop in that window would lose the reviewer's comments permanently, with the queue reporting
+        // empty and the plan unchanged. Until the ack lands the batch stays in flight and the next drain
+        // re-delivers it; a duplicate is recoverable, a dropped comment is not.
+        //
+        // Skipped on a failed drain for the same reason the hand-off ack is: when the queue state is unknown,
+        // nothing has really been delivered.
+        if (drainError is null)
+        {
+            await client.AckAnnotationsAsync(annotations.Sequence, drainCts.Token).ConfigureAwait(false);
+        }
+
         // The hand-off has now been REPORTED, so clear it: it marks one round, not a standing state, and an
         // uncleared marker would tell the agent "the human is done" on every later poll. Cleared only on a
         // CLEAN drain — when the queue state is unknown the agent has not really been told — and a failed ack

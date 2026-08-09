@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 
@@ -280,7 +281,22 @@ public sealed class ReviewClient : IDisposable
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             var items = JsonSerializer.Deserialize<List<T>>(body, AnnotationApi.JsonOptions) ?? new List<T>();
-            return DrainOutcome<T>.Success(items);
+
+            // #117 — the ack sequence rides a header so the body stays the bare array every consumer parses.
+            // Absent (an older server, or an empty batch) means 0, i.e. nothing to acknowledge.
+            long sequence = 0;
+            if (response.Headers.TryGetValues(ReviewServer.DrainSequenceHeader, out var values))
+            {
+                foreach (var value in values)
+                {
+                    if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out sequence))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return DrainOutcome<T>.Success(items) with { Sequence = sequence };
         }
         catch (HttpRequestException ex)
         {
@@ -293,6 +309,35 @@ public sealed class ReviewClient : IDisposable
         catch (JsonException ex)
         {
             return DrainOutcome<T>.Failure($"could not parse the {label} drain response ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// Release the annotation batch identified by <paramref name="sequence"/> — the caller has the envelope
+    /// and it is safe to forget (#117). Best-effort: a failed ack leaves the batch IN FLIGHT and the next
+    /// drain re-delivers it, which is the safe direction and mirrors how the answers commit already behaves.
+    /// </summary>
+    public async Task AckAnnotationsAsync(long sequence, CancellationToken cancellationToken)
+    {
+        if (sequence <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var route = $"api/{Escaped(_key)}/annotations/ack?sequence={sequence}";
+            using var content = new StringContent(string.Empty);
+            using var response = await _http
+                .PostAsync(new Uri(_base, route), content, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (HttpRequestException)
+        {
+            // The batch stays in flight and is re-delivered. Never fatal.
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 

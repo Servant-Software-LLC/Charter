@@ -11,6 +11,13 @@ namespace Charter.Server;
 /// <typeparam name="T">The drained item type (<c>Annotation</c> or <c>Answer</c>).</typeparam>
 public sealed record DrainOutcome<T>(IReadOnlyList<T> Items, string? Error)
 {
+    /// <summary>
+    /// The batch sequence to acknowledge once the items have been safely emitted (#117), or 0 when the
+    /// drain carried none (an empty batch, a failure, or a server predating the ack). Additive and
+    /// defaulted, so an outcome constructed without it behaves exactly as before.
+    /// </summary>
+    public long Sequence { get; init; }
+
     /// <summary>True when the drain could not complete — the queue state is unknown, not empty.</summary>
     public bool Failed => Error is not null;
 
