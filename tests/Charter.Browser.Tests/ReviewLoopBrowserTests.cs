@@ -1173,6 +1173,74 @@ public sealed partial class ReviewLoopBrowserTests
     /// throughout: a rejected fetch (wrong route, blocked by CSP, bad shape) surfaces as a console error, so
     /// that assertion is what makes a silently-broken button impossible to ship.
     /// </summary>
+
+    /// <summary>
+    /// The hand-off must not claim something the page cannot know. Charter never invokes an agent — the
+    /// button records the round and wakes whatever is already long-polling — so with nothing listening,
+    /// the old fixed status ("Sent — the agent is revising…") asserted both that an agent received the
+    /// round AND that it was working on it, and neither was true.
+    /// <para>
+    /// This is the surface that actually gets read: #107 made the tooltip honest and left the panel's
+    /// status line hardcoded, so the loud claim survived the fix that was meant to remove it. Nothing
+    /// asserted the wording either, which is how it lasted.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Send_to_agent_does_not_claim_an_agent_is_revising_when_none_is_listening()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-sent-honesty-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "round-loaded");
+            await page.ClickAsync(Ui("panel-toggle"));
+
+            // Queue something so the hand-off is possible at all.
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note the agent would act on");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+
+            // No `charter poll` has ever touched this session — nothing is listening, by construction.
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+            await page.WaitForSelectorAsync(Ui("panel-status"));
+
+            var status = (await page.InnerTextAsync(Ui("panel-status"))).Trim();
+
+            Assert.DoesNotContain("revising", status, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Sent", status, StringComparison.Ordinal);
+            // And it must say what to actually DO about it — a reviewer who hands a round to nobody needs
+            // the way out, not just the absence of a false claim.
+            Assert.Contains("charter poll", status, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
     [SkippableFact]
     public async Task Send_to_agent_hands_the_round_off_and_the_button_reflects_its_state()
     {

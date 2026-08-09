@@ -69,6 +69,7 @@ window.CharterAnnotate = (function () {
     // no human at all — this is what puts "your earlier notes were set aside, here is how to get them back"
     // where the reviewer actually is. Runtime-only DOM, like every other piece of SDK chrome.
     agent: null,
+    statusIsSent: false,
     staleQueue: null,
     staleQueueShown: false,
     composer: null,      // the open composer, or null
@@ -691,7 +692,13 @@ window.CharterAnnotate = (function () {
   // is working. `submitted` stays true until the agent acks the hand-off, which is what keeps a reviewer
   // from queueing the same round twice.
 
-  var SENT_MESSAGE = 'Sent — the agent is revising…';
+  // WAS a constant reading 'Sent — the agent is revising…'. That asserted two things the page cannot
+  // know: that an agent received the round, and that it is revising. Charter never invokes an agent —
+  // the button records the hand-off and wakes whatever is already long-polling — so with nothing
+  // listening the old text was simply false, and it was the LOUD surface (the panel status line) while
+  // #107's honest wording only reached the tooltip. Derived from the same presence facts now, and
+  // re-derived when the authoritative read lands (see applyRound).
+  function sentMessage() { return 'Sent.' + agentHint(); }
 
   function applyRound(status) {
     var pending = (status && status.pending) || {};
@@ -705,6 +712,14 @@ window.CharterAnnotate = (function () {
     state.agent = (status && status.agent) || null;
     applyStaleQueue(status && status.staleQueue);
     syncSendButton();
+
+    // The click reflects the hand-off instantly from whatever presence was last known, which may be
+    // stale by a poll interval. This is the authoritative answer arriving, so correct the wording —
+    // but only while the status line is still OUR line, and only while the round is still outstanding.
+    if (state.statusIsSent) {
+      if (state.round.submitted) setSentStatus();
+      else setStatus('');
+    }
   }
 
   // ---- #107: is anything actually listening? ------------------------------------------------------
@@ -825,7 +840,7 @@ window.CharterAnnotate = (function () {
       state.round.submitted = true;
       syncSendButton();
       showPanel();
-      setStatus(SENT_MESSAGE);
+      setSentStatus();
       emit('round-sent', {});
       refreshRound();
       return true;
@@ -1432,8 +1447,16 @@ window.CharterAnnotate = (function () {
 
   function setStatus(text) {
     if (!state.ui) return;
+    // Any other message replaces the hand-off line and takes ownership of it — so a later presence
+    // refresh cannot clobber an error the reviewer needs to see.
+    state.statusIsSent = false;
     state.ui.status.textContent = text || '';
     state.ui.status.className = text ? 'charter-panel-status' : 'charter-panel-status charter-hidden';
+  }
+
+  function setSentStatus() {
+    setStatus(sentMessage());
+    state.statusIsSent = true;
   }
 
   // The floating toggle is fixed to the viewport's bottom-right corner — which is INSIDE the open panel,
