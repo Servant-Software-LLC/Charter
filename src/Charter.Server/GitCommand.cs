@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace Charter.Server;
 
@@ -21,6 +22,18 @@ internal static class GitCommand
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// git emits UTF-8, but .NET decodes a REDIRECTED stream with the console's encoding unless told
+    /// otherwise — an OEM code page on Windows. Unpinned, a reviewer called <c>Müller</c> is attributed as
+    /// <c>MÃ¼ller</c> on every comment they leave, and a teammate reading the committed log sees the same
+    /// corruption. For the rarer case of a non-ASCII <c>user.email</c> it is worse than cosmetic:
+    /// <see cref="ReviewLogPaths.FileNameForAuthor"/> derives both halves of the log's FILE NAME from the
+    /// address, so a misdecoded one writes to a different file than the same person's correctly-decoded
+    /// identity would (Charter #122).
+    /// No BOM — git never emits one, and a BOM-emitting encoder would prepend U+FEFF to every value read.
+    /// </summary>
+    private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>
     /// Run <c>git</c> with <paramref name="arguments"/> in <paramref name="workingDirectory"/> and return its
     /// trimmed stdout, or <see langword="null"/> when git could not be run, timed out, or exited non-zero.
     /// </summary>
@@ -35,6 +48,8 @@ internal static class GitCommand
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                StandardOutputEncoding = Utf8,
+                StandardErrorEncoding = Utf8,
             };
             foreach (var argument in arguments)
             {
