@@ -1811,6 +1811,10 @@ window.CharterAnnotate = (function () {
     item.setAttribute('data-charter-anchor-status', orphaned ? 'orphaned' : 'resolved');
     item.setAttribute('data-charter-status', record.status || 'open');
     item.setAttribute('data-charter-committed', record.committed ? 'true' : 'false');
+    // What the note is anchored to. The panel already renders the kind as a human label; exposing it as data
+    // too keeps the card self-describing, and lets a test say "this note is not a text range" at the moment
+    // that becomes true rather than 30s later at whatever downstream step assumed it was.
+    item.setAttribute('data-charter-kind', record.kind || KIND.element);
     // Delivery is a SEPARATE axis from open/resolved (#124): a note can be open-and-sent, open-and-queued,
     // or settled. Rendering only the first pair is what made a delivered note look unprocessed.
     item.setAttribute('data-charter-delivery', record.delivered ? 'sent' : 'queued');
