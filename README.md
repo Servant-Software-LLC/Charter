@@ -47,6 +47,11 @@ review it in the browser.
   every block through, promotes an obvious "Open Questions" / "Risks" list into question blocks, and
   stamps the format marker. The mechanical floor an agent then enriches (diagrams, comparisons, more
   questions) — the rich "any source → plan" authoring is agent-driven, not a deterministic command.
+- `charter recap <range> -o <plan.charter.md>` — the same seed from the other direction: a **git diff**
+  instead of an intent, for reviewing a change that already happened. Emits an overview, a commit table
+  and one per-line-annotatable diff block per file; git is read-only. Like `convert`, the mechanical
+  floor an agent then enriches with the summary, grouping, diagram and questions a diff cannot state.
+  It describes a **change**, not an execution run — run reporting stays Guardrails' job.
 - `charter render <plan.charter.md> -o <out.html>` — renders a plan to one portable HTML artifact.
 - `charter review <plan.charter.md> [--no-open]` — serves the plan over the loopback review server
   (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you can

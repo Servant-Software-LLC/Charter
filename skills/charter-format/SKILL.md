@@ -96,6 +96,34 @@ graph TD; Draft --> Review --> Handoff;
 When flattening, the body is emitted as **exactly one** fenced code block of the matching language — an
 already-fenced body is unwrapped first, never double-fenced.
 
+### Widening a fence when the body contains one
+
+A body may legitimately contain the very characters that delimit it — a diff of a markdown file is the
+common case. **Both** delimiters then have to be widened, and getting only one is a silent data loss, not a
+rendering glitch:
+
+- **the container**: a line whose trimmed text is a colon run of at least the opening length **closes** the
+  block, and everything after it is dropped. Being inside a code fence does **not** protect it — the
+  container's close check runs first. Open with `::::` (or more) when any body line starts with `:::`.
+- **the code fence**: three backticks are closed by a body line of three backticks. Use ` ```` ` when the
+  body contains a fence.
+
+A body line reading `:::note` would otherwise **open a nested directive** and swallow the tail; the code
+fence is what prevents that, which is why a machine-generated diff body is always fenced.
+
+````markdown
+::::diff
+```diff
+ :::note
+-  a line inside a .charter.md being diffed
++  the block survives because the container is four colons
+```
+::::
+````
+
+Only widen as far as the content requires — an ordinary source diff stays plain `:::diff` + ` ```diff `.
+`charter recap` computes both automatically.
+
 ## The `:::question` block — open vs. resolved
 
 The body is a JSON object (JSON is a subset of YAML, so the parser stays dependency-agnostic) validated to

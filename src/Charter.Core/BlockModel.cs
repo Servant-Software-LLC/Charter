@@ -527,6 +527,38 @@ internal static class CharterMarkdown
             yield break;
         }
 
+        // The FENCED body form (```diff … ```) is documented as meaning exactly the same thing as the raw form,
+        // so it must yield exactly the same lines. Descending by SPAN would not: a FencedCodeBlock's span covers
+        // its delimiters, which then render as two annotatable "diff lines" reading ```diff and ``` — content
+        // the author never wrote. Descending by the block's LINES instead drops the delimiters and keeps every
+        // real line, at its true source position.
+        //
+        // The fenced form is also the only SAFE body for machine-generated diffs (`charter recap`): a code fence
+        // is opaque to the block parser, whereas a raw body made of arbitrary repository content can contain a
+        // line that closes this container early, or one that opens a NESTED directive — either of which silently
+        // discards the rest of the diff.
+        if (container.Count == 1 && container[0] is FencedCodeBlock fenced)
+        {
+            var contentLine = fenced.Line + 1;   // 0-based; the opening delimiter occupies fenced.Line
+            var lines = fenced.Lines;
+
+            // Count, NOT lines.Lines.Length: Markdig hands back a pooled array that is usually longer than the
+            // block, and the slots past Count hold stale entries from a previous block.
+            for (var i = 0; i < lines.Count; i++)
+            {
+                var raw = lines.Lines[i].Slice.ToString() ?? string.Empty;
+                var trimmedText = raw.Trim();
+                if (trimmedText.Length != 0)
+                {
+                    yield return (raw, trimmedText, contentLine + 1, DiffLineClass(raw));
+                }
+
+                contentLine++;
+            }
+
+            yield break;
+        }
+
         foreach (var child in container)
         {
             var span = child.Span;

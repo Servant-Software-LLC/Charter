@@ -36,6 +36,12 @@ All three mean the same request and produce the same artifact — the word choic
 the human is with the tool. **The noun never changes: the deliverable is always "the plan"**, the file is
 always `<name>.charter.md`. "Chart" and "charter" are verbs for *making* one, not new names for it.
 
+**The other direction — a change that already happened.** "Recap this branch," "walk me through what you
+just did," "let me review this PR as a document" asks for the same deliverable built from a **diff**
+instead of an intent. Start with `charter recap` and follow `references/recap.md`; everything after the
+seed — review, drain, reply, handoff — is identical. Do not use it to report on an *execution run*
+(outcomes, retries, timings): that is Guardrails' `uber-report`, not Charter's surface.
+
 On *"charter a plan"* specifically: strictly you charter the **work**, not the plan — the plan is the
 artifact chartering produces, the same way a *project charter* is the document that authorizes a project to
 begin. Prefer "charter the work" when you phrase it yourself. But **accept "charter a plan" without
@@ -78,6 +84,7 @@ that is a plotting task, not a Charter deliverable).
 | Verb | What it does |
 |---|---|
 | `charter convert <input.md> -o <plan.charter.md>` | **Seed** a `.charter.md` from a plain Markdown doc: every block passes through unchanged, the **simple** items of a section whose heading names open questions / risks / decisions become `:::question` blocks, and the format marker is stamped. The deterministic floor you then **enrich** — see step 1 below for what it leaves behind and why you must read its stderr. |
+| `charter recap <range> -o <plan.charter.md> [--repo <dir>] [--max-diff-lines <n>]` | **Seed** a `.charter.md` from a **git diff** — `convert`'s mirror image, for reviewing a change that already happened. Emits an overview, a commit table, and one per-line-annotatable `:::diff` per file; git is read **only**. Like `convert` it is the deterministic floor, not a generator: no summary, no grouping, no `:::diagram`, no `:::question` — those are yours. **Read its stderr**: it names what is still missing, plus any capped or binary file. See `references/recap.md`. |
 | `charter render <plan.charter.md> -o <out.html>` | Render the plan to **one portable** HTML artifact. |
 | `charter review <plan.charter.md> [--no-open] [--keep-annotations]` | Serve the rendered + SDK-injected plan over the **loopback** review server and open the browser for in-place annotation. If the plan was **replaced** at the same path (no queued annotation's anchor still resolves), the old queue is **set aside, never deleted** — Charter says where on stderr **and in the review panel**; `--keep-annotations` restores it. |
 | `charter poll [<plan.charter.md>] [--wait] [--watch] [--for <dur>] [--apply]` | **`--watch` is what you want for a real review**: it re-arms across long-poll cycles in ONE invocation until `--for` elapses (default 2h), so a single command covers the whole session — `--wait` alone is just ONE ~30s cycle and returns exit `2` on silence, which means *nothing arrived yet*, not *the review is over*. Drain the running review session's queued annotations + `:::question` answers; `--apply` writes the answers **inline** into the plan's `:::question` blocks. With **no** live session, `charter poll <plan>` instead folds the **committed review logs** beside the plan — how you read a teammate's comments while executing. **Branch on its exit code** (`0` drained · `2` clean-empty · `3` no session/log · `4` drain FAILED, state unknown · `5` apply refused), never on an empty array. |
@@ -259,6 +266,10 @@ Keep this file lean; the depth lives in `references/`:
   PDF, a link, a Confluence page) into a rich `.charter.md` — how to ingest each, and how to choose the
   right block for its content.
 - **`references/authoring-plans.md`** — the block catalog in depth + a short sample `.charter.md` skeleton.
+- **`references/recap.md`** — the OTHER direction: `charter recap` builds the same deliverable from a
+  **diff** instead of an intent, for reviewing a change that already happened. The seed → enrich → review
+  flow, what to add and what to delete, the Guardrails `uber-report` boundary, and why a generated diff
+  block sometimes needs a widened fence.
 - **`references/review-loop.md`** — running `charter review`, in-browser annotation, and draining
   feedback with `charter poll` (`--apply` / `charter resolve` fold answers inline) on the loopback server;
   **the exit codes**, `drainError`, the **Send to agent** round hand-off, and reading a teammate's

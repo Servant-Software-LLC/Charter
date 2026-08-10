@@ -87,6 +87,18 @@ if (args.Length >= 1 && args[0] == "convert")
     return BuildConvertRoot().Parse(args).Invoke();
 }
 
+// `charter recap <range> -o <out.charter.md>`: the mechanical git-diff -> .charter.md SEED transform (Charter
+// #1) — `convert`'s mirror image, and the same contract. Via Charter.Core.DiffRecap, turn a range's diff into
+// an overview, a commit table and one per-line-annotatable :::diff per file, then stamp the marker via
+// CharterFormat.EnsureVersionMarker. Deliberately NOT a generator: the summary, the theme grouping, the
+// :::diagram and the questions a change raises all need judgment, so they are the authoring agent's job and
+// are named on stderr instead. Git is read ONLY (docs/plans/03 §5.1). Parsed with System.CommandLine, parallel
+// to `render`; only entered for the `recap` verb so the banner / --version behavior above stays exactly as-is.
+if (args.Length >= 1 && args[0] == "recap")
+{
+    return BuildRecapRoot().Parse(args).Invoke();
+}
+
 // `charter skills install [--project] [--target <dir>] [--force]`: extract the skills bundled inside this
 // binary (skills/charter + skills/charter-format, embedded as resources) into Claude Code's skills directory
 // so `charter-format` becomes discoverable to Guardrails plan-breakdown. Parsed with System.CommandLine,
@@ -561,6 +573,117 @@ static void ReportConversion(ConvertResult conversion)
         Console.Error.WriteLine(
             "  Promote these by hand, or let your authoring agent enrich them (see the charter skill).");
     }
+}
+
+// Builds the root command hosting the `recap` subcommand: git diff -> .charter.md seed (Charter #1).
+static RootCommand BuildRecapRoot()
+{
+    var rangeArgument = new Argument<string>("range")
+    {
+        Description =
+            "The revision range to recap, as git would take it: 'main..HEAD' (that range's commits), "
+            + "or a single ref like 'HEAD~3' or 'main' (that ref against the working tree).",
+    };
+    var outOption = new Option<string>("--out", "-o")
+    {
+        Description = "Path to write the .charter.md seed.",
+        Required = true,
+    };
+    var repoOption = new Option<string>("--repo", "-C")
+    {
+        Description = "Repository directory to read (defaults to the current directory).",
+    };
+    var maxLinesOption = new Option<int>("--max-diff-lines")
+    {
+        Description =
+            "Per-file cap on emitted diff lines, so a large branch stays reviewable in a browser. "
+            + $"Defaults to {DiffRecap.DefaultMaxDiffLinesPerFile}; 0 means no cap. Whatever a cap hides is "
+            + "always reported, never silently dropped.",
+        DefaultValueFactory = _ => DiffRecap.DefaultMaxDiffLinesPerFile,
+    };
+
+    var recap = new Command("recap", "Recap a git range as a valid .charter.md seed (best-effort; an agent then enriches it).")
+    {
+        rangeArgument,
+        outOption,
+        repoOption,
+        maxLinesOption,
+    };
+
+    recap.SetAction(parseResult => RunVerb("recap", () =>
+    {
+        string range = parseResult.GetValue(rangeArgument)!;
+        string outputPath = parseResult.GetValue(outOption)!;
+        string repo = parseResult.GetValue(repoOption) is { Length: > 0 } given
+            ? given
+            : Directory.GetCurrentDirectory();
+        int maxLines = parseResult.GetValue(maxLinesOption);
+
+        if (!Directory.Exists(repo))
+        {
+            Console.Error.WriteLine($"charter recap: repository directory not found: {repo}");
+            return 1;
+        }
+
+        // git's own message is the useful one here — "unknown revision", "not a git repository" — so it is
+        // surfaced verbatim rather than replaced with a Charter paraphrase of it.
+        GitRead diff = RecapGit.Diff(repo, range);
+        if (!diff.Ok)
+        {
+            Console.Error.WriteLine($"charter recap: could not read the diff for '{range}': {diff.Error}");
+            return 1;
+        }
+
+        // An empty diff is a real answer, not a failure — but writing an empty recap would hand the reviewer a
+        // document asserting a change that is not there, so it exits 1 with the reason instead.
+        if (diff.Output.Trim().Length == 0)
+        {
+            Console.Error.WriteLine($"charter recap: '{range}' has no changes to recap.");
+            return 1;
+        }
+
+        RecapResult recapResult = DiffRecap.Build(
+            range, diff.Output, RecapGit.Commits(repo, range), maxLines);
+        string seed = CharterFormat.EnsureVersionMarker(recapResult.Markdown);
+
+        string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+
+        File.WriteAllText(outputPath, seed);
+        Console.WriteLine($"Recapped {range} -> {outputPath}");
+
+        ReportRecap(recapResult);
+        return 0;
+    }));
+
+    return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+    {
+        recap,
+    };
+}
+
+// Print `charter recap`'s report to STDERR (stdout keeps its single `Recapped ...` line, exit stays 0). Two
+// kinds of line, and both exist for the same reason `charter convert` reports its skipped items: a seed that
+// looks complete but is not would have the reviewer annotate a change they have not fully seen.
+//   - COVERAGE: what the seed does not contain (a capped file, a binary file).
+//   - ENRICHMENT: what only an agent can add. The seed is every fact the diff states and nothing more; the
+//     summary, the grouping, the :::diagram and the questions the change raises are judgment, and Charter's
+//     binary holds no model. Saying so explicitly is what stops a raw seed being mistaken for a finished recap.
+static void ReportRecap(RecapResult recap)
+{
+    foreach (string note in recap.Notes)
+    {
+        Console.Error.WriteLine($"charter recap: warning: {note}");
+    }
+
+    Console.Error.WriteLine(
+        $"charter recap: seeded {recap.Files.Count} file(s). This is the MECHANICAL half -- enrich it before "
+        + "review: a summary of what changed and why, a theme-level grouping, a :::diagram where the shape "
+        + "changed, and :::question blocks for what the reviewer must decide (see the charter skill's "
+        + "recap reference).");
 }
 
 // Parses a --answers JSON file — a flat object mapping question id -> an array of answer value strings, e.g.

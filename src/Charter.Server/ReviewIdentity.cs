@@ -89,7 +89,8 @@ public static class GitIdentity
     /// <summary>
     /// One <c>git config --get &lt;key&gt;</c>, or null on any failure. <c>--get</c> is a pure read; nothing
     /// here can alter a repository. Shares <see cref="GitCommand"/> with the tracked-directory read, so there
-    /// is exactly one place in Charter that spawns git.
+    /// is exactly one place in the review SERVER that spawns git. (The CLI's <c>charter recap</c> has its own
+    /// reader — same read-only rule, different failure and timeout policy.)
     /// </summary>
     private static string? ReadConfig(string workingDirectory, string key)
         => GitCommand.Read(workingDirectory, "config", "--get", key);
