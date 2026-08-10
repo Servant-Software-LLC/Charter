@@ -3298,7 +3298,35 @@ public sealed partial class ReviewLoopBrowserTests
             // the floating toggle is hidden — clicking it here would wait forever.)
             await page.WaitForSelectorAsync(Ui("item-jump"));
             await page.ClickAsync(Ui("item-jump"));
-            await page.WaitForSelectorAsync(Ui("overlay-rect"));
+
+            // `jumpTo` draws nothing when the anchor block is gone or the quote cannot be located inside it,
+            // and both return silently — so a bare wait here reports only "no overlay in 30s". Probe the two
+            // preconditions and put them in the failure message.
+            try
+            {
+                await page.WaitForSelectorAsync(
+                    Ui("overlay-rect"), new PageWaitForSelectorOptions { Timeout = 10_000 });
+            }
+            catch (TimeoutException)
+            {
+                var anchorId = await created.GetAttributeAsync("data-anchor-id");
+                var probe = await page.EvaluateAsync<JsonElement>(
+                    "(id) => {" +
+                    "  const el = document.getElementById(id);" +
+                    "  return {" +
+                    "    anchorFound: !!el," +
+                    "    text: el ? el.textContent.slice(0, 120) : ''," +
+                    "    overlays: document.querySelectorAll('[data-charter-ui=\"overlay-rect\"]').length" +
+                    "  };" +
+                    "}",
+                    anchorId);
+                var quote = await created.Locator(Ui("item-quote")).InnerTextAsync();
+                Assert.Fail(
+                    "no overlay was drawn. anchorId=" + anchorId +
+                    " anchorFound=" + probe.GetProperty("anchorFound").GetBoolean() +
+                    " overlayRects=" + probe.GetProperty("overlays").GetInt32() +
+                    " quote=<" + quote + "> blockText=<" + probe.GetProperty("text").GetString() + ">");
+            }
 
             var before = await OverlayOffsetAsync(page);
             await page.ClickAsync(Ui("diagram-zoom-in"));
