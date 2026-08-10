@@ -95,6 +95,28 @@ public class RecapCommandTests : IDisposable
         Assert.DoesNotContain("MECHANICAL half", result.StdOut);   // stdout stays the one machine-readable line
     }
 
+    /// <summary>
+    /// git emits UTF-8, but a redirected stream is decoded with the CONSOLE's code page unless told otherwise —
+    /// an OEM one on Windows. Unfixed, an em-dash in a commit subject or any non-ASCII source line reaches the
+    /// seed as mojibake and is then WRITTEN to the .charter.md that way. Found by recapping Charter itself,
+    /// whose own commit subjects use em-dashes, which is why the fixture uses the same characters.
+    /// </summary>
+    [Fact]
+    public void NonAsciiContent_SurvivesTheGitRead_RatherThanArrivingAsMojibake()
+    {
+        File.WriteAllText(Path.Combine(_repo, "unicode.txt"), "café — naïve\n");
+        Git("add", "-A");
+        Git("commit", "-qm", "feat: händle — café naïve");
+
+        string output = Path.Combine(_repo, "unicode.charter.md");
+        Assert.Equal(0, CharterCliRunner.RunIn(_repo, "recap", "HEAD~1..HEAD", "-o", output).ExitCode);
+
+        string seed = File.ReadAllText(output);
+        Assert.Contains("händle — café naïve", seed);   // the commit subject
+        Assert.Contains("café — naïve", seed);               // the diff content
+        Assert.DoesNotContain("Γ", seed);                              // the mojibake this produced
+    }
+
     [Fact]
     public void AnUnknownRevision_FailsWithGitsOwnMessage_AndWritesNothing()
     {

@@ -3,7 +3,9 @@ using System.Diagnostics;
 namespace Charter.Server;
 
 /// <summary>
-/// The one place Charter shells out to git, and it is <b>read-only</b>. §5.1 of
+/// The one place the review SERVER shells out to git, and it is <b>read-only</b>. (The CLI's
+/// <c>charter recap</c> reads git too, through its own <c>RecapGit</c> — same read-only rule, but it must
+/// report a failure rather than degrade to null, and it allows a far longer timeout.) §5.1 of
 /// <c>docs/plans/03-git-mediated-team-review.md</c> separates two claims that "Charter never runs git" used to
 /// conflate: Charter must never MUTATE git state (it does not commit, push, stage, or rewrite history), but
 /// reading it is both permitted and load-bearing.

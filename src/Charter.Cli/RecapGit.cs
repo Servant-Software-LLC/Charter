@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Charter.Core;
 
 namespace Charter.Cli;
@@ -18,6 +19,10 @@ namespace Charter.Cli;
 /// </remarks>
 internal static class RecapGit
 {
+    /// <summary>UTF-8 WITHOUT a BOM: git never emits one, and a BOM-emitting encoder would prepend U+FEFF to
+    /// the decoded text, which would then be written into the seed's first heading.</summary>
+    private static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     /// <summary>Generous compared to the review server's 5s: a diff over a long branch in a big repository is
     /// real work, and a recap is a foreground command the user is waiting on deliberately.</summary>
     private static readonly TimeSpan Timeout = TimeSpan.FromMinutes(2);
@@ -82,6 +87,14 @@ internal static class RecapGit
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
+
+                // git emits UTF-8. Without this, .NET decodes a redirected stream using the CONSOLE's code
+                // page, which on Windows is an OEM one — so an em-dash in a commit subject, or any non-ASCII
+                // source line in the diff, reaches the seed as mojibake and is then written to a .charter.md
+                // as those wrong characters. Caught by recapping this repository, whose own commit subjects
+                // contain em-dashes.
+                StandardOutputEncoding = Utf8,
+                StandardErrorEncoding = Utf8,
             };
             foreach (var argument in arguments)
             {
