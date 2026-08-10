@@ -42,6 +42,14 @@ public static class QuestionIdentity
     /// The fingerprint of <paramref name="spec"/>'s declared shape: lowercase hex SHA-256, stable across
     /// processes and machines (no runtime hash seed).
     /// </summary>
+    /// <remarks>
+    /// <see cref="QuestionSpec.Recommended"/> is deliberately EXCLUDED. The fingerprint exists to detect that a
+    /// question changed shape since a human answered it, so that a stale answer is not silently applied — and a
+    /// changed recommendation does not change what was asked. Including it would let an agent invalidate a
+    /// human's decision merely by revising its own opinion, which is precisely backwards. This is also why the
+    /// marker is a field rather than a <c>(Recommended)</c> suffix inside <see cref="QuestionSpec.Options"/>,
+    /// which IS hashed here (Charter #125).
+    /// </remarks>
     public static string Fingerprint(QuestionSpec spec)
     {
         ArgumentNullException.ThrowIfNull(spec);

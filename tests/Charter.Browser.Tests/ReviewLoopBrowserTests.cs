@@ -850,6 +850,114 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+
+    /// <summary>
+    /// A note the agent has ALREADY taken must not read as untouched (Charter #124).
+    /// <para>
+    /// The reported session: `charter review` and `charter poll --watch --apply` running together, which is
+    /// the flow the 0.12.0 notes recommend. The reviewer saved a note, the watch-poll drained it within a
+    /// second, and the panel still showed it badged `open` with "Send to agent" greyed out saying
+    /// <em>"Nothing to send yet — add a note or answer a question"</em>. The tooltip contradicted the note
+    /// visible on screen, so the reasonable conclusion was "my note didn't take" — the opposite of the truth.
+    /// </para>
+    /// <para>
+    /// The modelling gap: delivery is a DIFFERENT axis from open/resolved, and only the latter was rendered.
+    /// This drives the real drain endpoint rather than faking one, because the whole signal is that the note
+    /// left the server's queue.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_note_the_agent_has_drained_reads_as_sent_not_as_unsent()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-delivery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var writer = new ReviewLogWriter(planPath, new ReviewAuthor("Alice Ng", "alice@example.com"));
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = writer,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "This paragraph needs a concrete example.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // Before the drain: queued, and the button offers the hand-off.
+            var note = page.Locator(Ui("item")).First;
+            await page.WaitForSelectorAsync(Ui("item-status"));
+            Assert.Equal("queued", await note.GetAttributeAsync("data-charter-delivery"));
+            Assert.False(await page.IsDisabledAsync(Ui("send-to-agent")));
+
+            // The agent drains, exactly as `charter poll --watch` does.
+            await DrainAnnotationsAsync(server, session);
+            await WaitForEventAsync(page, "queue-changed");
+            await page.WaitForSelectorAsync(Ui("item-delivery"));
+
+            // The note is still OPEN — nobody resolved it — but it is no longer waiting to be sent. Both
+            // facts, on the same card, because they are different questions.
+            Assert.Equal("open", await note.GetAttributeAsync("data-charter-status"));
+            Assert.Equal("sent", await note.GetAttributeAsync("data-charter-delivery"));
+            Assert.Contains(
+                "sent",
+                await note.Locator(Ui("item-delivery")).InnerTextAsync(),
+                StringComparison.OrdinalIgnoreCase);
+
+            // ...and the control stops asserting the false thing. It is still disabled — there IS nothing
+            // new to send — but the reason it gives is now the true one.
+            var send = page.Locator(Ui("send-to-agent"));
+            Assert.True(await send.IsDisabledAsync());
+            Assert.Equal("true", await send.GetAttributeAsync("data-charter-delivered"));
+            var title = await send.GetAttributeAsync("title") ?? string.Empty;
+            Assert.Contains("already gone to the agent", title, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("add a note", title, StringComparison.OrdinalIgnoreCase);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    /// <summary>Drain the queued annotations the way an agent does — the real endpoint, then the ack.</summary>
+    private static async Task DrainAnnotationsAsync(ReviewServer server, ReviewSession session)
+    {
+        using var client = new HttpClient();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        var pollUri = new Uri(server.Address, "api/poll?key=" + Uri.EscapeDataString(session.Key.Value));
+        using var response = await client.GetAsync(pollUri, cts.Token);
+        Assert.True(response.IsSuccessStatusCode, $"GET /api/poll returned {(int)response.StatusCode}.");
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
@@ -3178,8 +3286,6 @@ public sealed partial class ReviewLoopBrowserTests
             await page.ClickAsync(Ui("composer-save"));
             await WaitForEventAsync(page, "submitted");
 
-            // Jump paints the highlight over that range. (The panel opens itself once there is an entry, so
-            // the floating toggle is hidden — clicking it here would wait forever.)
             await page.WaitForSelectorAsync(Ui("item-jump"));
             await page.ClickAsync(Ui("item-jump"));
             await page.WaitForSelectorAsync(Ui("overlay-rect"));

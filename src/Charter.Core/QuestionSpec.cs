@@ -82,6 +82,30 @@ public sealed record QuestionSpec(
     /// Shape matches <c>Charter.Server.Answer.Values</c>.
     /// </summary>
     public IReadOnlyList<string> Answer { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The option the AUTHORING AGENT would choose, or <see langword="null"/> when it has no defensible lean
+    /// (Charter #125). Must equal one of <see cref="Options"/> verbatim; a value matching nothing is ignored
+    /// rather than rejected, so a renamed option degrades to "no recommendation" instead of failing the block.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a field and not a <c>(Recommended)</c> suffix on the option label.</b> The suffix convention
+    /// (which Claude Code's own <c>AskUserQuestion</c> uses) is what the reviewer SEES, and the renderer
+    /// produces exactly that — but storing it in the label would put it in the DATA, where it breaks two
+    /// things. An option's text is also its submitted VALUE, so the recorded decision would read
+    /// <c>"Postgres (Recommended)"</c> and carry a transient authoring hint into the permanent answer and into
+    /// everything downstream of <c>handoff</c>. And <see cref="QuestionIdentity.Fingerprint"/> hashes the
+    /// OPTIONS, so an agent that added or withdrew a recommendation between review rounds would change the
+    /// fingerprint and STALE an answer the human had already given — <c>resolve</c> would then refuse to apply
+    /// it without <c>--apply-stale-answers</c>. A separate field has neither problem.
+    /// </para>
+    /// <para>
+    /// Deliberately NOT part of the fingerprint: a changed lean does not change what was ASKED, so it must
+    /// never invalidate an answer.
+    /// </para>
+    /// </remarks>
+    public string? Recommended { get; init; }
     /// <summary>
     /// Parse and validate a question <paramref name="body"/> (JSON/YAML) into a <see cref="QuestionSpec"/>.
     /// Throws <see cref="FormatException"/> if the body is malformed or violates the schema (missing id,
@@ -202,7 +226,22 @@ public sealed record QuestionSpec(
                 return (null, answerError);
             }
 
-            return (new QuestionSpec(id, title, mode, options, target) { Answer = answer }, null);
+            // A recommendation naming no declared option is DROPPED, not rejected. It is an authoring hint, and
+            // failing the whole block over one would turn a helpful annotation into a way to break a plan —
+            // exactly backwards for a field whose entire purpose is to be optional.
+            var recommended = ReadString(root, "recommended");
+            if (recommended is not null && !options.Contains(recommended, StringComparer.Ordinal))
+            {
+                recommended = null;
+            }
+
+            return (
+                new QuestionSpec(id, title, mode, options, target)
+                {
+                    Answer = answer,
+                    Recommended = recommended,
+                },
+                null);
         }
     }
 

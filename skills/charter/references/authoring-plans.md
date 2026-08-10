@@ -140,6 +140,39 @@ you drain with `charter poll` (see `review-loop.md`); `charter poll --apply` or 
 folds it **inline** into the block's `answer` field, resolving the question in place. A `:::question` left
 open (no `answer`) is a legitimate, common outcome — surfaced, never silently defaulted.
 
+#### Say which one you'd pick
+
+You have usually just read the code, the trade-offs and the history before writing the question. **Withholding
+which way you lean makes the reviewer re-derive a conclusion you already reached.** Name it with
+`recommended`, and put that option **first**:
+
+```
+:::question
+{ "id": "db-choice", "title": "Which datastore should the service use?",
+  "mode": "single", "options": ["Postgres", "DynamoDB", "SQLite"],
+  "recommended": "Postgres", "target": "human" }
+:::
+```
+
+The renderer marks that option `(Recommended)` for the reviewer; the submitted value stays the bare option.
+Ordering is yours — `recommended` marks, it does not reorder.
+
+Three rules, and the last two are what keep this useful rather than corrosive:
+
+- **Say why, in the prose right above the block.** A bare badge invites a rubber stamp. One sentence —
+  *"cheapest option that still fixes the installed base"* — is what lets the reviewer disagree with your
+  REASONING rather than just your conclusion. A recommendation without a reason is worse than none.
+- **Omit it when you honestly don't have a lean.** Some questions are genuine coin-flips; others turn on
+  information only the human has — budget, roadmap, appetite, who has to maintain it. A recommendation there
+  is noise at best and false confidence at worst.
+- **Anchoring is a real cost.** A reviewer skimming four questions may accept all four defaults, so a
+  recommendation you would not defend in conversation is one you should not write. Recommend where you have
+  a defensible position; leave the rest open.
+
+Never write `(Recommended)` into an `options` string yourself — the option text is also the submitted value,
+so the marker would end up in the recorded decision and would stale answers the human has already given.
+`charter-format` has the full reasoning.
+
 ## A sample `.charter.md` skeleton
 
 ```

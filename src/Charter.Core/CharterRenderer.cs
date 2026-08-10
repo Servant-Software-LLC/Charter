@@ -632,10 +632,10 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         switch (spec.Mode)
         {
             case QuestionMode.SingleSelect:
-                WriteOptionControls(renderer, spec.Options, "radio", answer);
+                WriteOptionControls(renderer, spec.Options, "radio", answer, spec.Recommended);
                 break;
             case QuestionMode.MultiSelect:
-                WriteOptionControls(renderer, spec.Options, "checkbox", answer);
+                WriteOptionControls(renderer, spec.Options, "checkbox", answer, spec.Recommended);
                 break;
             case QuestionMode.FreeText:
                 // The answer rides as the textarea's TEXT content; escaped, so an answer carrying markup or a
@@ -668,9 +668,13 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// matches NO declared option is then surfaced as a checked write-in rather than silently vanishing.
     /// </summary>
     private static void WriteOptionControls(
-        HtmlRenderer renderer, IReadOnlyList<string> options, string inputType, IReadOnlyList<string> answer)
+        HtmlRenderer renderer,
+        IReadOnlyList<string> options,
+        string inputType,
+        IReadOnlyList<string> answer,
+        string? recommended)
     {
-        WriteOptionControlsCore(renderer, options, inputType, answer);
+        WriteOptionControlsCore(renderer, options, inputType, answer, recommended);
     }
 
     /// <summary>
@@ -704,11 +708,27 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     }
 
     private static void WriteOptionControlsCore(
-        HtmlRenderer renderer, IReadOnlyList<string> options, string inputType, IReadOnlyList<string> answer)
+        HtmlRenderer renderer,
+        IReadOnlyList<string> options,
+        string inputType,
+        IReadOnlyList<string> answer,
+        string? recommended = null)
     {
         foreach (var option in options)
         {
-            WriteChoice(renderer, inputType, option, option, IsChosen(answer, option), cssClass: null);
+            // The agent's lean rides the LABEL only; the submitted value stays the bare option (Charter #125).
+            // "(Recommended)" is the convention reviewers already know from Claude Code's own AskUserQuestion,
+            // so it is reproduced verbatim rather than invented — but it must never become part of the recorded
+            // decision, which is what authoring it into the option text would have done.
+            var recommend = recommended is not null && string.Equals(option, recommended, StringComparison.Ordinal);
+            var label = recommend ? option + " (Recommended)" : option;
+            WriteChoice(
+                renderer,
+                inputType,
+                option,
+                label,
+                IsChosen(answer, option),
+                cssClass: recommend ? "charter-answer-recommended" : null);
         }
 
         WriteWriteIns(renderer, inputType, answer, options);
