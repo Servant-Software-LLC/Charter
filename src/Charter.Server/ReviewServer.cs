@@ -139,6 +139,7 @@ public sealed class ReviewServer : IReviewServer
         // comes back with its queue intact. With no sidecar directory, durability is off (in-memory only).
         ReviewSidecar? sidecar = null;
         StaleAnnotationQueue? stale = null;
+        RestoredQueue? recovered = null;
         if (!string.IsNullOrEmpty(options.SidecarDirectory))
         {
             var sidecarPath = ReviewSidecar.PathForPlan(options.SidecarDirectory, session.SourcePath);
@@ -179,6 +180,17 @@ public sealed class ReviewServer : IReviewServer
                 answers.Enqueue(answer);
             }
 
+            // What came BACK, so the CLI can say so (Charter #120). A silent recovery is indistinguishable
+            // from data loss for the person it happened to: the reviewer whose server was killed saw blank
+            // forms and concluded their answers were destroyed, when in fact every one had been restored.
+            // Quarantined annotations are excluded — they are not restored, and ReportStaleAnnotations speaks
+            // for those separately.
+            var restoredAnnotations = replaced ? 0 : restored.Annotations.Count;
+            if (restoredAnnotations > 0 || restored.Answers.Count > 0)
+            {
+                recovered = new RestoredQueue(restoredAnnotations, restored.Answers.Count);
+            }
+
             // Bind the sidecar unless the stale queue could not be preserved — Persist() snapshots the live
             // stores, so binding it there would overwrite the very notes the copy failed to save.
             if (stale is not { DurabilityDisabled: true })
@@ -203,6 +215,7 @@ public sealed class ReviewServer : IReviewServer
         return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address)
         {
             StaleAnnotations = stale,
+            Restored = recovered,
             Beat = options.EventStreamBeat,
         };
     }
@@ -212,6 +225,12 @@ public sealed class ReviewServer : IReviewServer
     /// <see langword="null"/> when there was none. The CLI reports it; nothing is destroyed either way.
     /// </summary>
     public StaleAnnotationQueue? StaleAnnotations { get; private init; }
+
+    /// <summary>
+    /// What this server rehydrated from its durability sidecar, or <see langword="null"/> when nothing was
+    /// pending. Reported by the CLI at start (Charter #120) — a recovery nobody mentions reads as a loss.
+    /// </summary>
+    public RestoredQueue? Restored { get; private init; }
 
     // The plan's markdown at start, or NULL when it cannot be read. Null is deliberately not "empty": an
     // unreadable plan resolves no anchors, so treating it as empty would quarantine a perfectly live queue on a
@@ -456,9 +475,14 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
-        // Render from source per request so an edit + refresh shows the update (wave-2 live reload).
+        // Render from source per request so an edit + refresh shows the update (wave-2 live reload) — and
+        // overlay the answers the reviewer has SAVED but no drain has folded in yet (Charter #120). Rendering
+        // per request is what makes the overlay correct for free: an answer saved a second ago is on the page
+        // the moment it is reloaded, on a brand-new server on a brand-new port. The plan file is not touched,
+        // so the server still never writes it.
         var markdown = File.ReadAllText(_session.SourcePath);
-        var served = SdkInjector.Inject(CharterRenderer.Render(markdown), SdkScript);
+        var served = SdkInjector.Inject(
+            CharterRenderer.Render(markdown, _answers.PendingByQuestion()), SdkScript);
         var payload = Encoding.UTF8.GetBytes(served);
 
         // Security headers on the served page. This is the SERVED-PAGE CSP — deliberately looser than the
