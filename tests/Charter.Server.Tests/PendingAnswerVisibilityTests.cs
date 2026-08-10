@@ -263,9 +263,17 @@ public class PendingAnswerVisibilityTests
             var received = new StringBuilder();
             var buffer = new byte[2048];
 
-            // Wait for the connect ping so the stream is provably live BEFORE the write — otherwise a reload
-            // racing the connect could be missed and the test would flake rather than fail.
+            // The ping proves the stream is open, but NOT that the plan watch is armed: the handler emits the
+            // ping BEFORE it constructs PlanWatch. Writing on the ping is a real race — the watch would
+            // baseline the already-updated file and correctly report nothing ever changed. Losing it needs only
+            // a slow enough host, which is why this passed on Windows and failed on macOS CI.
+            //
+            // The first keep-alive is the observable that the loop is running, so the watch behind it exists.
+            // It is an observation of the server's own beat, not a sleep.
             await ReadUntil(stream, buffer, received, "event: ping", overall.Token);
+            Assert.True(
+                await ReadUntil(stream, buffer, received, ": keep-alive", overall.Token),
+                "the stream must beat before the write, or the plan watch may not be armed yet");
 
             File.WriteAllText(fixture.PlanPath, PlanWithInlineAnswer);
 
