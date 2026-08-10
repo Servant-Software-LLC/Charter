@@ -71,6 +71,42 @@ public sealed class AnswerStore
     }
 
     /// <summary>
+    /// The pending answers as a question-id → values map, LAST submission winning — the shape the renderer
+    /// overlays onto a served page so a reviewer sees answers that are saved but not yet folded into the plan
+    /// (Charter #120).
+    /// </summary>
+    /// <remarks>
+    /// Last-wins matters: the buffer is append-only, so a reviewer who changed their mind has two entries for
+    /// the same question and the LATER one is their decision. A drain sees both (the agent is told the whole
+    /// history); a page must show only the current answer. An empty <c>Values</c> is kept rather than skipped —
+    /// it is a pending retraction (#63), not the absence of an answer.
+    /// </remarks>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> PendingByQuestion()
+    {
+        lock (_gate)
+        {
+            if (_pending.Count == 0)
+            {
+                return EmptyPending;
+            }
+
+            var map = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+            foreach (var answer in _pending)
+            {
+                if (!string.IsNullOrEmpty(answer.QuestionId))
+                {
+                    map[answer.QuestionId] = answer.Values ?? Array.Empty<string>();
+                }
+            }
+
+            return map;
+        }
+    }
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> EmptyPending =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+    /// <summary>
     /// Remove up to <paramref name="count"/> answers from the FRONT of the buffer — the prefix a caller
     /// previously <see cref="Peek"/>ed and has now durably applied — and return the removed answers. Because
     /// <see cref="Enqueue(Answer)"/> only appends, the front prefix is exactly the peeked set; answers that

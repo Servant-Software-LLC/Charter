@@ -25,7 +25,31 @@ public static class CharterRenderer
     /// artifact, and the review server supplies the served-page CSP as an HTTP header; only <c>export</c> stamps
     /// a CSP (its strict offline policy) into the shell.
     /// </summary>
-    public static string Render(string markdown) => CharterDocument.Wrap(RenderBody(markdown), cspMeta: null);
+    public static string Render(string markdown) => Render(markdown, pendingAnswers: null);
+
+    /// <summary>
+    /// <see cref="Render(string)"/> with an overlay of answers that are SAVED but not yet folded into the
+    /// markdown — the review server's pending queue (Charter #120).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this, a reviewer who answered five questions and then restarted the server saw five BLANK forms.
+    /// The answers were never lost — the sidecar had every one — but nothing put them back on the page, so a
+    /// working safety net was indistinguishable from data loss.
+    /// </para>
+    /// <para>
+    /// It is an OVERLAY, not a write: the plan file is untouched, so the single-writer rule is intact (the
+    /// server still never writes the plan). It exists here rather than in the SDK because the renderer already
+    /// implements pre-selection for every mode, the write-in hatch, and escaping — reimplementing that in
+    /// JavaScript would be a second copy free to drift from this one, and would leave a JS-free page blank.
+    /// </para>
+    /// <para>
+    /// A pending answer WINS over an inline one. Both can exist — the plan records what was folded in, the
+    /// queue holds what the reviewer has since chosen — and the queued one is by definition the later decision.
+    /// </para>
+    /// </remarks>
+    public static string Render(string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>>? pendingAnswers)
+        => CharterDocument.Wrap(RenderBody(markdown, pendingAnswers), cspMeta: null);
 
     /// <summary>
     /// Render <paramref name="markdown"/> to the block-body HTML only — the rendered blocks plus, when a
@@ -35,7 +59,11 @@ public static class CharterRenderer
     /// in the shell with the export CSP). Splitting body from shell keeps the shell a single source of truth
     /// while letting each surface choose its CSP.
     /// </summary>
-    internal static string RenderBody(string markdown)
+    internal static string RenderBody(string markdown) => RenderBody(markdown, pendingAnswers: null);
+
+    /// <inheritdoc cref="RenderBody(string)"/>
+    internal static string RenderBody(
+        string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>>? pendingAnswers)
     {
         markdown ??= string.Empty;
 
@@ -112,7 +140,8 @@ public static class CharterRenderer
         // and a :::diff as a <div class="diff"> of per-line <div>s each carrying its own sub-anchor and
         // add/del class. Every other container (:::note, :::warn, :::comparison) falls through to the
         // default rendering this subclass delegates to.
-        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(new CharterContainerRenderer(markdown, assignment));
+        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(
+            new CharterContainerRenderer(markdown, assignment, pendingAnswers));
 
         // A wide table must stay REACHABLE, so every table is emitted inside its own scroll container
         // (Charter #68). The wrapper is anchor-invisible by construction — see CharterTableRenderer.
@@ -196,11 +225,21 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 
     private readonly string _markdown;
     private readonly AnchorAssignment _assignment;
+    private readonly IReadOnlyDictionary<string, IReadOnlyList<string>>? _pendingAnswers;
 
     public CharterContainerRenderer(string markdown, AnchorAssignment assignment)
+        : this(markdown, assignment, pendingAnswers: null)
+    {
+    }
+
+    public CharterContainerRenderer(
+        string markdown,
+        AnchorAssignment assignment,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? pendingAnswers)
     {
         _markdown = markdown ?? string.Empty;
         _assignment = assignment;
+        _pendingAnswers = pendingAnswers;
     }
 
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
@@ -468,12 +507,24 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         // class + an "Answered" status in the legend, styled by charter.css) and for a machine
         // (`data-answered="true"`), and each mode pre-selects its chosen value(s) below. An OPEN question's
         // markup is unchanged, byte for byte.
-        var answered = spec.Answer.Count > 0;
+        // An answer the reviewer has SAVED but that no drain has folded into the plan yet wins over the inline
+        // one: both can legitimately exist, and the queued one is by definition the later decision (#120). It
+        // is rendered through exactly the same path as an inline answer — same pre-selection, same write-in
+        // handling, same escaping — and additionally marked as pending, because "saved" and "delivered to the
+        // agent" are different facts and a reviewer must not be told the second when only the first is true.
+        var pending = PendingAnswerFor(spec.Id);
+        var effectiveAnswer = pending ?? spec.Answer;
+        var answered = effectiveAnswer.Count > 0;
 
         renderer.Write("<form class=\"question");
         if (answered)
         {
             renderer.Write(" answered");
+        }
+
+        if (pending is not null)
+        {
+            renderer.Write(" answer-pending");
         }
 
         renderer.Write('"');
@@ -495,6 +546,11 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             renderer.Write(" data-answered=\"true\"");
         }
 
+        if (pending is not null)
+        {
+            renderer.Write(" data-answer-pending=\"true\"");
+        }
+
         renderer.WriteLine(">");
 
         // The question id also rides a hidden field, so a native (JS-free) submit still posts which question
@@ -507,12 +563,17 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         renderer.WriteEscape(spec.Title);
         if (answered)
         {
-            renderer.Write(" <span class=\"question-status\">Answered</span>");
+            // The wording is the whole point for a pending answer. "Answered" alone would let a reviewer infer
+            // the agent has it; it does not until a drain. Saying so is what makes a restarted server legible
+            // rather than alarming.
+            renderer.Write(pending is not null
+                ? " <span class=\"question-status\">Answered — saved, not yet sent</span>"
+                : " <span class=\"question-status\">Answered</span>");
         }
 
         renderer.WriteLine("</legend>");
 
-        WriteQuestionControls(renderer, spec);
+        WriteQuestionControls(renderer, spec, effectiveAnswer);
         WriteSubmitControl(renderer);
 
         renderer.WriteLine("</fieldset>");
@@ -550,9 +611,23 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// always did (nothing is pre-selected, so Yes / No / unanswered stay distinguishable — Charter #43).
     /// Every echoed answer value is HTML-escaped: reviewer-supplied answer text is untrusted input.
     /// </summary>
-    private static void WriteQuestionControls(HtmlRenderer renderer, QuestionSpec spec)
+    /// <summary>
+    /// The queued answer for <paramref name="questionId"/>, or <see langword="null"/> when none is pending.
+    /// </summary>
+    /// <remarks>
+    /// An EMPTY queued answer is not "no answer pending" — it is a pending RETRACTION (Charter #63: submitting
+    /// an emptied form clears a recorded answer). It is returned as an empty list so it overrides the inline
+    /// answer and the question renders open again, which is what the reviewer asked for. Only the absence of a
+    /// queue entry yields null.
+    /// </remarks>
+    private IReadOnlyList<string>? PendingAnswerFor(string questionId)
+        => _pendingAnswers is not null && _pendingAnswers.TryGetValue(questionId, out var values)
+            ? values ?? Array.Empty<string>()
+            : null;
+
+    private static void WriteQuestionControls(
+        HtmlRenderer renderer, QuestionSpec spec, IReadOnlyList<string> answer)
     {
-        var answer = spec.Answer;
 
         switch (spec.Mode)
         {

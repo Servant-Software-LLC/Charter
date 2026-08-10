@@ -179,6 +179,18 @@ not remove the answers — `charter poll --apply` / `charter resolve` remove the
 - `values` — the selected option value(s); always an array (empty if none).
 - `target` — `human` or `agent`, echoed verbatim for downstream routing.
 
+**A queued answer is already on the reviewer's page.** The served page is rendered per request with the
+pending answers overlaid, so a question the human answered renders pre-filled and marked *"Answered —
+saved, not yet sent"* — including after the server is killed and restarted on a new port, because the
+durability sidecar rehydrates the queue. The plan file is untouched; this is a view, not a write.
+
+Two things follow for you:
+
+- **Never tell a reviewer to re-answer because "the answers are gone."** They are not. If a restart made
+  them doubt it, `charter review` also prints what it restored on stderr, and a peek here proves it.
+- **"Saved" is not "you have it."** The page says *not yet sent* until a drain, which is the truth — do
+  not describe an answer as received before you have drained it.
+
 ### `reviewSubmitted` — did the human hand you this round?
 
 `charter poll`'s envelope carries two additive fields telling you *why* you woke:

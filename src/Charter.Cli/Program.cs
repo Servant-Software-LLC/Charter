@@ -764,6 +764,7 @@ static RootCommand BuildReviewRoot()
             });
 
         ReportStaleAnnotations(server.StaleAnnotations);
+        ReportRestoredQueue(server.Restored);
 
         // Register this running session in the per-user state dir so `charter poll` can discover it (address
         // + capability key + source path) WITHOUT the key ever crossing a command line. Written AFTER Start
@@ -831,6 +832,36 @@ static RootCommand BuildReviewRoot()
 // plan and authoring a new one at the same name used to resurrect the dead document's notes, including ones
 // Charter's own anchor resolution had already marked orphaned). Nothing was destroyed: the queue is named, and
 // the reviewer chooses — restore it with --keep-annotations, or delete the file to be done with it.
+// Say what came BACK when a review server rehydrates its durability sidecar (Charter #120). ASCII only and on
+// stderr, like every other start-time notice; never changes an exit code.
+//
+// Charter already names the case where a queue is set ASIDE. Naming the case where one is RESTORED is the same
+// courtesy, and the incident behind #120 is why it is not optional: a reviewer's server was force-killed, every
+// one of their answers was recovered, and because nothing said so they reasonably concluded the answers were
+// destroyed. Making recovery visible is what lets a review server be killed and restarted freely.
+static void ReportRestoredQueue(RestoredQueue? restored)
+{
+    if (restored is null)
+    {
+        return;
+    }
+
+    var parts = new List<string>(2);
+    if (restored.Answers > 0)
+    {
+        parts.Add($"{restored.Answers} answer(s)");
+    }
+
+    if (restored.Annotations > 0)
+    {
+        parts.Add($"{restored.Annotations} comment(s)");
+    }
+
+    Console.Error.WriteLine(
+        $"charter review: restored {string.Join(" and ", parts)} from your previous session -- they are on the "
+            + "page and still queued for the agent.");
+}
+
 static void ReportStaleAnnotations(StaleAnnotationQueue? stale)
 {
     if (stale is null)

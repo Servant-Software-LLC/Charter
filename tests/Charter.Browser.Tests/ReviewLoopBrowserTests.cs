@@ -753,6 +753,103 @@ public sealed partial class ReviewLoopBrowserTests
         return scrollLeft;
     }
 
+    /// <summary>
+    /// The reviewer's own words, back on the page, after the server that took them was killed (Charter #120).
+    /// <para>
+    /// This is the browser half of the fix: the served HTML is asserted at the server level, but what the
+    /// REVIEWER experiences is the control state — a pre-selected radio, a free-text write-in reading back
+    /// verbatim, and a Save button that is DISABLED because nothing has changed. That last one matters more
+    /// than it looks: an enabled Save would mean the SDK considered the restored answer an unsaved edit, which
+    /// would both invite a duplicate submission and defer every live reload behind a false "unsaved work"
+    /// guard.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_saved_answer_is_visible_and_settled_after_the_server_is_restarted()
+    {
+        const string plan =
+            "# Restart\n\n" +
+            ":::question\n" +
+            "{\"id\":\"q-store\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\"," +
+            "\"options\":[\"Postgres\",\"DynamoDB\"]}\n" +
+            ":::\n";
+
+        const string writeIn = "neither - keep the file-backed store until the migration lands";
+
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-restart-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        var sidecarDirectory = Path.Combine(directory, "sidecars");
+        Directory.CreateDirectory(sidecarDirectory);
+        await File.WriteAllTextAsync(planPath, plan);
+
+        // The previous session: an answer saved, never drained. Seeded through the sidecar because that is
+        // precisely what survived the force-kill in the report.
+        ReviewSidecar.WriteState(
+            ReviewSidecar.PathForPlan(sidecarDirectory, planPath),
+            planPath,
+            Array.Empty<Annotation>(),
+            new[] { new Answer("q-store", "single", new[] { writeIn }, "human") });
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session,
+            new ReviewServerOptions
+            {
+                BindAddress = IPAddress.Loopback,
+                Port = 0,
+                SidecarDirectory = sidecarDirectory,
+            });
+
+        try
+        {
+            // The server says what it recovered, so the CLI can tell the reviewer rather than leaving them to
+            // infer it from a page that used to be blank.
+            Assert.NotNull(server.Restored);
+            Assert.Equal(1, server.Restored!.Answers);
+
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // It reads as answered...
+            Assert.Equal("true", await page.GetAttributeAsync(Question("q-store"), "data-answered"));
+
+            // ...and honestly: saved is not the same fact as delivered to the agent.
+            Assert.Equal("true", await page.GetAttributeAsync(Question("q-store"), "data-answer-pending"));
+            Assert.Contains(
+                "not yet sent",
+                await page.InnerTextAsync(Question("q-store") + " .question-status"),
+                StringComparison.OrdinalIgnoreCase);
+
+            // The write-in is back verbatim, in the control that can hold it.
+            Assert.Contains(writeIn, await page.InnerHTMLAsync(Question("q-store")), StringComparison.Ordinal);
+
+            // Nothing has changed, so there is nothing to submit -- and no false "unsaved work" to block a reload.
+            await AssertSaveDisabledAsync(page, "q-store");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
