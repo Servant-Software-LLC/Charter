@@ -857,13 +857,47 @@ window.CharterAnnotate = (function () {
     if (!state.ui || !state.ui.send) return;
     var send = state.ui.send;
     var nothingToSend = pendingCount() === 0;
+    var alreadyDelivered = nothingToSend && deliveredCount() > 0;
     send.disabled = state.round.submitted || nothingToSend;
     send.setAttribute('data-charter-sent', state.round.submitted ? 'true' : 'false');
+    send.setAttribute('data-charter-delivered', alreadyDelivered ? 'true' : 'false');
+
+    // The empty queue has TWO causes and they mean opposite things (#124). "Nothing to send yet — add a
+    // note" is correct before the reviewer has written anything, and flatly false once an attached
+    // `poll --watch` has drained what they wrote: it contradicts the notes visible on screen, and the
+    // reasonable reading is "my note didn't register".
     send.title = state.round.submitted
       ? 'Sent.' + agentHint()
-      : (nothingToSend
-        ? 'Nothing to send yet — add a note or answer a question first.'
-        : 'Hand this round of feedback to the agent');
+      : (alreadyDelivered
+        ? 'Nothing new to send — your notes have already gone to the agent as you saved them.'
+        : (nothingToSend
+          ? 'Nothing to send yet — add a note or answer a question first.'
+          : 'Hand this round of feedback to the agent'));
+
+    syncPanelHint(alreadyDelivered);
+  }
+
+  // The standing line under the button. It used to claim "The agent sees your feedback as you save it"
+  // unconditionally — which is true only when something is actually listening, and the reviewer had no way
+  // to tell. Each branch below now says only what is KNOWN:
+  //
+  //   1. notes have already been drained — the strongest possible evidence a listener exists, because
+  //      something took them;
+  //   2. presence says an agent is waiting (#107) — evidence, not proof, so it describes the agent rather
+  //      than promising what will happen;
+  //   3. otherwise — the one statement that is true in every case, including a solo review with nothing
+  //      attached. It does NOT say "nobody is listening": presence is observational, and #107 settled that
+  //      the panel must not report absence as a fault. Solo review is supported, not degraded.
+  function syncPanelHint(alreadyDelivered) {
+    var hint = state.ui && state.ui.hint;
+    if (!hint) return;
+    var listening = state.agent && state.agent.waiting;
+    var text = alreadyDelivered
+      ? 'Your notes have gone to the agent.'
+      : (listening
+        ? 'An agent is listening — a note goes over as you save it.'
+        : 'Save your notes, then hand them to the agent.');
+    if (hint.textContent !== text) hint.textContent = text;
   }
 
   // ---- :::question answer submit: POST the answer to /api/{key}/answers + emit over the
@@ -1307,6 +1341,9 @@ window.CharterAnnotate = (function () {
     '  font-size: 11px; line-height: 1.6; }',
     '.charter-chip-contested { border-color: var(--charter-warn-border); background: var(--charter-warn-bg); }',
     '.charter-chip-orphaned { font-style: italic; }',
+    // The delivery chip (#124). Deliberately quiet — it is reassurance, not an alert; it must read at a
+    // glance without competing with `contested`, which is the chip that wants the reviewer to stop.
+    '.charter-chip-sent { border-style: dashed; }',
     '.charter-item[data-charter-status="retracted"] .charter-item-note { font-style: italic;',
     '  color: var(--charter-muted); }',
     '.charter-item-orphan { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
@@ -1410,8 +1447,9 @@ window.CharterAnnotate = (function () {
     // The round hand-off. Disabled until there is queued feedback to send (and again once sent), so the
     // control can never post an empty round or double-hand-off the same one.
     var actions = make('div', 'charter-panel-actions', 'panel-actions');
-    actions.appendChild(make('span', 'charter-panel-hint', 'panel-hint',
-      'The agent sees your feedback as you save it.'));
+    var hint = make('span', 'charter-panel-hint', 'panel-hint',
+      'Save your notes, then hand them to the agent.');
+    actions.appendChild(hint);
     var send = button('charter-btn charter-btn-primary charter-send', 'send-to-agent', 'Send to agent');
     send.disabled = true;
     send.setAttribute('data-charter-sent', 'false');
@@ -1434,7 +1472,7 @@ window.CharterAnnotate = (function () {
     document.body.appendChild(toggle);
 
     state.ui = {
-      style: style, panel: panel, title: title, list: list, send: send,
+      style: style, panel: panel, title: title, list: list, send: send, hint: hint,
       status: status, toggle: toggle, overlay: overlay, banner: null,
       // The quarantine notice is built on demand (renderStaleQueue) and lives inside the panel, so disposing
       // the panel disposes it. It is never in the saved artifact — invariant 1 — like the rest of this chrome.
@@ -1655,7 +1693,8 @@ window.CharterAnnotate = (function () {
       mine: !!comment.mine,
       sides: comment.sides || [],
       replies: comment.replies || [],
-      committed: true
+      committed: true,
+      delivered: false      // computed in mergedRecords() against the live queue (#124)
     };
   }
 
@@ -1676,16 +1715,41 @@ window.CharterAnnotate = (function () {
       mine: true,
       sides: [],
       replies: [],
-      committed: false
+      committed: false,
+      delivered: false      // it is IN the queue by construction, so it has not left for the agent
     };
+  }
+
+  // ---- delivery is its own axis (#124) --------------------------------------------------------------
+  // open/resolved says whether a note is SETTLED. It says nothing about whether the agent has it, and the
+  // panel used to render only the first — so with `charter poll --watch` draining on save, a note that had
+  // already been handed over sat there badged `open`, looking untouched, while "Send to agent" said
+  // "Nothing to send yet — add a note". The reviewer's rational conclusion was "my note didn't take", which
+  // is the opposite of the truth.
+  //
+  // The signal needs no new endpoint: `/api/annotations` is the QUEUE, so a note the server no longer holds
+  // there has left for the agent. A batch that is in flight but unacked (#117) is already excluded from that
+  // snapshot deliberately — the reviewer must not see a note as still pending once it is the agent's — and
+  // "sent" is the honest word for it either way.
+  //
+  // "Sent" is also the honest CEILING. Charter knows a note was delivered; it cannot know the agent read it,
+  // agreed with it, or acted on it. `reply` and `resolve` are how those get said, by whoever actually knows.
+  function queuedIds() {
+    var ids = Object.create(null);
+    for (var i = 0; i < state.annotations.length; i++) ids[state.annotations[i].id] = true;
+    return ids;
   }
 
   function mergedRecords() {
     var records = [];
     var seen = Object.create(null);
+    var queued = queuedIds();
     var i;
     for (i = 0; i < state.log.comments.length; i++) {
       var committed = logRecord(state.log.comments[i]);
+      // Only THIS reviewer's own notes can be reported as delivered-or-not: a teammate's committed comment
+      // arrived through git, never through this session's queue, so its absence from the queue says nothing.
+      committed.delivered = committed.mine && !queued[committed.id];
       seen[committed.id] = true;
       records.push(committed);
     }
@@ -1693,6 +1757,16 @@ window.CharterAnnotate = (function () {
       if (!seen[state.annotations[i].id]) records.push(pendingRecord(state.annotations[i]));
     }
     return records;
+  }
+
+  // Notes of this reviewer's that the agent has been handed. Drives the honest wording on the Send control.
+  function deliveredCount() {
+    var records = mergedRecords();
+    var n = 0;
+    for (var i = 0; i < records.length; i++) {
+      if (records[i].delivered && records[i].status !== 'retracted') n++;
+    }
+    return n;
   }
 
   // Document order, so the list reads top-to-bottom like the plan. Orphans (their block is gone
@@ -1737,6 +1811,9 @@ window.CharterAnnotate = (function () {
     item.setAttribute('data-charter-anchor-status', orphaned ? 'orphaned' : 'resolved');
     item.setAttribute('data-charter-status', record.status || 'open');
     item.setAttribute('data-charter-committed', record.committed ? 'true' : 'false');
+    // Delivery is a SEPARATE axis from open/resolved (#124): a note can be open-and-sent, open-and-queued,
+    // or settled. Rendering only the first pair is what made a delivered note look unprocessed.
+    item.setAttribute('data-charter-delivery', record.delivered ? 'sent' : 'queued');
     if (record.baseStatus) item.setAttribute('data-charter-base-status', record.baseStatus);
     if (record.authorEmail) item.setAttribute('data-charter-author-email', record.authorEmail);
     if (record.actor) item.setAttribute('data-charter-actor', record.actor);
@@ -1757,6 +1834,15 @@ window.CharterAnnotate = (function () {
         meta.appendChild(make('span', 'charter-chip', 'item-actor', record.actor));
       }
       meta.appendChild(make('span', 'charter-chip charter-chip-' + record.status, 'item-status', record.status));
+
+      // The delivery chip sits beside the status chip rather than replacing it, because they answer different
+      // questions: `open` means nobody has settled it, `sent` means the agent has it. Only said for a note
+      // still in play — on a resolved or retracted one, delivery is history and the extra chip is noise.
+      if (record.delivered && record.status === 'open') {
+        var sent = make('span', 'charter-chip charter-chip-sent', 'item-delivery', 'sent');
+        sent.title = 'Handed to the agent. Charter knows it was delivered, not whether it has been acted on.';
+        meta.appendChild(sent);
+      }
       if (orphaned) {
         meta.appendChild(make('span', 'charter-chip charter-chip-orphaned', 'item-orphan-chip', 'orphaned'));
       }
@@ -2603,6 +2689,14 @@ window.CharterAnnotate = (function () {
       // A teammate's log landing in `.review/` (a `git pull` mid-session) refreshes the PANEL only — never
       // a page navigation, which would discard a half-typed note for someone else's comment.
       es.addEventListener('review-log', function () { emit('review-log-changed', {}); hydrateLog(); });
+      // The agent drained the queue (#124). Panel-only, like review-log — nothing about the document
+      // changed, so a navigation here would discard a half-typed note to report good news. Re-reading the
+      // queue is what flips a delivered note from "queued" to "sent" and stops the Send control claiming
+      // there is nothing to send because the reviewer has not written anything.
+      es.addEventListener('queue', function () {
+        emit('queue-changed', {});
+        hydrate().then(function () { refreshRound(); });
+      });
       es.onmessage = function (m) { emit('event', { data: m && m.data }); };
       es.onerror = function () { emit('events-error', {}); };
       state.events = es;

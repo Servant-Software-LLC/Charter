@@ -467,6 +467,15 @@ public static class HandoffMarkdown
             }
         }
 
+        // The authoring agent's lean travels downstream too (Charter #125). On an OPEN question it tells the
+        // breakdown which way the plan was heading; on an ANSWERED one it is the sharper signal — a human who
+        // chose AGAINST the recommendation made a deliberate correction, and a task built from that plan should
+        // not quietly drift back toward the option they rejected.
+        if (spec.Recommended is { Length: > 0 })
+        {
+            builder.Append("; recommended: `").Append(spec.Recommended).Append('`');
+        }
+
         return builder.Append('_').ToString();
     }
 }

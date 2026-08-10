@@ -136,6 +136,7 @@ The body is a JSON object (JSON is a subset of YAML, so the parser stays depende
 | `mode` | string | yes | One of `single` / `multi` / `free-text` / `bool` / `number`. |
 | `options` | array of strings | for `single`/`multi` | The choices. Required and non-empty for the select modes; unused otherwise. |
 | `target` | string | yes | `human` or `agent` — who the resolved answer routes to. |
+| `recommended` | string | no | The option the **authoring agent** would choose. Must equal one of `options` verbatim; a value matching none is ignored. |
 | `answer` | array of strings | no | **The open/resolved marker.** Absent or empty ⇒ the question is **open**. Non-empty ⇒ **resolved**, carrying the chosen value(s). |
 
 The `answer` shape mirrors a submitted answer's values: a `single`/`bool`/`number` answer is one element, a
@@ -152,6 +153,37 @@ renderer already displays such a value as a checked write-in.
 Note this hatch is **emitted by the renderer, never authored**. Do not add an "Other" string to `options`
 yourself: `charter handoff` emits the option list verbatim into the CommonMark Guardrails consumes, so an
 authored "Other" would become a real choice in the data model — one the agent never actually proposed.
+
+### `recommended` — the agent's lean, as a field
+
+`recommended` names the option the authoring agent would pick. The renderer marks that option's **label**
+`(Recommended)` — the convention Claude Code's own `AskUserQuestion` uses, so reviewers already read it —
+while the submitted **value** stays the bare option.
+
+**Never put `(Recommended)` inside an `options` string.** It looks equivalent and is not, for two reasons
+that only surface later:
+
+- an option's text is also its submitted **value**, so the recorded decision would read
+  `"Postgres (Recommended)"` and carry a transient authoring hint into the permanent answer and into
+  everything downstream of `handoff`;
+- the question **fingerprint** hashes `options`, so adding or withdrawing a recommendation would change the
+  fingerprint and **stale an answer the human already gave** — `charter resolve` would then refuse to apply
+  it without `--apply-stale-answers`.
+
+`recommended` is deliberately **not** part of the fingerprint: a changed lean does not change what was
+asked, so an agent revising its own opinion must never invalidate a human's decision.
+
+````markdown
+:::question
+{ "id": "db-choice", "title": "Which datastore for the read path?",
+  "mode": "single", "options": ["Postgres", "DynamoDB"], "recommended": "Postgres",
+  "target": "human" }
+:::
+````
+
+Interpreting it: on an **open** question it says which way the plan was heading. On a **resolved** one it is
+sharper — an `answer` that differs from `recommended` is a human deliberately overriding the agent, and work
+built from that plan must not drift back toward the rejected option.
 
 **Open** (as authored):
 

@@ -220,6 +220,55 @@ public sealed class ReviewServer : IReviewServer
         };
     }
 
+    // Every live /events connection's Signal, so a state change handled on ONE request (a drain) reaches ALL
+    // of them. The watchers are per-connection because a file event is observed independently by each; a drain
+    // is not — it happens once, in a different request, and nothing local to a connection can see it.
+    private readonly List<Action<string>> _listeners = new();
+
+    private void AddListener(Action<string> listener)
+    {
+        lock (_listeners)
+        {
+            _listeners.Add(listener);
+        }
+    }
+
+    private void RemoveListener(Action<string> listener)
+    {
+        lock (_listeners)
+        {
+            _listeners.Remove(listener);
+        }
+    }
+
+    /// <summary>Push <paramref name="eventName"/> to every open event stream. Never throws: a listener whose
+    /// stream is tearing down must not fail the request that changed the state.</summary>
+    private void Broadcast(string eventName)
+    {
+        Action<string>[] listeners;
+        lock (_listeners)
+        {
+            if (_listeners.Count == 0)
+            {
+                return;
+            }
+
+            listeners = _listeners.ToArray();
+        }
+
+        foreach (var listener in listeners)
+        {
+            try
+            {
+                listener(eventName);
+            }
+            catch (Exception)
+            {
+                // A dead stream is not this request's problem; the loop drops it on its own.
+            }
+        }
+    }
+
     /// <summary>
     /// The queue this server declined to rehydrate because it belongs to a different document (Charter #67), or
     /// <see langword="null"/> when there was none. The CLI reports it; nothing is destroyed either way.
@@ -849,6 +898,16 @@ public sealed class ReviewServer : IReviewServer
         // handoff projection; a re-drain re-resolves them anyway.
         WriteDrainedJson(response, resolved, _ => _store.Requeue(drained), batch.Sequence);
         _sidecar?.Persist();
+
+        // Tell any open page that its queue moved (Charter #124). Only when something actually left: a poll
+        // that drains nothing must not churn every connected panel. This is the moment a reviewer's note stops
+        // being "queued" and becomes "sent", and it is precisely the moment they are looking at it — a
+        // `poll --watch` drains within a second of the save, so without this the panel would keep asserting
+        // the note is unsent while the agent already has it.
+        if (drained.Count > 0)
+        {
+            Broadcast(QueueEvent);
+        }
     }
 
     /// <summary>
@@ -1404,6 +1463,14 @@ public sealed class ReviewServer : IReviewServer
             }
         }
 
+        // Join the server-level fan-out for the duration of this stream, so a drain handled on a DIFFERENT
+        // request pushes here too (Charter #124). Registered after Signal exists and removed in the finally
+        // below, so a closed stream is never signalled.
+        Action<string> listener = Signal;
+        AddListener(listener);
+        try
+        {
+
         // Watch the plan FILE, never its tree — a large parent directory saturates the event loop. Behind the
         // watcher sits the same keep-alive safety net the `.review/` watch got in #88, because this one had the
         // identical single-arm shape: one dropped notification and live reload was silently over for the life
@@ -1486,11 +1553,31 @@ public sealed class ReviewServer : IReviewServer
                 break; // The client disconnected or the server is shutting down.
             }
         }
+        }
+        finally
+        {
+            RemoveListener(listener);
+        }
     }
 
     // The SSE event names. `reload` navigates the page (the plan itself changed); `review-log` only tells the
     // panel to re-read the fold, so a teammate's comment arriving never discards a half-typed note.
     private const string ReloadEvent = "reload";
+
+    /// <summary>
+    /// The pending-annotation queue changed — most importantly, an agent DRAINED it (Charter #124).
+    /// <para>
+    /// Distinct from <see cref="ReloadEvent"/>: nothing about the document changed, so a navigation would be
+    /// both wasteful and destructive of a half-typed note. The page only needs to re-read the queue, which is
+    /// what turns a delivered note from "queued" into "sent" in the panel.
+    /// </para>
+    /// <para>
+    /// It needs a PUSH rather than the keep-alive beat because the whole defect is a panel that asserts
+    /// something false: a note drained the instant it was saved would otherwise read as unsent for up to a
+    /// full beat, which is exactly the moment the reviewer is looking at it and deciding whether it took.
+    /// </para>
+    /// </summary>
+    private const string QueueEvent = "queue";
     private const string ReviewLogEvent = "review-log";
 
     // The served-page Content-Security-Policy. Distinct from the export CSP: it keeps script-src

@@ -191,6 +191,24 @@ Two things follow for you:
 - **"Saved" is not "you have it."** The page says *not yet sent* until a drain, which is the truth — do
   not describe an answer as received before you have drained it.
 
+### What the reviewer's panel shows once you drain
+
+Delivery is a **separate axis from open/resolved** in the panel (#124). A note you have drained is badged
+**`sent`** while still showing `open`, because they answer different questions: `open` means nobody has
+settled it, `sent` means you have it.
+
+`sent` is also the honest ceiling — Charter knows a note was delivered, not that you read it, agreed with
+it, or acted on it. **Those are yours to say**, and there are verbs for both:
+
+- **`charter reply <plan> --to <id> --body "…"`** — answer in the thread. Accept it, push back on it, or ask
+  what was meant. Use it *especially* when you are NOT going to act on a note; a note that is silently
+  dropped looks identical to one you never received.
+- **`charter resolve`** / the reviewer's own Resolve — settles it.
+
+If you run `charter poll --watch`, the reviewer's notes are drained the moment they save them, so
+**"Send to agent" stays disabled and that is correct** — there is nothing new to hand over. Do not tell them
+to click it.
+
 ### `reviewSubmitted` — did the human hand you this round?
 
 `charter poll`'s envelope carries two additive fields telling you *why* you woke:
