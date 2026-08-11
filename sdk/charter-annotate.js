@@ -2206,7 +2206,32 @@ window.CharterAnnotate = (function () {
     }
 
     ui.title.textContent = 'Review notes (' + entries.length + ')';
-    ui.toggle.textContent = 'Notes ' + entries.length;
+
+    // The collapsed pill's whole job is the state where the panel is SHUT and the reviewer is reading the
+    // plan — and in that state the total is the one number that never moves (#134). Resolve everything and
+    // `Notes 5` reads exactly as it did when nothing had been dealt with. The count that says "something is
+    // waiting on you" was the only one they could not see, and the only way to find it was to open the panel
+    // and count badges.
+    //
+    // A RETRACTED note is not open: it was withdrawn, not left undone. A note that has been drained and
+    // badged `sent` IS open — delivery and resolution are different axes (#124), and treating the agent
+    // having it as business finished would tell the reviewer the opposite of the truth. A teammate's open
+    // comment counts too: the pill describes the plan's state, not authorship.
+    var open = 0;
+    for (var e = 0; e < entries.length; e++) {
+      if ((entries[e].record.status || 'open') === 'open') open++;
+    }
+
+    // No `(0 open)` when everything is settled — the absence of the clause is the signal.
+    ui.toggle.textContent = open > 0
+      ? 'Notes ' + entries.length + ' (' + open + ' open)'
+      : 'Notes ' + entries.length;
+    ui.toggle.setAttribute('data-charter-open-count', String(open));
+    ui.toggle.setAttribute(
+      'aria-label',
+      open > 0
+        ? 'Show Charter review notes — ' + open + ' of ' + entries.length + ' still open'
+        : 'Show Charter review notes');
   }
 
   // ---- on-page markers: which blocks already carry a note ------------------------------
