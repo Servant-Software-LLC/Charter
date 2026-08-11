@@ -169,6 +169,36 @@ window.CharterAnnotate = (function () {
   // produce an anchor — click, selection, or a future one — is covered by construction.
   var UNANCHORABLE = '[' + UI_ATTR + '], input, textarea, select, button, option, form.question';
 
+  // The annotate modifier's NAME, per platform. The mechanic is identical everywhere — macOS's ⌥ key sets
+  // `event.altKey`, so nothing about the handling changes — but its KEYCAP does not read "Alt" on a Mac, and
+  // telling a reviewer to press a key their keyboard does not have is the same as telling them nothing.
+  // Reported by a reviewer on a MacBook who could not find the gesture at all.
+  var IS_MAC = (function () {
+    try {
+      var platform = (navigator.userAgentData && navigator.userAgentData.platform) ||
+                     navigator.platform || navigator.userAgent || '';
+      return /mac|iphone|ipad|ipod/i.test(platform);
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  var MODIFIER = IS_MAC ? '⌥ Option' : 'Alt';
+
+  // The width the review panel occupies, and the viewport below which reserving it would squeeze the plan
+  // harder than the panel ever covered it. Kept next to the panel's own width so the two cannot drift.
+  var PANEL_WIDTH = 340;
+
+  // Reserve only where the plan can still be read at ESSENTIALLY ITS FULL MEASURE. The document wants
+  // 52rem plus 1.5rem of padding either side — about 880px — so taking the panel's 340px needs ~1220px of
+  // viewport before the reading column starts to suffer. Set at 1200: the squeeze there is ~3% of the
+  // measure, and below it the panel overlays exactly as it did.
+  //
+  // The first value tried was 1000, which was wrong in an instructive way: it left a 612px column, narrower
+  // than the 660px the layout suite treats as a SMALL SCREEN. Reserving had quietly forced every
+  // 1000px-wide reviewer into the narrow layout to avoid an occlusion that costs them far less.
+  var RESERVE_MIN_VIEWPORT = 1200;
+
   // A rendered :::diagram block. The renderer stamps the block's content-derived stable Charter id on the
   // <pre class="mermaid"> root; the Mermaid runtime then REPLACES that element's content with an <svg> and
   // stamps ITS OWN generated ids on the svg and on every node inside it. Those ids are not Charter anchors:
@@ -759,8 +789,15 @@ window.CharterAnnotate = (function () {
     if (agent && typeof agent.lastSeenSecondsAgo === 'number') {
       return ' An agent last checked ' + describeAgo(agentSeenSecondsAgo(agent)) + '.';
     }
-    return ' No agent has checked this session yet — run `charter poll <plan> --wait --apply`, ' +
-           'or fold the answers in yourself with `charter resolve <plan>`.';
+    // A statement of fact, and nothing else. The instruction that follows from it is the copyable command
+    // row below the button — which carries the reviewer's REAL path rather than a `<plan>` placeholder they
+    // would have to fill in, and `--watch` rather than `--wait` (one ~30s cycle). Repeating it here left two
+    // instructions on screen that disagreed about both.
+    //
+    // `charter resolve` used to be offered here as the alternative. It is not one: resolve folds queued
+    // ANSWERS inline and does nothing whatever for annotations, so a reviewer who has just sent a round of
+    // notes would have followed it and delivered none of them.
+    return ' No agent has checked this session yet.';
   }
 
   // How long ago the agent was last seen, AS OF NOW — the server's number plus the time since we were told
@@ -1369,6 +1406,27 @@ window.CharterAnnotate = (function () {
     '.charter-composer-hint { color: var(--charter-muted); font-size: 11px; margin: 6px 0; }',
     '.charter-composer-actions { display: flex; gap: 8px; justify-content: flex-end; }',
 
+    // Reserve the panel's column so the plan is never UNDER it (#131).
+    //
+    // The document is centred at a 52rem measure, and the panel is fixed to the right edge — so the two
+    // collide on any viewport narrower than about 1512px, which is most laptops. A reviewer on a 1440-wide
+    // MacBook loses roughly 36px of every line of the document they are annotating.
+    //
+    // Reserved from FIRST PAINT rather than when the panel opens, and that is the whole point: the panel
+    // opens itself the moment a note is saved, so reserving on open would jerk the document sideways at
+    // exactly the instant the reviewer finished annotating — moving the block they had just commented on.
+    // It also means the layout is settled BEFORE any diagram is measured, so nothing needs re-pinning and
+    // the reflow hazard behind #113 never arises. The cost is 340px of width for a reviewer who never opens
+    // the panel; stillness is worth more.
+    //
+    // It lives in the SDK's stylesheet, never in charter.css: `render` and `export` share that file and must
+    // keep emitting a centred, full-width document. This layout exists only where the panel does.
+    //
+    // Below RESERVE_MIN_VIEWPORT the reserve is dropped and the panel overlays as before — squeezing a
+    // narrow screen to a 600px measure would cost the reader more than the occlusion does.
+    '@media (min-width: ' + RESERVE_MIN_VIEWPORT + 'px) {',
+    '  html.charter-reserved { box-sizing: border-box; padding-right: ' + PANEL_WIDTH + 'px; }',
+    '}',
     '.charter-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 340px; max-width: 100vw;',
     '  z-index: 2147482000; display: flex; flex-direction: column; font-size: 13px;',
     '  background: var(--charter-bg); color: var(--charter-fg);',
@@ -1632,6 +1690,11 @@ window.CharterAnnotate = (function () {
     var style = make('style', null, 'style');
     style.textContent = STYLE;
     (document.head || document.documentElement).appendChild(style);
+
+    // Claim the panel's column as soon as the chrome exists — before diagrams are measured, so a diagram
+    // that needs pan/zoom is decided against the width it will actually have (#131). The media query above
+    // is what makes this a no-op on a narrow screen; the class is set unconditionally.
+    document.documentElement.classList.add('charter-reserved');
 
     var panel = make('div', 'charter-panel charter-hidden', 'panel');
     panel.setAttribute('role', 'complementary');
@@ -2137,7 +2200,7 @@ window.CharterAnnotate = (function () {
 
     if (entries.length === 0) {
       list.appendChild(make('div', 'charter-panel-empty', 'panel-empty',
-        'No notes yet. Alt+click a block \u2014 or select some text \u2014 to comment on it.'));
+        'No notes yet. ' + MODIFIER + '+click a block \u2014 or select some text \u2014 to comment on it.'));
     } else {
       for (var i = 0; i < entries.length; i++) list.appendChild(buildItem(entries[i]));
     }
@@ -3004,6 +3067,9 @@ window.CharterAnnotate = (function () {
     }
     unwireQuestionForms();
     if (state.ageTicker) { window.clearInterval(state.ageTicker); state.ageTicker = 0; }
+    // Give the column back: a disposed SDK must leave the document indistinguishable from the exported
+    // artifact's, layout included.
+    document.documentElement.classList.remove('charter-reserved');
     // Every pan/zoom view is torn down to the markup the renderer emitted — inline styles cleared, classes,
     // tab stop, role and label removed — so a disposed SDK leaves the block indistinguishable from the
     // exported artifact's.

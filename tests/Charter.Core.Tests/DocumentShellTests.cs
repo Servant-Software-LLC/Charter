@@ -65,4 +65,18 @@ public class DocumentShellTests
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         Assert.DoesNotContain("${", withoutScripts);
     }
+    /// <summary>
+    /// The reserve is the SDK's, never the renderer's. `render` and `export` share charter.css and must keep
+    /// emitting a centred, full-width document — an artifact someone opens without a review server has no
+    /// panel to make room for, and a 340px gutter in a shared deliverable would be inexplicable.
+    /// </summary>
+    [Fact]
+    public void TheExportedArtifactReservesNothing()
+    {
+        var html = CharterRenderer.Render("# Plan\n\nA paragraph.\n");
+
+        Assert.DoesNotContain("charter-reserved", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("padding-right: 340px", html, StringComparison.Ordinal);
+    }
+
 }

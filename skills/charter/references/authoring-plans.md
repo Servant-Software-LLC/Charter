@@ -103,6 +103,11 @@ SVG's intrinsic `viewBox` width against its rendered width) and gives that block
 to pan it once focused (`0` resets). A diagram that **fits gains nothing** — no chrome, no tab stop, no
 change in behaviour. Alt+click still annotates at every zoom level.
 
+> **Say "Option" to a reviewer on a Mac.** The modifier is `event.altKey` everywhere, but the keycap is
+> `⌥ Option` on macOS and `Alt` elsewhere — and a reviewer told to press a key their keyboard does not have
+> reads it as "diagrams are not commentable". The SDK's own hint picks the right word per platform; use both
+> names if you write the gesture into a plan.
+
 **The saved and exported artifact renders the diagram statically.** Pan/zoom is review-time SDK chrome
 (invariant 1, *portable artifact*), so it is not in the file you hand to a person or attach to a ticket. The
 authoring consequence: a diagram only legible when zoomed is legible **only in review**. If the artifact is

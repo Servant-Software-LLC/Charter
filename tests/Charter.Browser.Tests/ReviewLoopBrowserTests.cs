@@ -1368,6 +1368,126 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+
+    /// <summary>
+    /// The review panel must not sit on top of the plan (#131).
+    /// <para>
+    /// The document is centred at a 52rem measure and the panel is fixed to the right edge, so before this
+    /// they collided on any viewport under ~1512px — most laptops. A reviewer on a 1440-wide MacBook lost
+    /// about 36px of every line of the document they were annotating.
+    /// </para>
+    /// <para>
+    /// Asserted as GEOMETRY rather than as a CSS rule: the content's right edge against the panel's left
+    /// edge, at a real laptop viewport, with the panel open. A test that asserted the class was applied
+    /// would pass against a stylesheet that had stopped working.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task The_panel_does_not_cover_the_plan_on_a_laptop_viewport()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-layout-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            // A MacBook's logical width — the exact case that reported this.
+            await page.SetViewportSizeAsync(1440, 900);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            await page.ClickAsync(Ui("panel-toggle"));
+            await WaitForEventAsync(page, "panel-opened");
+
+            var geometry = await page.EvaluateAsync<JsonElement>(
+                "() => {" +
+                "  const prose = document.querySelector('body > p');" +
+                "  const panel = document.querySelector('[data-charter-ui=\"panel\"]');" +
+                "  return {" +
+                "    contentRight: prose.getBoundingClientRect().right," +
+                "    panelLeft: panel.getBoundingClientRect().left" +
+                "  };" +
+                "}");
+
+            var contentRight = geometry.GetProperty("contentRight").GetDouble();
+            var panelLeft = geometry.GetProperty("panelLeft").GetDouble();
+
+            Assert.True(
+                contentRight <= panelLeft,
+                "the panel covers the plan's text at 1440px — content ends at " + contentRight +
+                    " and the panel starts at " + panelLeft);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Below the breakpoint the reserve is dropped and the panel overlays as it always did: squeezing a
+    /// narrow screen to a ~600px measure would cost the reader more than the occlusion it prevents. Pinned
+    /// so a future "just always reserve it" cannot quietly make small screens worse.
+    /// </summary>
+    [SkippableFact]
+    public async Task On_a_narrow_viewport_the_plan_keeps_its_full_measure()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-layout-narrow-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(820, 900);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var width = await page.EvaluateAsync<double>(
+                "() => document.querySelector('body > p').getBoundingClientRect().width");
+
+            // Nothing was reserved, so the measure is the viewport minus the document's own padding.
+            Assert.True(width > 700, "a narrow screen must keep its full measure, got " + width);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
@@ -1853,9 +1973,23 @@ public sealed partial class ReviewLoopBrowserTests
             }
 
             Assert.Contains("Sent", status, StringComparison.Ordinal);
-            // And it must say what to actually DO about it — a reviewer who hands a round to nobody needs
-            // the way out, not just the absence of a false claim.
-            Assert.Contains("charter poll", status, StringComparison.Ordinal);
+            Assert.Contains("No agent has checked this session yet", status, StringComparison.Ordinal);
+
+            // A reviewer who hands a round to nobody still needs the way out — that requirement has not
+            // changed, only where it lives. The status line states the FACT; the copyable command row states
+            // what to do, with their real path in it. It used to be repeated here as
+            // `charter poll <plan> --wait --apply` — a placeholder they had to fill in, and the weaker verb
+            // (one ~30s cycle) — so the two instructions on screen disagreed about both.
+            await page.WaitForSelectorAsync(Ui("drain-command"));
+            var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
+            Assert.Contains("charter poll", command, StringComparison.Ordinal);
+            Assert.Contains("--watch", command, StringComparison.Ordinal);
+            Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
+
+            // And `charter resolve` must NOT be offered as the alternative: it folds queued ANSWERS inline
+            // and does nothing for annotations, so a reviewer who just sent a round of notes would have
+            // followed it and delivered none of them.
+            Assert.DoesNotContain("charter resolve", status, StringComparison.Ordinal);
         }
         finally
         {
