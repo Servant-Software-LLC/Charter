@@ -1131,6 +1131,237 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+
+    /// <summary>
+    /// #116 — a round handed to NOBODY used to just sit there. Charter never runs an agent, so the honest
+    /// close of that gap is to hand the reviewer the exact command instead of asking them to reconstruct it:
+    /// the verb, the flags and their own plan's path.
+    /// <para>
+    /// The gate is "nothing has EVER checked this session", which is the one presence fact that is certain.
+    /// It is deliberately not "nobody is waiting right now" — an agent between poll cycles reads identically,
+    /// and telling a reviewer who already has a working agent to start a second one invites two writers.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task With_nothing_listening_the_panel_offers_the_drain_command_for_this_plan()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-drain-cmd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // Nothing has polled this session, by construction.
+            Assert.True(await page.Locator(Ui("drain-command")).IsHiddenAsync());
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note nobody will drain");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+
+            await page.WaitForSelectorAsync(Ui("drain-command"));
+            var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
+
+            // A REAL command, not a template: this plan's own path, quoted so a directory with a space in it
+            // does not silently truncate.
+            Assert.StartsWith("charter poll ", command, StringComparison.Ordinal);
+            Assert.Contains("--watch", command, StringComparison.Ordinal);
+            Assert.Contains("--apply", command, StringComparison.Ordinal);
+            Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
+            Assert.Contains("\"", command, StringComparison.Ordinal);
+            Assert.DoesNotContain("\\", command, StringComparison.Ordinal);   // forward slashes, even on Windows
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            TryDeleteTree(directory);
+        }
+    }
+
+    /// <summary>
+    /// The drain offer must NOT appear to a reviewer who already has an agent attached — that is the case
+    /// where following it would start a second writer against the same plan.
+    /// </summary>
+    [SkippableFact]
+    public async Task With_an_agent_attached_the_drain_command_is_not_offered()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-drain-quiet-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            // An agent checks in, exactly as `charter poll` does. Presence now has a last-seen for it.
+            using (var probe = new HttpClient())
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var pollUri = new Uri(
+                    server.Address,
+                    "api/poll?wait=0&key=" + Uri.EscapeDataString(session.Key.Value));
+                using var drained = await probe.GetAsync(pollUri, cts.Token);
+                Assert.True(drained.IsSuccessStatusCode);
+            }
+
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note an agent will take");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+            await WaitForEventAsync(page, "round-loaded");
+
+            Assert.True(
+                await page.Locator(Ui("drain-command")).IsHiddenAsync(),
+                "a reviewer whose agent is already attached must not be told to start a second one");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            TryDeleteTree(directory);
+        }
+    }
+
+    /// <summary>
+    /// #126 — the last manual seam. The reviewer approves a plan in the browser, then retypes the breakdown
+    /// command and its path in a terminal. The page knows both, so it hands them over.
+    /// <para>
+    /// It is a COPY, not a trigger. The page executes nothing, which is what keeps the boundary in #116
+    /// intact and means the button owes no progress state — there is no "between" to report. The note is
+    /// load-bearing rather than decorative: pasted into a session already running `charter poll --watch`,
+    /// the command queues behind that tool call and looks like nothing happened, and the reviewer's natural
+    /// response is to paste it again — a second breakdown regenerates the task folder over hand-edited
+    /// guardrails.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_settled_plan_offers_a_copyable_plan_breakdown_command()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-breakdown-cmd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            // Chromium gates the clipboard behind a permission; WebKit has no equivalent grant. Requesting it
+            // only where it exists keeps this a REAL clipboard write on Chromium rather than a stub that
+            // would pass against a build where the write never happens.
+            if (BrowserEngine.IsChromium)
+            {
+                await page.Context.GrantPermissionsAsync(new[] { "clipboard-read", "clipboard-write" });
+            }
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "round-loaded");
+
+            await page.WaitForSelectorAsync(Ui("breakdown-command"));
+            var command = (await page.InnerTextAsync(Ui("breakdown-command-text"))).Trim();
+
+            Assert.StartsWith("/plan-breakdown ", command, StringComparison.Ordinal);
+            Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
+            Assert.Contains("\"", command, StringComparison.Ordinal);
+
+            // The caveat that stops a paste vanishing behind a running watch — and being pasted twice.
+            var note = (await page.InnerTextAsync(Ui("breakdown-command-note"))).Trim();
+            Assert.Contains("--watch", note, StringComparison.Ordinal);
+
+            // It must never offer to RUN anything: `guardrails run` executes real work and merges a branch.
+            Assert.DoesNotContain("guardrails run", command, StringComparison.Ordinal);
+
+            await page.ClickAsync(Ui("breakdown-command-copy"));
+            await WaitForEventAsync(page, "command-copied");
+
+            if (BrowserEngine.IsChromium)
+            {
+                // The clipboard's actual contents — the property that matters. Asserting the button changed
+                // label would pass against a build where the write silently failed.
+                var clipboard = await page.EvaluateAsync<string>("() => navigator.clipboard.readText()");
+                Assert.Equal(command, clipboard.Trim());
+            }
+            else
+            {
+                // WebKit cannot be read back reliably, so the guarantee asserted here is the weaker,
+                // honest one: the copy resolved, and the command is on screen and selectable either way.
+                Assert.Equal("all", await page.EvaluateAsync<string>(
+                    "() => getComputedStyle(document.querySelector('[data-charter-ui=\"breakdown-command-text\"]'))"
+                    + ".webkitUserSelect"));
+            }
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            TryDeleteTree(directory);
+        }
+    }
+
+    private static void TryDeleteTree(string directory)
+    {
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>

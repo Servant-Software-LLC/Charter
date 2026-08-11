@@ -76,6 +76,11 @@ window.CharterAnnotate = (function () {
     // the rewrite lands. This flag spans the whole wait, which is the interval the reviewer is living in.
     awaitingRevision: false,
     agentSeenAt: 0,      // when this page last learned the presence facts, for honest elapsed time
+    // The plan's own path, read once from GET /api/sessions. It is what makes a copyable command a REAL
+    // command rather than a template the reviewer has to finish (#116, #126). Fetched at init so the string
+    // is already composed when the copy gesture arrives — WebKit rejects a clipboard write reached after an
+    // intervening await.
+    sourcePath: null,
     ageTicker: 0,        // the display-only timer that keeps that elapsed reading from freezing
     staleQueue: null,
     staleQueueShown: false,
@@ -843,6 +848,20 @@ window.CharterAnnotate = (function () {
     return state.round.pending.annotations + state.round.pending.answers;
   }
 
+  // The plan's path, read once. Key-gated like every other read, and kept OUT of emit() — the postMessage
+  // broadcast deliberately carries no request URLs, and a local absolute path is the same class of thing.
+  function hydrateSession() {
+    var url = '/api/sessions?key=' + encodeURIComponent(state.key || '');
+    return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
+      if (!res.ok) return null;
+      return res.json().then(function (descriptor) {
+        state.sourcePath = (descriptor && descriptor.sourcePath) || null;
+        syncCommands();
+        return state.sourcePath;
+      }, function () { return null; });
+    }).catch(function () { return null; });
+  }
+
   function refreshRound() {
     var url = '/api/review?key=' + encodeURIComponent(state.key || '');
     return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
@@ -918,6 +937,7 @@ window.CharterAnnotate = (function () {
           : 'Hand this round of feedback to the agent'));
 
     syncPanelHint(alreadyDelivered);
+    syncCommands();
   }
 
   // The standing line under the button. It used to claim "The agent sees your feedback as you save it"
@@ -1387,6 +1407,16 @@ window.CharterAnnotate = (function () {
     // The delivery chip (#124). Deliberately quiet — it is reassurance, not an alert; it must read at a
     // glance without competing with `contested`, which is the chip that wants the reviewer to stop.
     '.charter-chip-sent { border-style: dashed; }',
+    // The command rows (#116, #126). The command itself is the loud part — it is what gets copied, and it
+    // must stay legible and selectable even when the clipboard refuses.
+    '.charter-commands { border-top: 1px solid var(--charter-border); padding: 8px 10px; }',
+    '.charter-command + .charter-command { margin-top: 10px; }',
+    '.charter-command-label { font-size: 12px; margin-bottom: 4px; }',
+    '.charter-command-text { display: block; user-select: all; -webkit-user-select: all;',
+    '  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;',
+    '  background: var(--charter-code-bg, rgba(127,127,127,0.12)); border: 1px solid var(--charter-border);',
+    '  border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; overflow-wrap: anywhere; }',
+    '.charter-command-note { font-size: 11px; color: var(--charter-muted); margin-top: 6px; }',
     '.charter-item[data-charter-status="retracted"] .charter-item-note { font-style: italic;',
     '  color: var(--charter-muted); }',
     '.charter-item-orphan { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
@@ -1465,6 +1495,136 @@ window.CharterAnnotate = (function () {
     return b;
   }
 
+  // ---- copyable commands (#116, #126) ---------------------------------------------------------------
+  // Charter never runs an agent — the browser records and signals, and the human drives. That leaves two
+  // moments where the page knows exactly what needs running and the reviewer has to reconstruct it: a round
+  // handed to nobody (#116), and a plan ready to break down (#126). Both are the same gap — the command is
+  // knowable, the path is knowable, and the reviewer was retyping both from memory.
+  //
+  // Handing over the exact string keeps every boundary intact. The page executes nothing, so it owes no
+  // progress state, needs no runner vocabulary, and asks for no trust it did not already have.
+  //
+  // The command is ALWAYS rendered as selectable text. The copy is the convenience; the visible line is the
+  // contract, so a clipboard that refuses degrades to "select this" rather than to nothing at all.
+
+  // Quote a path for a command line, and prefer forward slashes on Windows: .NET, PowerShell and git-bash
+  // all accept them, while a backslash reaches an agent's shell as an escape (`\U`, `\M`…). An unquoted
+  // `C:\Users\Dave\My Plans\api.charter.md` is silently truncated at the space by whatever reads it.
+  function quotePath(path) {
+    return '"' + String(path || '').replace(/\\/g, '/').replace(/"/g, '\\"') + '"';
+  }
+
+  // Copy, with a fallback that never silently does nothing.
+  //
+  // WebKit requires writeText to be reached SYNCHRONOUSLY from the user gesture: any await before it — a
+  // fetch for the path, say — drops the transient activation and the promise rejects with NotAllowedError.
+  // That is why the command string is composed at hydrate and merely read here (#111's exact signature).
+  function copyCommand(text, onDone) {
+    var settled = false;
+    function done(ok) {
+      if (settled) return;
+      settled = true;
+      onDone(ok);
+    }
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+        return;
+      }
+    } catch (e) { /* fall through to the selection fallback */ }
+
+    done(false);
+  }
+
+  // Build one command row: a label, the command as selectable <code>, and a Copy button. Returns the row so
+  // callers can show/hide it; the text is set through make(), so a path can never be parsed as markup.
+  function commandRow(uiName, label, command, note) {
+    var row = make('div', 'charter-command', uiName);
+    row.appendChild(make('div', 'charter-command-label', uiName + '-label', label));
+
+    var line = make('code', 'charter-command-text', uiName + '-text', command);
+    row.appendChild(line);
+
+    var copy = button('charter-btn', uiName + '-copy', 'Copy');
+    copy.addEventListener('click', function () {
+      copyCommand(command, function (ok) {
+        copy.textContent = ok ? 'Copied' : 'Select and copy';
+        if (!ok) selectText(line);
+        emit('command-copied', { command: uiName, ok: ok });
+        window.setTimeout(function () { copy.textContent = 'Copy'; }, 2500);
+      });
+    }, false);
+    row.appendChild(copy);
+
+    if (note) row.appendChild(make('div', 'charter-command-note', uiName + '-note', note));
+    return row;
+  }
+
+  // Which commands the panel is currently offering, rebuilt whenever the facts behind them change.
+  //
+  // #116 — the DRAIN command. Offered when a round has been handed over and NOTHING HAS EVER CHECKED this
+  // session: the reviewer clicked Send and, by construction, no agent will ever pick it up. That is the gap
+  // #116 was filed for, and it is the one presence fact that is reliable — "has anything ever polled" is
+  // certain, where "is an agent working right now" is not observable at all. It is deliberately NOT offered
+  // merely because presence says nobody is waiting AT THIS INSTANT: an agent between poll cycles reads
+  // exactly the same, and telling a reviewer with a working agent to start a second one invites two writers.
+  //
+  // #126 — the BREAKDOWN command. Offered once there is nothing outstanding to hand over, which is the
+  // closest honest proxy for "this plan is ready". It starts a BREAKDOWN and never a run: `guardrails run`
+  // executes real work and merges to a branch, and each stage stays the human's to begin.
+  function syncCommands() {
+    var ui = state.ui;
+    if (!ui || !ui.commands) return;
+    if (!state.sourcePath) return;               // no real path yet ⇒ nothing worth offering
+
+    var agent = state.agent;
+    var neverChecked = !!agent && !agent.waiting && typeof agent.lastSeenSecondsAgo !== 'number';
+    var handedOff = state.round.submitted || state.awaitingRevision;
+    var settled = pendingCount() === 0 && !state.round.submitted;
+
+    if (!ui.drainCommand) {
+      ui.drainCommand = commandRow(
+        'drain-command',
+        'Nothing has picked this up. Run this where your agent is:',
+        'charter poll ' + quotePath(state.sourcePath) + ' --watch --apply',
+        'It keeps listening for the rest of the review, so this is the only time you need to run it.');
+      ui.commands.appendChild(ui.drainCommand);
+    }
+
+    if (!ui.breakdownCommand) {
+      ui.breakdownCommand = commandRow(
+        'breakdown-command',
+        'Ready to break this plan into tasks? Paste this to your agent:',
+        '/plan-breakdown ' + quotePath(state.sourcePath),
+        'Stop any `charter poll --watch` first — otherwise it queues behind that command and looks like '
+          + 'nothing happened. This starts a breakdown you review, never a run.');
+      ui.commands.appendChild(ui.breakdownCommand);
+    }
+
+    show(ui.drainCommand, handedOff && neverChecked);
+    show(ui.breakdownCommand, settled);
+    show(ui.commands, (handedOff && neverChecked) || settled);
+  }
+
+  function show(el, visible) {
+    if (!el) return;
+    if (visible) el.classList.remove('charter-hidden');
+    else el.classList.add('charter-hidden');
+  }
+
+  // Put the command under the reviewer's cursor so Ctrl/⌘+C works, for the case where the clipboard API is
+  // unavailable or refuses. Selection only — it never writes.
+  function selectText(el) {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch (e) { /* a browser that cannot select still shows the text */ }
+  }
+
   // Build the SDK chrome once. Idempotent; safe to call from any entry point.
   function ensureUi() {
     if (state.ui || !document.body) return state.ui;
@@ -1499,9 +1659,13 @@ window.CharterAnnotate = (function () {
     send.addEventListener('click', function () { sendRound(); }, false);
     actions.appendChild(send);
 
+    // The two command rows live here but stay hidden until the state that justifies them is true.
+    var commands = make('div', 'charter-commands charter-hidden', 'commands');
+
     panel.appendChild(header);
     panel.appendChild(list);
     panel.appendChild(actions);
+    panel.appendChild(commands);
     panel.appendChild(status);
 
     var toggle = button('charter-panel-toggle', 'panel-toggle', 'Notes 0');
@@ -1516,6 +1680,7 @@ window.CharterAnnotate = (function () {
 
     state.ui = {
       style: style, panel: panel, title: title, list: list, send: send, hint: hint,
+      commands: commands, drainCommand: null, breakdownCommand: null,
       status: status, toggle: toggle, overlay: overlay, banner: null,
       // The quarantine notice is built on demand (renderStaleQueue) and lives inside the panel, so disposing
       // the panel disposes it. It is never in the saved artifact — invariant 1 — like the rest of this chrome.
@@ -2810,6 +2975,7 @@ window.CharterAnnotate = (function () {
     // local tally left.
     hydrate();
     hydrateLog();
+    hydrateSession();
     refreshRound();
     return api;
   }
