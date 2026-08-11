@@ -70,6 +70,13 @@ window.CharterAnnotate = (function () {
     // where the reviewer actually is. Runtime-only DOM, like every other piece of SDK chrome.
     agent: null,
     statusIsSent: false,
+    // The reviewer handed off a round and has not yet seen the plan change. Deliberately CLIENT-side and
+    // deliberately not `round.submitted`: the server clears `submitted` the moment the agent ACKS the
+    // hand-off, which happens on the drain — before any revision exists — so it is already false by the time
+    // the rewrite lands. This flag spans the whole wait, which is the interval the reviewer is living in.
+    awaitingRevision: false,
+    agentSeenAt: 0,      // when this page last learned the presence facts, for honest elapsed time
+    ageTicker: 0,        // the display-only timer that keeps that elapsed reading from freezing
     staleQueue: null,
     staleQueueShown: false,
     composer: null,      // the open composer, or null
@@ -698,7 +705,14 @@ window.CharterAnnotate = (function () {
   // listening the old text was simply false, and it was the LOUD surface (the panel status line) while
   // #107's honest wording only reached the tooltip. Derived from the same presence facts now, and
   // re-derived when the authoritative read lands (see applyRound).
-  function sentMessage() { return 'Sent.' + agentHint(); }
+  // The reviewer's own next step, said as an INSTRUCTION. It is the one thing here that is unconditionally
+  // true: Charter cannot see an agent thinking — a drain only means bytes left the queue, and `poll --watch`
+  // re-arms its long poll the instant a cycle returns, so presence reads "listening" while the agent revises
+  // AND while it sits idle. Rather than infer a state it cannot observe, the panel tells the human where the
+  // rest of the conversation happens. That is what a reviewer actually needed, and it costs no claim at all.
+  function sentMessage() {
+    return 'Sent.' + agentHint() + ' The conversation continues in your agent’s terminal.';
+  }
 
   function applyRound(status) {
     var pending = (status && status.pending) || {};
@@ -710,8 +724,10 @@ window.CharterAnnotate = (function () {
       }
     };
     state.agent = (status && status.agent) || null;
+    state.agentSeenAt = state.agent ? Date.now() : 0;
     applyStaleQueue(status && status.staleQueue);
     syncSendButton();
+    syncAgeTicker();
 
     // The click reflects the hand-off instantly from whatever presence was last known, which may be
     // stale by a poll interval. This is the authoritative answer arriving, so correct the wording —
@@ -732,14 +748,40 @@ window.CharterAnnotate = (function () {
   // standing warning would be wrong for them, and alarming for everyone else. The question "did anyone
   // receive this?" only exists once you have actually sent something.
   function agentHint() {
-    if (!state.round.submitted) return '';
+    if (!state.round.submitted && !state.awaitingRevision) return '';
     var agent = state.agent;
     if (agent && agent.waiting) return ' An agent is listening.';
     if (agent && typeof agent.lastSeenSecondsAgo === 'number') {
-      return ' An agent last checked ' + describeAgo(agent.lastSeenSecondsAgo) + '.';
+      return ' An agent last checked ' + describeAgo(agentSeenSecondsAgo(agent)) + '.';
     }
     return ' No agent has checked this session yet — run `charter poll <plan> --wait --apply`, ' +
            'or fold the answers in yourself with `charter resolve <plan>`.';
+  }
+
+  // How long ago the agent was last seen, AS OF NOW — the server's number plus the time since we were told
+  // it. Without this the line freezes at whatever it said when it was fetched: `refreshRound()` runs only on
+  // discrete events, and a reviewer who has sent a round and is waiting generates none, so "an agent last
+  // checked 3s ago" would still read 3s an hour later, including long after that agent died. Ticking the
+  // browser's own clock keeps it a claim about CHARTER'S OBSERVATION, which is the only thing it ever was.
+  function agentSeenSecondsAgo(agent) {
+    var base = agent.lastSeenSecondsAgo;
+    if (!state.agentSeenAt) return base;
+    return base + Math.max(0, Math.round((Date.now() - state.agentSeenAt) / 1000));
+  }
+
+  // Re-render the standing status line on a slow tick so the elapsed reading above stays true. Text only —
+  // it issues no request, and it is the display that moves, never the facts. Started when there is something
+  // time-dependent to show and stopped when there is not, so an idle page runs no timer at all.
+  function syncAgeTicker() {
+    var wanted = !!(state.statusIsSent && state.agent && !state.agent.waiting);
+    if (wanted && !state.ageTicker) {
+      state.ageTicker = window.setInterval(function () {
+        if (state.statusIsSent) setSentStatus();
+      }, 5000);
+    } else if (!wanted && state.ageTicker) {
+      window.clearInterval(state.ageTicker);
+      state.ageTicker = 0;
+    }
   }
 
   function describeAgo(seconds) {
@@ -838,6 +880,7 @@ window.CharterAnnotate = (function () {
       // Reflect the hand-off immediately — the reviewer just clicked and needs to see that it landed —
       // then re-read the authoritative state behind that confirmation.
       state.round.submitted = true;
+      state.awaitingRevision = true;
       syncSendButton();
       showPanel();
       setSentStatus();
@@ -2664,20 +2707,34 @@ window.CharterAnnotate = (function () {
   // DEFERRED and offered as a banner instead of silently discarding what was typed.
   function onReload() {
     emit('reload', {});
-    if (wouldLoseWork()) {
+
+    // A revision the reviewer ASKED FOR is offered, not imposed. Navigating drops them at the top of a
+    // document that has just been rewritten underneath them — the further into a long plan they had read,
+    // the more it costs, and it is the one reload they were expecting anyway. The banner says the same thing
+    // and lets them arrive when they are ready. `awaitingRevision` is cleared either way: the wait is over
+    // the moment the change exists, whether or not they have looked at it yet.
+    var expected = state.awaitingRevision;
+    state.awaitingRevision = false;
+
+    // `state.reloadPending` keeps the offer STICKY. Once the banner is up, the reviewer has been promised
+    // they choose when to move; a second change arriving while they are still reading must not quietly take
+    // that back and navigate. An agent revising in several passes produces exactly that burst.
+    if (wouldLoseWork() || expected || state.reloadPending) {
       state.reloadPending = true;
-      showReloadBanner();
-      emit('reload-deferred', {});
+      showReloadBanner(expected);
+      emit('reload-deferred', { expected: expected });
       return;
     }
     navigate();
   }
 
-  function showReloadBanner() {
+  function showReloadBanner(expected) {
     if (!ensureUi() || state.ui.banner) return;
     var banner = make('div', 'charter-reload-banner', 'reload-banner');
     banner.appendChild(make('span', null, 'reload-banner-text',
-      'The plan changed on disk. Your unsaved work is safe \u2014 reload when you are ready.'));
+      expected
+        ? 'The agent revised the plan. Load it when you are ready \u2014 you will not lose your place until you do.'
+        : 'The plan changed on disk. Your unsaved work is safe \u2014 reload when you are ready.'));
     var now = button('charter-btn', 'reload-now', 'Reload now');
     now.addEventListener('click', navigate, false);
     banner.appendChild(now);
@@ -2697,6 +2754,10 @@ window.CharterAnnotate = (function () {
       // changed, so a navigation here would discard a half-typed note to report good news. Re-reading the
       // queue is what flips a delivered note from "queued" to "sent" and stops the Send control claiming
       // there is nothing to send because the reviewer has not written anything.
+      // The agent ACKED the round — it is now the one holding it. Panel-only; nothing about the document
+      // changed. This is the moment a waiting reviewer most wants reported, and the ack clears `submitted`
+      // server-side, so without this push the panel would keep showing the pre-ack wording indefinitely.
+      es.addEventListener('round', function () { emit('round-changed', {}); refreshRound(); });
       es.addEventListener('queue', function () {
         emit('queue-changed', {});
         hydrate().then(function () { refreshRound(); });
@@ -2776,6 +2837,7 @@ window.CharterAnnotate = (function () {
       document.removeEventListener('keyup', onQuestionKeyup, true);
     }
     unwireQuestionForms();
+    if (state.ageTicker) { window.clearInterval(state.ageTicker); state.ageTicker = 0; }
     // Every pan/zoom view is torn down to the markup the renderer emitted — inline styles cleared, classes,
     // tab stop, role and label removed — so a disposed SDK leaves the block indistinguishable from the
     // exported artifact's.

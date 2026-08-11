@@ -958,6 +958,179 @@ public sealed partial class ReviewLoopBrowserTests
         Assert.True(response.IsSuccessStatusCode, $"GET /api/poll returned {(int)response.StatusCode}.");
     }
 
+
+    /// <summary>
+    /// After handing off a round, the reviewer is in dead air: Charter cannot see an agent thinking, and the
+    /// maintainer's report was that nothing tells them to go and look at their terminal.
+    /// <para>
+    /// The honest answer is an INSTRUCTION rather than a state. A drain only proves bytes left the queue, and
+    /// <c>poll --watch</c> re-arms its long poll the instant a cycle returns — so presence reads "listening"
+    /// while the agent revises and equally while it is idle. "Where the conversation continues" needs no
+    /// inference at all, and it is what the reviewer actually wanted.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Handing_off_a_round_points_the_reviewer_at_their_terminal_without_claiming_the_agent_is_busy()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-handoff-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note to hand over");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+            await page.WaitForSelectorAsync(Ui("panel-status"));
+
+            var status = (await page.InnerTextAsync(Ui("panel-status"))).Trim();
+            Assert.Contains("terminal", status, StringComparison.OrdinalIgnoreCase);
+            foreach (var claim in new[] { "revising", "processing", "working", "thinking" })
+            {
+                Assert.DoesNotContain(claim, status, StringComparison.OrdinalIgnoreCase);
+            }
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The revision a reviewer ASKED FOR is offered, not imposed.
+    /// <para>
+    /// Before this, a plan rewrite arriving after a hand-off took the <c>navigate()</c> branch — the deferral
+    /// guard only protects a half-typed note, and by definition there is none right after sending everything.
+    /// So the reviewer was dropped at the top of a document that had just been rewritten under them, losing
+    /// their place in proportion to how far they had read. The banner says the same thing and lets them arrive
+    /// when they choose.
+    /// </para>
+    /// <para>
+    /// Note the trigger is CLIENT-side and cannot be <c>round.submitted</c>: the server clears that on the
+    /// agent's ack, which happens at the drain — before any revision exists.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_revision_arriving_after_a_hand_off_is_offered_as_a_banner_not_a_navigation()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-revision-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "please rewrite the read path section");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+
+            // A marker that a navigation would destroy — this is what proves the page did NOT reload.
+            await page.EvaluateAsync("() => { window.__charterSurvived = true; }");
+
+            // The agent revises the plan. Nudged in a loop rather than written once, like the sibling
+            // draft-survival test: a lone write can be dropped by the OS watcher, leaving only PlanWatch's
+            // 15s beat to notice — which turns a real assertion into a timing gamble.
+            using var stopNudger = new CancellationTokenSource();
+            var nudger = Task.Run(async () =>
+            {
+                var edit = 0;
+                while (!stopNudger.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await File.WriteAllTextAsync(
+                            planPath,
+                            Plan + "\n\nA section the agent added while you waited (" + (++edit) + ").\n",
+                            stopNudger.Token);
+                        await Task.Delay(TimeSpan.FromMilliseconds(150), stopNudger.Token);
+                    }
+                    catch (IOException)
+                    {
+                        // A transient sharing conflict with the server's per-request read is harmless.
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            });
+
+            await WaitForEventAsync(page, "reload-deferred", 30_000);
+            stopNudger.Cancel();
+            await page.WaitForSelectorAsync(Ui("reload-banner"));
+
+            Assert.True(
+                await page.EvaluateAsync<bool>("() => window.__charterSurvived === true"),
+                "the page navigated instead of offering the revision — the reviewer lost their place");
+
+            var banner = (await page.InnerTextAsync(Ui("reload-banner"))).Trim();
+            Assert.Contains("revised", banner, StringComparison.OrdinalIgnoreCase);
+
+            // And the way in is still one click.
+            await page.ClickAsync(Ui("reload-now"));
+            await page.WaitForFunctionAsync("() => window.__charterSurvived === undefined");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
@@ -1431,7 +1604,17 @@ public sealed partial class ReviewLoopBrowserTests
 
             var status = (await page.InnerTextAsync(Ui("panel-status"))).Trim();
 
-            Assert.DoesNotContain("revising", status, StringComparison.OrdinalIgnoreCase);
+            // CLAIM-scoped, not word-scoped. The original guard asserted only that the word "revising" was
+            // absent, which any synonym walks straight past — "the agent is processing…" would have shipped
+            // green through the very test written to stop it. Charter cannot observe an agent working at all:
+            // a drain moves bytes into a CLI's stdout buffer, and `poll --watch` re-arms its long poll the
+            // instant a cycle returns, so presence reads "listening" while the agent revises AND while it is
+            // idle. No wording that asserts activity is supportable, whichever verb it picks.
+            foreach (var claim in new[] { "revising", "processing", "working", "thinking", "in progress" })
+            {
+                Assert.DoesNotContain(claim, status, StringComparison.OrdinalIgnoreCase);
+            }
+
             Assert.Contains("Sent", status, StringComparison.Ordinal);
             // And it must say what to actually DO about it — a reviewer who hands a round to nobody needs
             // the way out, not just the absence of a false claim.
@@ -3290,9 +3473,42 @@ public sealed partial class ReviewLoopBrowserTests
             await page.ClickAsync(Ui("item-jump"));
             await page.WaitForSelectorAsync(Ui("overlay-rect"));
 
-            var before = await OverlayOffsetAsync(page);
-            await page.ClickAsync(Ui("diagram-zoom-in"));
-            var after = await OverlayOffsetAsync(page);
+            // Measure, zoom and measure again inside ONE page evaluation. The highlight is deliberately
+            // TRANSIENT (drawOverlay holds it ~1600ms), so three separate round trips race its lifetime —
+            // and on a loaded CI runner they lose: the overlay expires between the two measurements and the
+            // test fails reporting "null", or vanishes before the first and it times out. Neither is a real
+            // defect, and re-jumping to redraw it after the zoom would make the assertion trivially true.
+            // Doing it in-page removes the race without touching what is asserted.
+            var measured = await page.EvaluateAsync<string>(
+                "async () => {" +
+                "  const read = () => {" +
+                "    const rect = document.querySelector('[data-charter-ui=\"overlay-rect\"]');" +
+                "    const prose = document.querySelectorAll('body > p')[1];" +
+                "    const block = document.querySelectorAll('pre.mermaid')[0];" +
+                "    if (!rect) return null;" +
+                "    return {" +
+                "      offset: rect.getBoundingClientRect().top - prose.getBoundingClientRect().top," +
+                "      blockHeight: block.getBoundingClientRect().height" +
+                "    };" +
+                "  };" +
+                "  const frame = () => new Promise(r => requestAnimationFrame(() => r()));" +
+                "  const before = read();" +
+                "  if (!before) return 'null';" +
+                "  document.querySelector('[data-charter-ui=\"diagram-zoom-in\"]').click();" +
+                "  await frame(); await frame();" +
+                "  const after = read();" +
+                "  if (!after) return 'null';" +
+                "  return JSON.stringify({ before, after });" +
+                "}");
+
+            Assert.NotEqual("null", measured);
+            using var measurement = JsonDocument.Parse(measured!);
+            var before = (
+                Offset: measurement.RootElement.GetProperty("before").GetProperty("offset").GetDouble(),
+                BlockHeight: measurement.RootElement.GetProperty("before").GetProperty("blockHeight").GetDouble());
+            var after = (
+                Offset: measurement.RootElement.GetProperty("after").GetProperty("offset").GetDouble(),
+                BlockHeight: measurement.RootElement.GetProperty("after").GetProperty("blockHeight").GetDouble());
 
             // The premise: the zoom really did make the diagram taller, so the paragraph really did move.
             Assert.True(
@@ -3604,27 +3820,6 @@ public sealed partial class ReviewLoopBrowserTests
     /// The first overlay rectangle's top relative to the paragraph it covers, plus the diagram block's
     /// height. The OFFSET is what must not change; the height is the proof that something moved at all.
     /// </summary>
-    private static async Task<(double Offset, double BlockHeight)> OverlayOffsetAsync(IPage page)
-    {
-        var json = await page.EvaluateAsync<string>(
-            "() => {" +
-            "  const rect = document.querySelector('[data-charter-ui=\"overlay-rect\"]');" +
-            "  const prose = document.querySelectorAll('body > p')[1];" +
-            "  const block = document.querySelectorAll('pre.mermaid')[0];" +
-            "  if (!rect) return 'null';" +
-            "  return JSON.stringify({" +
-            "    offset: rect.getBoundingClientRect().top - prose.getBoundingClientRect().top," +
-            "    blockHeight: block.getBoundingClientRect().height" +
-            "  });" +
-            "}");
-
-        Assert.NotEqual("null", json);
-        using var doc = JsonDocument.Parse(json!);
-        return (
-            doc.RootElement.GetProperty("offset").GetDouble(),
-            doc.RootElement.GetProperty("blockHeight").GetDouble());
-    }
-
     /// <summary>
     /// The drained annotation resolves to the <c>:::diagram</c>'s own source line — asserted against the
     /// plan text, so it proves the agent is pointed at the right markdown and not merely that a number
