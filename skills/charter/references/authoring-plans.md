@@ -155,7 +155,9 @@ which way you lean makes the reviewer re-derive a conclusion you already reached
 :::question
 { "id": "db-choice", "title": "Which datastore should the service use?",
   "mode": "single", "options": ["Postgres", "DynamoDB", "SQLite"],
-  "recommended": "Postgres", "target": "human" }
+  "recommended": "Postgres",
+  "rationale": "Cheapest option that still fixes the installed base; DynamoDB only wins if the write path outgrows one region this year.",
+  "target": "human" }
 :::
 ```
 
@@ -164,9 +166,15 @@ Ordering is yours — `recommended` marks, it does not reorder.
 
 Three rules, and the last two are what keep this useful rather than corrosive:
 
-- **Say why, in the prose right above the block.** A bare badge invites a rubber stamp. One sentence —
-  *"cheapest option that still fixes the installed base"* — is what lets the reviewer disagree with your
-  REASONING rather than just your conclusion. A recommendation without a reason is worse than none.
+- **Say why in `rationale` — the field, not the prose around it.** A bare badge invites a rubber stamp. One
+  or two sentences — *"cheapest option that still fixes the installed base"* — is what lets the reviewer
+  disagree with your REASONING rather than just your conclusion. A recommendation without a reason is worse
+  than none.
+
+  Put it in the field, because a paragraph beside the block is bound to it by nothing: a reviewer met one
+  sitting between two questions and read it as the introduction to the one *below*, answering one question
+  while reading the argument for another. `rationale` renders inside the box, so the binding is visible
+  rather than assumed.
 - **Omit it when you honestly don't have a lean.** Some questions are genuine coin-flips; others turn on
   information only the human has — budget, roadmap, appetite, who has to maintain it. A recommendation there
   is noise at best and false confidence at worst.

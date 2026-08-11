@@ -43,12 +43,13 @@ public static class QuestionIdentity
     /// processes and machines (no runtime hash seed).
     /// </summary>
     /// <remarks>
-    /// <see cref="QuestionSpec.Recommended"/> is deliberately EXCLUDED. The fingerprint exists to detect that a
-    /// question changed shape since a human answered it, so that a stale answer is not silently applied — and a
-    /// changed recommendation does not change what was asked. Including it would let an agent invalidate a
-    /// human's decision merely by revising its own opinion, which is precisely backwards. This is also why the
-    /// marker is a field rather than a <c>(Recommended)</c> suffix inside <see cref="QuestionSpec.Options"/>,
-    /// which IS hashed here (Charter #125).
+    /// <see cref="QuestionSpec.Recommended"/> and <see cref="QuestionSpec.Rationale"/> are deliberately
+    /// EXCLUDED, for the same reason. The fingerprint exists to detect that a
+    /// question changed shape since a human answered it, so that a stale answer is not silently applied — and
+    /// neither a changed lean nor a rewritten explanation changes what was ASKED. Hashing either would let an
+    /// agent invalidate a human's decision merely by improving its own prose, which is precisely backwards.
+    /// This is also why both are fields rather than text living next to the block — a <c>(Recommended)</c>
+    /// suffix inside <see cref="QuestionSpec.Options"/>, which IS hashed here (Charter #125, #132).
     /// </remarks>
     public static string Fingerprint(QuestionSpec spec)
     {

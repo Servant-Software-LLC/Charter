@@ -1548,15 +1548,18 @@ public sealed partial class ReviewLoopBrowserTests
                 await WaitForEventAsync(page, "submitted");
             }
 
-            // The pill is HIDDEN while the panel is open (it exists only to reopen it), so close the panel
-            // before looking at it — a visibility wait against an open panel would time out on chrome that
-            // is working correctly. And an attribute SELECTOR, never WaitForFunctionAsync: the served CSP
-            // correctly refuses that call's in-page eval, so it would hang rather than fail an assertion.
-            await page.ClickAsync(Ui("panel-close"));
-            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"2\"]");
+            // Asserted on the pill's CONTENT, not its visibility. The panel opens itself as notes arrive and
+            // its own async refreshes can reopen it after a close, so racing that with a visibility wait
+            // tests the panel's timing rather than the count — which is what this is for. `Attached` reads
+            // the chrome wherever it currently is; `TextContent` reads a hidden element, `InnerText` does not.
+            //
+            // And an attribute SELECTOR, never WaitForFunctionAsync: the served CSP correctly refuses that
+            // call's in-page eval, so it would hang rather than fail on an assertion.
+            var attached = new PageWaitForSelectorOptions { State = WaitForSelectorState.Attached };
+            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"2\"]", attached);
 
             var pill = page.Locator(Ui("panel-toggle"));
-            var text = await pill.InnerTextAsync();
+            var text = await pill.TextContentAsync() ?? string.Empty;
             Assert.Contains("Notes 2", text, StringComparison.Ordinal);
             Assert.Contains("2 open", text, StringComparison.Ordinal);
             Assert.Contains(
@@ -1566,14 +1569,10 @@ public sealed partial class ReviewLoopBrowserTests
 
             // Resolve one. The TOTAL is unchanged; the open count is the number that moves — which is the
             // entire reason for showing it.
-            await page.ClickAsync(Ui("panel-toggle"));
-            await WaitForEventAsync(page, "panel-opened");
             await page.Locator(Ui("item-resolve")).First.ClickAsync();
+            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"1\"]", attached);
 
-            await page.ClickAsync(Ui("panel-close"));
-            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"1\"]");
-
-            var afterResolve = await pill.InnerTextAsync();
+            var afterResolve = await pill.TextContentAsync() ?? string.Empty;
             Assert.Contains("Notes 2", afterResolve, StringComparison.Ordinal);
             Assert.Contains("1 open", afterResolve, StringComparison.Ordinal);
 

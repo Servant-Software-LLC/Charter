@@ -573,6 +573,20 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
 
         renderer.WriteLine("</legend>");
 
+        // The agent's reasoning, INSIDE the box (Charter #132). Written as prose beside the block it was an
+        // ordinary CommonMark paragraph with nothing binding it to the question — and a reviewer who met one
+        // sitting between two questions read it as the introduction to the one BELOW, answering one question
+        // while reading the argument for another. Rendered here, the binding is visible rather than inferred.
+        //
+        // Between the title and the controls on purpose: the reviewer reads what is being asked, then why,
+        // then chooses. Escaped like every other echoed value, and plain text by design — see QuestionSpec.
+        if (spec.Rationale is { Length: > 0 })
+        {
+            renderer.Write("<p class=\"question-rationale\">");
+            renderer.WriteEscape(spec.Rationale);
+            renderer.WriteLine("</p>");
+        }
+
         WriteQuestionControls(renderer, spec, effectiveAnswer);
         WriteSubmitControl(renderer);
 

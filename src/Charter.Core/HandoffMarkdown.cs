@@ -421,9 +421,28 @@ public static class HandoffMarkdown
 
         var metadata = QuestionMetadataLine(spec);
 
-        return resolved.Count > 0
-            ? $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}"
-            : $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+        // The agent's reasoning travels downstream too (Charter #132). On an OPEN question it is the context
+        // a breakdown needs to ask well; on an ANSWERED one it is sharper still — read against `recommended`,
+        // an answer that went the other way shows not just which option the human rejected but the argument
+        // they rejected with it.
+        //
+        // Emitted as its own line rather than folded into the compact metadata line: that line is `key:
+        // \`value\`` pairs meant to parse with a trivial scan, and a couple of sentences of prose (possibly
+        // containing backticks) does not belong in it. The `_Why: ` prefix is load-bearing, not decoration —
+        // it guarantees the line cannot START with `:::` however the rationale begins (invariant 5), and
+        // newlines are collapsed so one rationale stays one line.
+        var why = spec.Rationale is { Length: > 0 }
+            ? "_Why: " + Inline(spec.Rationale) + "_"
+            : null;
+
+        if (resolved.Count > 0)
+        {
+            var answered = $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}";
+            return why is null ? answered : answered + "\n" + why;
+        }
+
+        var open = $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+        return why is null ? open : open + "\n> " + why;
     }
 
     /// <summary>
@@ -446,6 +465,14 @@ public static class HandoffMarkdown
     /// parses with a trivial <c>key: `value`</c> scan. Fields are separated by <c>;</c> so the <c>,</c> inside
     /// the options list is unambiguous, and nothing here starts a line with <c>:::</c> (invariant 5).
     /// </remarks>
+    /// <summary>Collapse a value to a single line. A rationale is plain text but may carry newlines, and a
+    /// break mid-line would leave the tail outside the blockquote an open question is emitted in.</summary>
+    private static string Inline(string text)
+        => text.Replace("\r\n", " ", StringComparison.Ordinal)
+               .Replace('\r', ' ')
+               .Replace('\n', ' ')
+               .Trim();
+
     private static string QuestionMetadataLine(QuestionSpec spec)
     {
         var builder = new StringBuilder()
