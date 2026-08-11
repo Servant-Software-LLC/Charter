@@ -998,6 +998,15 @@ public sealed class ReviewServer : IReviewServer
         // A missing/invalid sequence acks nothing (a no-op ack is harmless, never a wrong clear).
         var acked = long.TryParse(request.QueryString["sequence"], out var sequence) && _handoff.Ack(sequence);
         WriteJson(response, JsonSerializer.Serialize(new { acked }, AnnotationApi.JsonOptions));
+
+        // The agent has been TOLD about the round — the single most useful fact the reviewer can be given
+        // while they wait, and until now the page had no way to learn it. `submitted` flips false here, so
+        // without a push the panel keeps showing the pre-ack wording until some unrelated event happens to
+        // refresh it. This is a fact about Charter's own bookkeeping, not a claim that the agent is working.
+        if (acked)
+        {
+            Broadcast(RoundEvent);
+        }
     }
 
     /// <summary>
@@ -1578,6 +1587,18 @@ public sealed class ReviewServer : IReviewServer
     /// </para>
     /// </summary>
     private const string QueueEvent = "queue";
+
+    /// <summary>
+    /// The round's hand-off state changed — specifically, an agent ACKED it and is now the one holding it.
+    /// Panel-only, like <see cref="QueueEvent"/>: nothing about the document changed.
+    /// <para>
+    /// Without this the page could not learn the one thing a waiting reviewer most wants to know. The ack
+    /// CLEARS <c>submitted</c>, so a panel that never hears about it goes on showing the pre-hand-off wording
+    /// until some unrelated event refreshes it — which, for a reviewer who has just sent a round and is doing
+    /// nothing but waiting, may be never.
+    /// </para>
+    /// </summary>
+    private const string RoundEvent = "round";
     private const string ReviewLogEvent = "review-log";
 
     // The served-page Content-Security-Policy. Distinct from the export CSP: it keeps script-src

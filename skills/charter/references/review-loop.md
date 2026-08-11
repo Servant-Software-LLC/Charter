@@ -378,11 +378,31 @@ Put the drains together and iterate until the plan is approved:
 3. Check `reviewSubmitted`. `true` means the human handed you the round — revise properly. `false` means
    you caught feedback mid-review; a small correction is fine, but a large rewrite under a reviewer who is
    still reading is the thing to be careful about.
-4. Save `plan.charter.md`. The human's next refresh shows the revision (live reload) — and the page reloads
-   itself, so a reviewer who clicked **Send to agent** watches your revision appear without touching
-   anything. Their unsaved work (a half-typed note, an unsaved answer) defers the reload behind a banner
-   rather than being discarded.
+4. **Save `plan.charter.md`, then say what you did.** The reviewer is told the revision has landed and
+   loads it with one click — it is offered as a banner, not forced as a navigation, so they keep their
+   place in a long plan (and a half-typed note is never discarded).
+
+   **The revision is not the whole message.** Before you go back to waiting, `charter reply --to <id>` on
+   every note you did **not** straightforwardly action — one you pushed back on, one you read differently
+   than the reviewer meant it, one whose fix landed somewhere the diff will not show. Pass the drained
+   annotation's `id` verbatim; the panel threads your reply under that comment and the reviewer sees it
+   arrive without reloading. A note you *did* action needs nothing — the revision is the reply.
+
+   **If a round will take a while, say so once.** A reviewer watching a page that has stopped changing
+   cannot tell a long revision from a dead agent, and Charter cannot tell them: it sees that your feedback
+   was delivered, never that you are working. One reply, on the note you are starting with, closes that
+   gap. **One** — a "working on it" on every note buries the replies that carry an answer.
 5. Repeat until the human signals approval, then stop the server (Ctrl+C) and move to handoff.
+
+### Need a decision from them? Add a `:::question` — don't send them to a terminal
+
+A `:::question` is not only an authoring-time block. **Write one into the plan mid-review** and the page
+live-reloads it in as a native form, anchored where the decision belongs; the reviewer answers it in the
+browser and your `--watch --apply` folds it inline. No restart, no new verb, nothing for them to type.
+
+That keeps the decision **in the document, recorded next to the thing it decides** — true of neither an
+answer typed at a terminal nor a reply thread. Use `charter reply` for *"here is what I did about your
+note"*; write a new `:::question` for *"I need you to choose."*
 
 The low-level surface, if you need it (scripting, debugging, the `--url` path): each stream is a plain
 `GET` — any HTTP client works.

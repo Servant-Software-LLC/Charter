@@ -594,4 +594,83 @@ public class ReviewHandoffApiTests
             // A leaked temp file is harmless if the OS still holds a handle during a slow server dispose.
         }
     }
+
+    /// <summary>
+    /// The ack is the moment an agent becomes the one holding the round — and until now the page could not
+    /// learn it. The ack CLEARS <c>submitted</c> server-side, so a panel that is never told keeps showing the
+    /// pre-hand-off wording, and a reviewer who has just sent a round and is doing nothing but waiting
+    /// generates no other event that would refresh it.
+    /// <para>
+    /// Note what is NOT claimed. This reports Charter's own bookkeeping — the agent was told — never that the
+    /// agent is working on it. Charter cannot observe that at all: a drain only proves bytes left the queue,
+    /// and <c>poll --watch</c> re-arms its long poll the instant a cycle returns, so presence reads
+    /// "listening" while an agent revises and equally while it sits idle.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AckingTheHandOff_PushesARoundEventToTheOpenPage()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+            using var overall = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            using (var submit = await PostAsync(client, SubmitUri(server, session), SameOrigin(server)))
+            {
+                Assert.True(submit.IsSuccessStatusCode);
+            }
+
+            var sequence = (await GetJsonAsync(client, ReviewUri(server, session)))
+                .GetProperty("submission").GetProperty("sequence").GetInt64();
+
+            // Open the stream BEFORE acking, and wait for the connect ping so it is provably live — the
+            // handler emits that ping before it wires its listeners, so acking any earlier could race it.
+            var eventsUri = new Uri(
+                server.Address, "events?key=" + Uri.EscapeDataString(session.Key.Value));
+            using var response = await client.GetAsync(
+                eventsUri, HttpCompletionOption.ResponseHeadersRead, overall.Token);
+            await using var stream = await response.Content.ReadAsStreamAsync(overall.Token);
+            var received = new StringBuilder();
+            var buffer = new byte[2048];
+            Assert.True(await ReadUntilAsync(stream, buffer, received, "event: ping", overall.Token));
+            Assert.True(await ReadUntilAsync(stream, buffer, received, ": keep-alive", overall.Token));
+
+            using (var ack = await PostAsync(
+                       client, AckReviewUri(server, session, sequence), SameOrigin(server)))
+            {
+                Assert.True(ack.IsSuccessStatusCode);
+            }
+
+            Assert.True(
+                await ReadUntilAsync(stream, buffer, received, "event: round", overall.Token),
+                "the page must be told the agent took the round; without it the panel keeps showing the "
+                    + "pre-hand-off wording for a reviewer who is doing nothing but waiting");
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
+    private static async Task<bool> ReadUntilAsync(
+        Stream stream, byte[] buffer, StringBuilder received, string marker, CancellationToken token)
+    {
+        while (!received.ToString().Contains(marker, StringComparison.Ordinal))
+        {
+            var read = await stream.ReadAsync(buffer, token);
+            if (read <= 0)
+            {
+                return false;
+            }
+
+            received.Append(Encoding.UTF8.GetString(buffer, 0, read));
+        }
+
+        return true;
+    }
+
 }
