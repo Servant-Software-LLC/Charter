@@ -789,8 +789,15 @@ window.CharterAnnotate = (function () {
     if (agent && typeof agent.lastSeenSecondsAgo === 'number') {
       return ' An agent last checked ' + describeAgo(agentSeenSecondsAgo(agent)) + '.';
     }
-    return ' No agent has checked this session yet — run `charter poll <plan> --wait --apply`, ' +
-           'or fold the answers in yourself with `charter resolve <plan>`.';
+    // A statement of fact, and nothing else. The instruction that follows from it is the copyable command
+    // row below the button — which carries the reviewer's REAL path rather than a `<plan>` placeholder they
+    // would have to fill in, and `--watch` rather than `--wait` (one ~30s cycle). Repeating it here left two
+    // instructions on screen that disagreed about both.
+    //
+    // `charter resolve` used to be offered here as the alternative. It is not one: resolve folds queued
+    // ANSWERS inline and does nothing whatever for annotations, so a reviewer who has just sent a round of
+    // notes would have followed it and delivered none of them.
+    return ' No agent has checked this session yet.';
   }
 
   // How long ago the agent was last seen, AS OF NOW — the server's number plus the time since we were told

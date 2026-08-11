@@ -1973,9 +1973,23 @@ public sealed partial class ReviewLoopBrowserTests
             }
 
             Assert.Contains("Sent", status, StringComparison.Ordinal);
-            // And it must say what to actually DO about it — a reviewer who hands a round to nobody needs
-            // the way out, not just the absence of a false claim.
-            Assert.Contains("charter poll", status, StringComparison.Ordinal);
+            Assert.Contains("No agent has checked this session yet", status, StringComparison.Ordinal);
+
+            // A reviewer who hands a round to nobody still needs the way out — that requirement has not
+            // changed, only where it lives. The status line states the FACT; the copyable command row states
+            // what to do, with their real path in it. It used to be repeated here as
+            // `charter poll <plan> --wait --apply` — a placeholder they had to fill in, and the weaker verb
+            // (one ~30s cycle) — so the two instructions on screen disagreed about both.
+            await page.WaitForSelectorAsync(Ui("drain-command"));
+            var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
+            Assert.Contains("charter poll", command, StringComparison.Ordinal);
+            Assert.Contains("--watch", command, StringComparison.Ordinal);
+            Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
+
+            // And `charter resolve` must NOT be offered as the alternative: it folds queued ANSWERS inline
+            // and does nothing for annotations, so a reviewer who just sent a round of notes would have
+            // followed it and delivered none of them.
+            Assert.DoesNotContain("charter resolve", status, StringComparison.Ordinal);
         }
         finally
         {
