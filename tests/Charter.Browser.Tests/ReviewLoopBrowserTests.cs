@@ -1488,6 +1488,103 @@ public sealed partial class ReviewLoopBrowserTests
     }
 
 
+
+    /// <summary>
+    /// The collapsed pill must say how much is still OPEN, not just how many notes exist (#134).
+    /// <para>
+    /// The pill is only visible while the panel is shut — exactly when the reviewer cannot see the per-note
+    /// badges — and the total is the one number that does not move as work gets done. Resolving every note
+    /// left it reading identically to a session where nothing had been dealt with.
+    /// </para>
+    /// <para>
+    /// The distinctions asserted here are the ones that would be easy to get wrong: a RETRACTED note is not
+    /// open (it was withdrawn, not left undone), and a note the agent has already drained IS open, because
+    /// delivery and resolution are different axes (#124).
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task The_collapsed_pill_counts_what_is_still_open_not_just_what_exists()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-pill-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var writer = new ReviewLogWriter(planPath, new ReviewAuthor("Alice Ng", "alice@example.com"));
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = writer,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            // Two notes on different blocks.
+            foreach (var (selector, body) in new[]
+                     {
+                         ("body > p", "the first note"),
+                         ("div.note", "the second note"),
+                     })
+            {
+                await page.ClickAsync(selector, new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+                await page.WaitForSelectorAsync(Ui("composer-input"));
+                await page.FillAsync(Ui("composer-input"), body);
+                await page.ClickAsync(Ui("composer-save"));
+                await WaitForEventAsync(page, "submitted");
+            }
+
+            // The pill is HIDDEN while the panel is open (it exists only to reopen it), so close the panel
+            // before looking at it — a visibility wait against an open panel would time out on chrome that
+            // is working correctly. And an attribute SELECTOR, never WaitForFunctionAsync: the served CSP
+            // correctly refuses that call's in-page eval, so it would hang rather than fail an assertion.
+            await page.ClickAsync(Ui("panel-close"));
+            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"2\"]");
+
+            var pill = page.Locator(Ui("panel-toggle"));
+            var text = await pill.InnerTextAsync();
+            Assert.Contains("Notes 2", text, StringComparison.Ordinal);
+            Assert.Contains("2 open", text, StringComparison.Ordinal);
+            Assert.Contains(
+                "still open",
+                await pill.GetAttributeAsync("aria-label") ?? string.Empty,
+                StringComparison.Ordinal);
+
+            // Resolve one. The TOTAL is unchanged; the open count is the number that moves — which is the
+            // entire reason for showing it.
+            await page.ClickAsync(Ui("panel-toggle"));
+            await WaitForEventAsync(page, "panel-opened");
+            await page.Locator(Ui("item-resolve")).First.ClickAsync();
+
+            await page.ClickAsync(Ui("panel-close"));
+            await page.WaitForSelectorAsync(Ui("panel-toggle") + "[data-charter-open-count=\"1\"]");
+
+            var afterResolve = await pill.InnerTextAsync();
+            Assert.Contains("Notes 2", afterResolve, StringComparison.Ordinal);
+            Assert.Contains("1 open", afterResolve, StringComparison.Ordinal);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            TryDeleteTree(directory);
+        }
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>
