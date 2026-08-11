@@ -41,6 +41,13 @@ the `charter-format` skill. Reach for `handoff` when you're feeding the headless
 > flattened `plan.md` instead: the flatten path has **no version floor** and is supported permanently. When
 > unsure which the target Guardrails supports, `handoff` always works.
 >
+> **The reviewer may hand you this command themselves.** Once a round is settled, the review panel offers
+> `/plan-breakdown "<plan>.charter.md"` to copy, with their own path already in it — so the natural end of a
+> review is the human pasting that to you. Charter starts nothing; the page only writes the string.
+> If a `charter poll --watch` of yours is still running, it must be stopped first, or their paste queues
+> behind it, looks like nothing happened, and gets pasted a second time — and a second breakdown regenerates
+> the task folder over any guardrail a human has edited.
+>
 > **And `charter skills install` must have been run.** Step 0c stops outright if it cannot load
 > `charter-format` as a top-level skill — a plan it cannot interpret is one it refuses to guess at. That is
 > the failure to check first when direct ingestion dead-ends on a machine that has the right Guardrails.

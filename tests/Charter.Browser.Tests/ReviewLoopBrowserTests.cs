@@ -1310,6 +1310,12 @@ public sealed partial class ReviewLoopBrowserTests
             await WaitForEventAsync(page, "ready");
             await WaitForEventAsync(page, "round-loaded");
 
+            // The panel opens itself only once there is an entry, so on a plan nobody has annotated it starts
+            // closed — and the floating toggle exists for exactly that. A reviewer who read a plan, is happy
+            // with it, and wants to break it down reaches the command the same way.
+            await page.ClickAsync(Ui("panel-toggle"));
+            await WaitForEventAsync(page, "panel-opened");
+
             await page.WaitForSelectorAsync(Ui("breakdown-command"));
             var command = (await page.InnerTextAsync(Ui("breakdown-command-text"))).Trim();
 

@@ -188,6 +188,10 @@ Two things follow for you:
 
 - **Never tell a reviewer to re-answer because "the answers are gone."** They are not. If a restart made
   them doubt it, `charter review` also prints what it restored on stderr, and a peek here proves it.
+- **If you are not listening, the page says so and hands them the command.** When a round is handed over and
+  nothing has ever polled the session, the panel offers `charter poll "<plan>" --watch --apply` to copy —
+  the reviewer's round is not stranded, it is waiting for someone to run that. Do not talk them through
+  typing it; it is on their screen with their own path already in it.
 - **"Saved" is not "you have it."** The page says *not yet sent* until a drain, which is the truth — do
   not describe an answer as received before you have drained it.
 
