@@ -3473,9 +3473,42 @@ public sealed partial class ReviewLoopBrowserTests
             await page.ClickAsync(Ui("item-jump"));
             await page.WaitForSelectorAsync(Ui("overlay-rect"));
 
-            var before = await OverlayOffsetAsync(page);
-            await page.ClickAsync(Ui("diagram-zoom-in"));
-            var after = await OverlayOffsetAsync(page);
+            // Measure, zoom and measure again inside ONE page evaluation. The highlight is deliberately
+            // TRANSIENT (drawOverlay holds it ~1600ms), so three separate round trips race its lifetime —
+            // and on a loaded CI runner they lose: the overlay expires between the two measurements and the
+            // test fails reporting "null", or vanishes before the first and it times out. Neither is a real
+            // defect, and re-jumping to redraw it after the zoom would make the assertion trivially true.
+            // Doing it in-page removes the race without touching what is asserted.
+            var measured = await page.EvaluateAsync<string>(
+                "async () => {" +
+                "  const read = () => {" +
+                "    const rect = document.querySelector('[data-charter-ui=\"overlay-rect\"]');" +
+                "    const prose = document.querySelectorAll('body > p')[1];" +
+                "    const block = document.querySelectorAll('pre.mermaid')[0];" +
+                "    if (!rect) return null;" +
+                "    return {" +
+                "      offset: rect.getBoundingClientRect().top - prose.getBoundingClientRect().top," +
+                "      blockHeight: block.getBoundingClientRect().height" +
+                "    };" +
+                "  };" +
+                "  const frame = () => new Promise(r => requestAnimationFrame(() => r()));" +
+                "  const before = read();" +
+                "  if (!before) return 'null';" +
+                "  document.querySelector('[data-charter-ui=\"diagram-zoom-in\"]').click();" +
+                "  await frame(); await frame();" +
+                "  const after = read();" +
+                "  if (!after) return 'null';" +
+                "  return JSON.stringify({ before, after });" +
+                "}");
+
+            Assert.NotEqual("null", measured);
+            using var measurement = JsonDocument.Parse(measured!);
+            var before = (
+                Offset: measurement.RootElement.GetProperty("before").GetProperty("offset").GetDouble(),
+                BlockHeight: measurement.RootElement.GetProperty("before").GetProperty("blockHeight").GetDouble());
+            var after = (
+                Offset: measurement.RootElement.GetProperty("after").GetProperty("offset").GetDouble(),
+                BlockHeight: measurement.RootElement.GetProperty("after").GetProperty("blockHeight").GetDouble());
 
             // The premise: the zoom really did make the diagram taller, so the paragraph really did move.
             Assert.True(
@@ -3787,27 +3820,6 @@ public sealed partial class ReviewLoopBrowserTests
     /// The first overlay rectangle's top relative to the paragraph it covers, plus the diagram block's
     /// height. The OFFSET is what must not change; the height is the proof that something moved at all.
     /// </summary>
-    private static async Task<(double Offset, double BlockHeight)> OverlayOffsetAsync(IPage page)
-    {
-        var json = await page.EvaluateAsync<string>(
-            "() => {" +
-            "  const rect = document.querySelector('[data-charter-ui=\"overlay-rect\"]');" +
-            "  const prose = document.querySelectorAll('body > p')[1];" +
-            "  const block = document.querySelectorAll('pre.mermaid')[0];" +
-            "  if (!rect) return 'null';" +
-            "  return JSON.stringify({" +
-            "    offset: rect.getBoundingClientRect().top - prose.getBoundingClientRect().top," +
-            "    blockHeight: block.getBoundingClientRect().height" +
-            "  });" +
-            "}");
-
-        Assert.NotEqual("null", json);
-        using var doc = JsonDocument.Parse(json!);
-        return (
-            doc.RootElement.GetProperty("offset").GetDouble(),
-            doc.RootElement.GetProperty("blockHeight").GetDouble());
-    }
-
     /// <summary>
     /// The drained annotation resolves to the <c>:::diagram</c>'s own source line — asserted against the
     /// plan text, so it proves the agent is pointed at the right markdown and not merely that a number
