@@ -350,9 +350,13 @@ public class AnnotationDrainResolutionTests
                 Directory.Delete(dir, recursive: true);
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup.
+            // Best-effort cleanup — and UnauthorizedAccessException belongs here every bit as much as
+            // IOException. The sidecar persists through a write-then-rename, so a `.tmp-…` file can still be
+            // open when a disposing server races this teardown; Windows reports that as access-denied rather
+            // than a sharing violation. Catching only IOException made a test that had already PASSED report
+            // as failed, which is the worst possible signal: it points at the assertion, not the cleanup.
         }
     }
 }

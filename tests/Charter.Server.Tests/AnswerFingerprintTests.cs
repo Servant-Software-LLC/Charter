@@ -215,9 +215,13 @@ public class AnswerFingerprintTests
                 File.Delete(path);
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup.
+            // Best-effort cleanup. UnauthorizedAccessException belongs here as much as IOException: the
+            // sidecar and the review log both persist through a write-then-rename, so a `.tmp-...` file can
+            // still be open when a disposing server races this teardown, and Windows reports that as
+            // access-denied rather than a sharing violation. Catching only IOException makes a test that
+            // has already PASSED report as failed, pointing at its assertion instead of at the cleanup.
         }
     }
 
@@ -230,9 +234,13 @@ public class AnswerFingerprintTests
                 Directory.Delete(directory, recursive: true);
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Best-effort cleanup.
+            // Best-effort cleanup. UnauthorizedAccessException belongs here as much as IOException: the
+            // sidecar and the review log both persist through a write-then-rename, so a `.tmp-...` file can
+            // still be open when a disposing server races this teardown, and Windows reports that as
+            // access-denied rather than a sharing violation. Catching only IOException makes a test that
+            // has already PASSED report as failed, pointing at its assertion instead of at the cleanup.
         }
     }
 }
