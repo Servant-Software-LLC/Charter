@@ -315,6 +315,15 @@ form.question legend {
   padding: 0 0.5rem;
   font-weight: 600;
 }
+/* The agent's reasoning for asking (Charter #132). Set apart from the options below it — it is context to
+   read, not a thing to choose — but deliberately not shrunk into fine print: a recommendation the reviewer
+   cannot be bothered to read is one they rubber-stamp. */
+form.question .question-rationale {
+  margin: 0 0 0.75rem;
+  padding-left: 0.65rem;
+  border-left: 2px solid var(--charter-border);
+  color: var(--charter-muted);
+}
 form.question label {
   display: block;
   margin: 0.35rem 0;

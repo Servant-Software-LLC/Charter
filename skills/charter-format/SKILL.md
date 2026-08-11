@@ -137,6 +137,7 @@ The body is a JSON object (JSON is a subset of YAML, so the parser stays depende
 | `options` | array of strings | for `single`/`multi` | The choices. Required and non-empty for the select modes; unused otherwise. |
 | `target` | string | yes | `human` or `agent` — who the resolved answer routes to. |
 | `recommended` | string | no | The option the **authoring agent** would choose. Must equal one of `options` verbatim; a value matching none is ignored. |
+| `rationale` | string | no | Why the agent is asking, or why it leans as it does. Plain text, rendered **inside** the question. |
 | `answer` | array of strings | no | **The open/resolved marker.** Absent or empty ⇒ the question is **open**. Non-empty ⇒ **resolved**, carrying the chosen value(s). |
 
 The `answer` shape mirrors a submitted answer's values: a `single`/`bool`/`number` answer is one element, a
@@ -184,6 +185,35 @@ asked, so an agent revising its own opinion must never invalidate a human's deci
 Interpreting it: on an **open** question it says which way the plan was heading. On a **resolved** one it is
 sharper — an `answer` that differs from `recommended` is a human deliberately overriding the agent, and work
 built from that plan must not drift back toward the rejected option.
+
+### `rationale` — the reasoning, bound to the question
+
+`rationale` is why the agent is asking, or why it leans as it does. The renderer puts it **inside** the
+question's box, between the title and the controls.
+
+**Do not write the reasoning as prose beside the block instead.** A paragraph next to a `:::question` is an
+ordinary CommonMark block and nothing binds it to the question — a reviewer who met one sitting between two
+questions read it as the introduction to the one *below*, and answered one question while reading the
+argument for another. Both readings were available and the page could not tell them apart. Adjacency also
+survives nothing: an agent revising a plan moves, splits and interleaves blocks freely.
+
+Plain text, not markdown — it is echoed escaped, like `title`.
+
+````markdown
+:::question
+{ "id": "db-choice", "title": "Which datastore for the read path?",
+  "mode": "single", "options": ["Postgres", "DynamoDB"], "recommended": "Postgres",
+  "rationale": "Postgres is the cheapest option that still fixes the installed base. DynamoDB only wins if the write path outgrows one region this year, which the traffic model does not predict.",
+  "target": "human" }
+:::
+````
+
+Like `recommended`, it is **not** part of the question fingerprint: rewriting an explanation does not change
+what was asked, so it must never stale an answer a human has already given.
+
+Interpreting it: on an open question it is the context needed to ask well. On a resolved one, read it
+against `recommended` — an answer that went the other way shows not only which option the human rejected but
+the argument they rejected with it.
 
 **Open** (as authored):
 

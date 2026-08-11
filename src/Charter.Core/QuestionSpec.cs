@@ -106,6 +106,32 @@ public sealed record QuestionSpec(
     /// </para>
     /// </remarks>
     public string? Recommended { get; init; }
+
+    /// <summary>
+    /// Why the agent is asking, or why it leans the way it does — rendered INSIDE the question (Charter #132).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reasoning written as prose beside a <c>:::question</c> is an ordinary CommonMark block, and nothing
+    /// binds it to the question. A reviewer met a paragraph sitting between two questions and read it as the
+    /// introduction to the one BELOW it — answering one question while reading the argument for another.
+    /// Both readings were available and the page offered no way to tell them apart.
+    /// </para>
+    /// <para>
+    /// Adjacency cannot be enforced (an agent revising a plan may move, split or interleave blocks) and, more
+    /// to the point, cannot be PERCEIVED. A field can be: it renders inside the box, so the binding is
+    /// visible rather than inferred. Same argument as <see cref="Recommended"/> — a convention that lives in
+    /// the neighbouring text is guesswork; a field is not.
+    /// </para>
+    /// <para>
+    /// Plain text, deliberately: it is echoed escaped, like <see cref="Title"/>. Rendering markdown here would
+    /// add a second rendering path and an escaping surface for a couple of sentences of prose.
+    /// </para>
+    /// <para>
+    /// Excluded from <see cref="QuestionIdentity.Fingerprint"/> — see the note there.
+    /// </para>
+    /// </remarks>
+    public string? Rationale { get; init; }
     /// <summary>
     /// Parse and validate a question <paramref name="body"/> (JSON/YAML) into a <see cref="QuestionSpec"/>.
     /// Throws <see cref="FormatException"/> if the body is malformed or violates the schema (missing id,
@@ -235,11 +261,20 @@ public sealed record QuestionSpec(
                 recommended = null;
             }
 
+            // Whitespace-only is treated as absent: an empty rationale would render an empty box, which says
+            // less than nothing and is what a template with the field left unfilled produces.
+            var rationale = ReadString(root, "rationale");
+            if (string.IsNullOrWhiteSpace(rationale))
+            {
+                rationale = null;
+            }
+
             return (
                 new QuestionSpec(id, title, mode, options, target)
                 {
                     Answer = answer,
                     Recommended = recommended,
+                    Rationale = rationale,
                 },
                 null);
         }
