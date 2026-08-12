@@ -17,6 +17,18 @@
     <ProjectReference Include="..\..\src\Charter.Cli\Charter.Cli.csproj" />
   </ItemGroup>
 
+  <!-- Stamp the repository root into the test assembly, so the doc-coverage tests can read README.md and the
+       bundled skill without a hard-coded OS path — the same motivation as CharterCliPath below. Forward slashes
+       only: MSBuildThisFileDirectory already ends in the platform separator, and GetFullPath resolves the '../..'
+       from there on every OS, whereas a backslash is a literal filename character (not a separator) on the
+       macOS/Linux agents CI also runs on. -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>CharterRepositoryRoot</_Parameter1>
+      <_Parameter2>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
   <!-- Capture the resolved path of the Charter.Cli build output (its own bin, next to its
        Charter.Cli.runtimeconfig.json, and config-matched to this test run) into an assembly-metadata
        attribute the tests read at runtime. This is how the process tests locate the CLI robustly and

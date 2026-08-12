@@ -61,6 +61,13 @@ review it in the browser.
   running review session's annotations and `:::question` answers, folding each answer **inline into the
   `.charter.md`** (agent-in-the-loop `poll --apply`, or `resolve` for a solo human review). The plan is
   a living document that accumulates your decisions before handoff.
+- `charter reply <plan.charter.md> --to <comment-id> --body "…"` — the agent's half of that exchange: it
+  answers a review comment **in the comment's own thread**, so accepting a note, pushing back on it, or
+  asking what you meant lands beside the note itself rather than in a chat log you never see — or
+  smuggled into the plan's prose. It appends to the agent's own review log: the plan is never touched
+  (single-writer) and the comment is never settled, which stays your call. A reviewer with the page open
+  watches the reply arrive. `--as-human` is off by default, because this verb exists for the **agent's**
+  voice.
 - `charter headless <plan.charter.md> [--out-dir <dir>]` — the **unattended** path, for a run with no human
   present. Writes the same offline artifact `export` does plus a forensic JSON record — the plan's hash, every
   question and whether it was answered, and an anchor→source-line map so an element in the artifact can be
