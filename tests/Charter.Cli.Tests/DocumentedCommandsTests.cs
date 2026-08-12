@@ -1,4 +1,3 @@
-using System.Reflection;
 using Xunit;
 
 namespace Charter.Cli.Tests;
@@ -40,29 +39,10 @@ public class DocumentedCommandsTests
     /// </summary>
     private static void AssertDocumentsVerb(string relativePath, string verb, string remedy)
     {
-        string path = Path.Combine(RepositoryRoot(), relativePath);
-        Assert.True(File.Exists(path), $"Expected to find {relativePath} at '{path}'.");
-
         Assert.True(
-            File.ReadAllText(path).Contains($"`charter {verb}", StringComparison.Ordinal),
+            RepositoryFiles.ReadAllText(relativePath).Contains($"`charter {verb}", StringComparison.Ordinal),
             $"{relativePath} does not document the shipped verb '{verb}'. {remedy}. A capability its reader "
                 + "cannot find does not exist as far as that reader is concerned -- which is precisely what "
                 + "Charter #138 cost.");
-    }
-
-    /// <summary>
-    /// The repo root, from the <c>CharterRepositoryRoot</c> assembly metadata the test csproj stamps at build —
-    /// config-matched and cross-platform, like <c>CharterCliPath</c>, rather than walking up from the bin
-    /// directory (which breaks the moment the output layout changes).
-    /// </summary>
-    private static string RepositoryRoot()
-    {
-        AssemblyMetadataAttribute? metadata = typeof(DocumentedCommandsTests).Assembly
-            .GetCustomAttributes<AssemblyMetadataAttribute>()
-            .FirstOrDefault(attribute => attribute.Key == "CharterRepositoryRoot");
-
-        string? root = metadata?.Value;
-        Assert.False(string.IsNullOrEmpty(root), "The build did not set the CharterRepositoryRoot assembly metadata.");
-        return root!;
     }
 }
