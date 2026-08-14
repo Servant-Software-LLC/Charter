@@ -1584,6 +1584,87 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+
+    /// <summary>
+    /// An empty QUEUE is not a finished REVIEW (Charter #145).
+    /// <para>
+    /// The queue empties the instant anything drains, so gating the breakdown prompt on it told a reviewer
+    /// their plan was ready to break into tasks while their own unresolved notes sat in the same panel. That
+    /// is expensive to act on: a breakdown is long-running and token-costly, and it builds a DAG from a plan
+    /// whose feedback has not landed.
+    /// </para>
+    /// <para>
+    /// Said, not silently withdrawn. Hiding the row would be #124's mistake in a new place — a state the
+    /// reviewer can neither see nor account for — and some notes are informational and never resolve, so the
+    /// choice stays theirs.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task An_open_note_makes_the_breakdown_prompt_say_so()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-breakdown-open-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var writer = new ReviewLogWriter(planPath, new ReviewAuthor("Alice Ng", "alice@example.com"));
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = writer,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            // Nothing written yet: the review is genuinely finished, and the prompt carries no caveat.
+            var attached = new PageWaitForSelectorOptions { State = WaitForSelectorState.Attached };
+            await page.WaitForSelectorAsync(Ui("breakdown-command") + "[data-charter-open-notes=\"0\"]", attached);
+            var clean = await page.Locator(Ui("breakdown-command-note")).TextContentAsync() ?? string.Empty;
+            Assert.DoesNotContain("still open", clean, StringComparison.OrdinalIgnoreCase);
+
+            // A note, then a DRAIN — the queue empties without anything being addressed. This is the exact
+            // shape that produced the report.
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note nobody has acted on");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            await DrainAnnotationsAsync(server, session);
+            await WaitForEventAsync(page, "queue-changed");
+
+            // The queue is empty, so the prompt is still offered — and now says why that is not the whole story.
+            await page.WaitForSelectorAsync(Ui("breakdown-command") + "[data-charter-open-notes=\"1\"]", attached);
+            var caveat = await page.Locator(Ui("breakdown-command-note")).TextContentAsync() ?? string.Empty;
+            Assert.Contains("still open", caveat, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("will not include them", caveat, StringComparison.OrdinalIgnoreCase);
+
+            // The standing caveat is not lost to the new one.
+            Assert.Contains("--watch", caveat, StringComparison.Ordinal);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            TryDeleteTree(directory);
+        }
+    }
+
     // ---- question-form helpers ---------------------------------------------------------------------------
 
     /// <summary>The rendered <c>&lt;form&gt;</c> for <paramref name="questionId"/>.</summary>

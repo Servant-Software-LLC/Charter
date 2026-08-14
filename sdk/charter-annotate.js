@@ -187,6 +187,12 @@ window.CharterAnnotate = (function () {
 
   // The width the review panel occupies, and the viewport below which reserving it would squeeze the plan
   // harder than the panel ever covered it. Kept next to the panel's own width so the two cannot drift.
+  // The standing caveat under the breakdown command. Held apart so the open-notes warning can be prepended
+  // to it without either half drifting from the other.
+  var BREAKDOWN_NOTE =
+    'Stop any `charter poll --watch` first — otherwise it queues behind that command and looks like ' +
+    'nothing happened. This starts a breakdown you review, never a run.';
+
   var PANEL_WIDTH = 340;
 
   // Reserve only where the plan can still be read at ESSENTIALLY ITS FULL MEASURE. The document wants
@@ -1655,10 +1661,28 @@ window.CharterAnnotate = (function () {
         'breakdown-command',
         'Ready to break this plan into tasks? Paste this to your agent:',
         '/plan-breakdown ' + quotePath(state.sourcePath),
-        'Stop any `charter poll --watch` first — otherwise it queues behind that command and looks like '
-          + 'nothing happened. This starts a breakdown you review, never a run.');
+        BREAKDOWN_NOTE);
       ui.commands.appendChild(ui.breakdownCommand);
+      ui.breakdownNote = ui.breakdownCommand.querySelector('[' + UI_ATTR + '="breakdown-command-note"]');
     }
+
+    // An empty QUEUE is not a finished REVIEW (#145). The queue empties the instant anything drains, so
+    // gating on it alone told a reviewer their plan was ready for breakdown while their own unresolved notes
+    // sat in the same panel — and a breakdown built from a plan whose feedback has not landed is an expensive
+    // DAG of a stale document.
+    //
+    // Said rather than silently withdrawn. Hiding the row would be the #124 mistake in a new place: a state
+    // the reviewer can neither see nor account for. Some notes are informational and will never be resolved,
+    // so the reviewer keeps the choice — they just stop making it uninformed.
+    var open = openNoteCount();
+    if (ui.breakdownNote) {
+      var note = open > 0
+        ? open + ' review note(s) are still open — a breakdown now will not include them. ' + BREAKDOWN_NOTE
+        : BREAKDOWN_NOTE;
+      if (ui.breakdownNote.textContent !== note) ui.breakdownNote.textContent = note;
+    }
+
+    ui.breakdownCommand.setAttribute('data-charter-open-notes', String(open));
 
     show(ui.drainCommand, handedOff && neverChecked);
     show(ui.breakdownCommand, settled);
@@ -1743,7 +1767,7 @@ window.CharterAnnotate = (function () {
 
     state.ui = {
       style: style, panel: panel, title: title, list: list, send: send, hint: hint,
-      commands: commands, drainCommand: null, breakdownCommand: null,
+      commands: commands, drainCommand: null, breakdownCommand: null, breakdownNote: null,
       status: status, toggle: toggle, overlay: overlay, banner: null,
       // The quarantine notice is built on demand (renderStaleQueue) and lives inside the panel, so disposing
       // the panel disposes it. It is never in the saved artifact — invariant 1 — like the rest of this chrome.
@@ -2030,6 +2054,19 @@ window.CharterAnnotate = (function () {
     return records;
   }
 
+  // Unresolved business: notes nobody has settled. RETRACTED does not count (withdrawn, not left undone) and
+  // a note the agent has already taken DOES (delivery and resolution are different axes — #124). One
+  // definition, used by the pill (#134) and by the breakdown gate (#145), so the two can never disagree about
+  // whether a review is finished.
+  function openNoteCount() {
+    var records = mergedRecords();
+    var n = 0;
+    for (var i = 0; i < records.length; i++) {
+      if ((records[i].status || 'open') === 'open') n++;
+    }
+    return n;
+  }
+
   // Notes of this reviewer's that the agent has been handed. Drives the honest wording on the Send control.
   function deliveredCount() {
     var records = mergedRecords();
@@ -2217,10 +2254,7 @@ window.CharterAnnotate = (function () {
     // badged `sent` IS open — delivery and resolution are different axes (#124), and treating the agent
     // having it as business finished would tell the reviewer the opposite of the truth. A teammate's open
     // comment counts too: the pill describes the plan's state, not authorship.
-    var open = 0;
-    for (var e = 0; e < entries.length; e++) {
-      if ((entries[e].record.status || 'open') === 'open') open++;
-    }
+    var open = openNoteCount();
 
     // No `(0 open)` when everything is settled — the absence of the clause is the signal.
     ui.toggle.textContent = open > 0
