@@ -22,6 +22,19 @@ public sealed class ReviewServerOptions
     public bool OpenBrowser { get; set; }
 
     /// <summary>
+    /// Whether this machine can resolve the <c>/charter-drain</c> invocation the review panel hands over
+    /// (Charter #116). <c>null</c> (the default, and what <c>charter review</c> uses) means DISCOVER it via
+    /// <see cref="DrainSkillLookup"/>; a non-null value states the fact instead.
+    /// </summary>
+    /// <remarks>
+    /// The override exists because the discovered answer depends on the MACHINE — a developer with the skill
+    /// installed in their own home cannot otherwise write a test for the missing case, and, worse, a test for
+    /// the present case passes for the wrong reason. Both happened. An embedder that already knows the answer
+    /// can state it here rather than have the server go looking.
+    /// </remarks>
+    public bool? DrainSkillInstalled { get; set; }
+
+    /// <summary>
     /// The directory the server writes its durable review sidecar into (§1.6). When set, the server persists
     /// the queued annotations/answers to a server-owned file under this directory on every change and
     /// rehydrates from it on start, so a <c>charter review</c> crash before drain loses nothing. When

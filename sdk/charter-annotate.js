@@ -81,6 +81,12 @@ window.CharterAnnotate = (function () {
     // is already composed when the copy gesture arrives — WebKit rejects a clipboard write reached after an
     // intervening await.
     sourcePath: null,
+    // Can this machine resolve the /charter-drain invocation the panel hands over (#116)? Defaults to TRUE
+    // and is only ever lowered by a server that positively looked and did not find it. Optimistic on
+    // purpose: the check cannot enumerate every place an agent might have skills installed
+    // (`skills install --target <dir>` puts them anywhere), so a wrong "missing" must cost a reviewer one
+    // extra true sentence, never a withheld instruction.
+    drainSkillInstalled: true,
     ageTicker: 0,        // the display-only timer that keeps that elapsed reading from freezing
     staleQueue: null,
     staleQueueShown: false,
@@ -193,6 +199,11 @@ window.CharterAnnotate = (function () {
   // harder than the panel ever covered it. Kept next to the panel's own width so the two cannot drift.
   // The standing caveat under the breakdown command. Held apart so the open-notes warning can be prepended
   // to it without either half drifting from the other.
+  // The standing caveat under the drain command. Held apart so the skill-missing warning can be prepended to
+  // it without either half drifting from the other — the same discipline BREAKDOWN_NOTE follows.
+  var DRAIN_NOTE =
+    'It keeps listening for the rest of the review, so this is the only time you need to send it.';
+
   var BREAKDOWN_NOTE =
     'Have your agent stop draining first — otherwise this queues behind that and looks like nothing ' +
     'happened. This starts a breakdown you review, never a run.';
@@ -903,6 +914,11 @@ window.CharterAnnotate = (function () {
       if (!res.ok) return null;
       return res.json().then(function (descriptor) {
         state.sourcePath = (descriptor && descriptor.sourcePath) || null;
+        // Whether this machine can resolve /charter-drain (#116). Absent on an older server ⇒ leave the
+        // optimistic default, so a new page against an old server behaves exactly as it did before.
+        if (descriptor && typeof descriptor.drainSkillInstalled === 'boolean') {
+          state.drainSkillInstalled = descriptor.drainSkillInstalled;
+        }
         syncCommands();
         return state.sourcePath;
       }, function () { return null; });
@@ -1661,6 +1677,19 @@ window.CharterAnnotate = (function () {
     var handedOff = state.round.submitted || state.awaitingRevision;
     var settled = pendingCount() === 0 && !state.round.submitted;
 
+    if (!ui.installCommand) {
+      // Handing over a skill call that resolves to NOTHING trades one silent failure for another (#116) —
+      // and silent-failure-that-looks-like-success is the exact defect #144 set out to remove. Shown only
+      // when the server looked for the skill and did not find it, and shown ABOVE the drain row because
+      // that is the order you would do them in.
+      ui.installCommand = commandRow(
+        'install-command',
+        'Your agent needs the Charter skills first. Run this in your terminal:',
+        'charter skills install',
+        'One-off, per machine. Restart your agent afterwards so it picks the skills up.');
+      ui.commands.appendChild(ui.installCommand);
+    }
+
     if (!ui.drainCommand) {
       // A SKILL invocation, not a command line (#144). The old row handed over
       // `charter poll <plan> --watch --apply` under the label "Run this where your agent is" — an invitation
@@ -1672,8 +1701,21 @@ window.CharterAnnotate = (function () {
         'drain-command',
         'Nothing has picked this up. Paste this to your agent:',
         '/charter-drain ' + quotePath(state.sourcePath),
-        'It keeps listening for the rest of the review, so this is the only time you need to send it.');
+        DRAIN_NOTE);
       ui.commands.appendChild(ui.drainCommand);
+      ui.drainNote = ui.drainCommand.querySelector('[' + UI_ATTR + '="drain-command-note"]');
+    }
+
+    // The invocation is offered EITHER WAY (#116): the lookup cannot enumerate every place an agent might
+    // have skills installed, so a wrong "missing" must cost the reviewer one extra true sentence rather than
+    // a withheld instruction. What changes is what sits beside it.
+    var haveSkill = state.drainSkillInstalled !== false;
+    ui.drainCommand.setAttribute('data-charter-drain-skill', haveSkill ? 'installed' : 'missing');
+    if (ui.drainNote) {
+      var drainNote = haveSkill
+        ? DRAIN_NOTE
+        : 'Charter cannot find that skill on this machine — install it first, above. ' + DRAIN_NOTE;
+      if (ui.drainNote.textContent !== drainNote) ui.drainNote.textContent = drainNote;
     }
 
     if (!ui.breakdownCommand) {
@@ -1704,9 +1746,13 @@ window.CharterAnnotate = (function () {
 
     ui.breakdownCommand.setAttribute('data-charter-open-notes', String(open));
 
-    show(ui.drainCommand, handedOff && neverChecked);
+    var offerDrain = handedOff && neverChecked;
+    // The install row rides with the drain row and only when the skill is genuinely missing: it is a
+    // prerequisite for the invocation beside it, not standing advice.
+    show(ui.installCommand, offerDrain && !haveSkill);
+    show(ui.drainCommand, offerDrain);
     show(ui.breakdownCommand, settled);
-    show(ui.commands, (handedOff && neverChecked) || settled);
+    show(ui.commands, offerDrain || settled);
   }
 
   function show(el, visible) {
@@ -1796,7 +1842,8 @@ window.CharterAnnotate = (function () {
 
     state.ui = {
       style: style, panel: panel, title: title, list: list, send: send, hint: hint,
-      commands: commands, drainCommand: null, breakdownCommand: null, breakdownNote: null,
+      commands: commands, installCommand: null, drainCommand: null, drainNote: null,
+      breakdownCommand: null, breakdownNote: null,
       status: status, toggle: toggle, overlay: overlay, banner: null,
       // The quarantine notice is built on demand (renderStaleQueue) and lives inside the panel, so disposing
       // the panel disposes it. It is never in the saved artifact — invariant 1 — like the rest of this chrome.
