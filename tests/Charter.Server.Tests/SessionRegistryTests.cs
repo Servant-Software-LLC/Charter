@@ -82,8 +82,21 @@ public class SessionRegistryTests
         {
             var planA = Path.Combine(dir, "a.mdx");
             var planB = Path.Combine(dir, "b.mdx");
-            var pathA = SessionRegistry.Write(dir, MakeDescriptor(planA, key: "aaaa"));
-            var pathB = SessionRegistry.Write(dir, MakeDescriptor(planB, key: "bbbb"));
+            // Both must look LIVE, because Enumerate prunes as it reads (Charter #147): a descriptor whose
+            // process is provably gone is deleted rather than returned. This test is about skipping CORRUPT
+            // files, so its fixtures have to survive the sweep for it to still be testing that.
+            File.WriteAllText(planA, "# a\n");
+            File.WriteAllText(planB, "# b\n");
+            var pathA = SessionRegistry.Write(dir, MakeDescriptor(planA, key: "aaaa") with
+            {
+                Pid = Environment.ProcessId,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            var pathB = SessionRegistry.Write(dir, MakeDescriptor(planB, key: "bbbb") with
+            {
+                Pid = Environment.ProcessId,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
 
             // A garbage .json file in the same directory must be skipped, not counted or thrown on.
             File.WriteAllText(Path.Combine(dir, "garbage.json"), "{ this is not a descriptor");
@@ -216,6 +229,149 @@ public class SessionRegistryTests
             {
                 Assert.True(root.TryGetProperty(key, out _), $"descriptor JSON should carry '{key}'");
             }
+        }
+        finally
+        {
+            TryDeleteDir(dir);
+        }
+    }
+
+    // ---- the liveness prune (Charter #147) ---------------------------------------------------
+    //
+    // `Delete` promised in a comment that "the next liveness probe prunes it as stale". There was no liveness
+    // probe: no consumer ever read a descriptor's Pid, and nothing swept the directory. A working machine
+    // accumulated 12 descriptors, 11 naming processes that no longer existed, the oldest 19 days old — each
+    // still carrying a loopback address and a capability key.
+
+    [Fact]
+    public void Prune_RemovesADescriptorWhoseProcessIsGone()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var planPath = Path.Combine(dir, "plan.charter.md");
+            File.WriteAllText(planPath, "# plan\n");
+            // Pid 4242 is MakeDescriptor's default and belongs to nothing on the test host.
+            SessionRegistry.Write(dir, MakeDescriptor(planPath));
+
+            Assert.Equal(1, SessionRegistry.Prune(dir));
+            Assert.Empty(SessionRegistry.Enumerate(dir));
+        }
+        finally
+        {
+            TryDeleteDir(dir);
+        }
+    }
+
+    /// <summary>
+    /// The conservative half. A live session must survive a sweep, so the prune keeps anything it cannot
+    /// PROVE dead — here, this very test process, which certainly exists and started before it published.
+    /// </summary>
+    [Fact]
+    public void Prune_KeepsALiveSession()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var planPath = Path.Combine(dir, "plan.charter.md");
+            File.WriteAllText(planPath, "# plan\n");
+            var live = MakeDescriptor(planPath) with
+            {
+                Pid = Environment.ProcessId,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            SessionRegistry.Write(dir, live);
+
+            Assert.Equal(0, SessionRegistry.Prune(dir));
+            Assert.Single(SessionRegistry.Enumerate(dir));
+        }
+        finally
+        {
+            TryDeleteDir(dir);
+        }
+    }
+
+    /// <summary>
+    /// Pid reuse, which a pid-existence check alone cannot survive — and which was NOT hypothetical: the very
+    /// first real run of this feature met a descriptor whose pid the OS had recycled to a browser four days
+    /// after the descriptor was written, and kept the dead entry forever.
+    ///
+    /// <para>A process cannot have written a descriptor before it started, so a start time LATER than the
+    /// descriptor's proves a different process is wearing the id. Modelled here with this process's own pid
+    /// against a descriptor claiming to predate it.</para>
+    /// </summary>
+    [Fact]
+    public void Prune_RemovesADescriptorWhosePidWasRecycledToAYoungerProcess()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var planPath = Path.Combine(dir, "plan.charter.md");
+            File.WriteAllText(planPath, "# plan\n");
+            var recycled = MakeDescriptor(planPath) with
+            {
+                Pid = Environment.ProcessId,                        // exists...
+                CreatedAt = DateTimeOffset.UtcNow.AddDays(-30),     // ...but long predates it
+            };
+            SessionRegistry.Write(dir, recycled);
+
+            Assert.True(SessionRegistry.IsProvablyDead(recycled));
+            Assert.Equal(1, SessionRegistry.Prune(dir));
+        }
+        finally
+        {
+            TryDeleteDir(dir);
+        }
+    }
+
+    /// <summary>
+    /// A review server for a file that no longer exists cannot be useful. Four of the eleven leaked entries
+    /// were exactly this — pointing into temp directories another tool had since swept.
+    /// </summary>
+    [Fact]
+    public void IsProvablyDead_WhenThePlanItServesIsGone()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var missing = MakeDescriptor(Path.Combine(dir, "never-written.charter.md")) with
+            {
+                Pid = Environment.ProcessId,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+
+            Assert.True(SessionRegistry.IsProvablyDead(missing));
+        }
+        finally
+        {
+            TryDeleteDir(dir);
+        }
+    }
+
+    [Fact]
+    public void Enumerate_PrunesAsItReads_SoADeadDescriptorNeverReachesACaller()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var deadPlan = Path.Combine(dir, "dead.charter.md");
+            var livePlan = Path.Combine(dir, "live.charter.md");
+            File.WriteAllText(deadPlan, "# dead\n");
+            File.WriteAllText(livePlan, "# live\n");
+
+            SessionRegistry.Write(dir, MakeDescriptor(deadPlan));            // pid 4242 — nothing
+            SessionRegistry.Write(dir, MakeDescriptor(livePlan) with
+            {
+                Pid = Environment.ProcessId,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
+            var entries = SessionRegistry.Enumerate(dir);
+
+            Assert.Single(entries);
+            Assert.Equal(livePlan, entries[0].Descriptor.SourcePath);
+            // ...and the dead one is gone from disk, not merely filtered out of the result.
+            Assert.False(File.Exists(SessionRegistry.PathForPlan(dir, deadPlan)));
         }
         finally
         {

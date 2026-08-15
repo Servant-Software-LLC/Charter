@@ -98,6 +98,14 @@ internal static class CharterCommands
             // parallel to `render`; only entered for the `skills` verb so the banner / --version behavior stays as-is.
             ("skills", SkillsCommand.BuildRoot),
 
+            // `charter sessions [--prune] [--stop-all]`: list the review servers running on this machine, sweep the
+            // descriptors whose processes are gone, and stop the live ones (Charter #147). A HUMAN verb in a CLI that
+            // is otherwise mostly an agent IPC — nothing listed running servers, so the only ways to find an abandoned
+            // one were a failed `dotnet tool update` (the running binary holds its own file open) or a process-table
+            // hunt. Parsed with System.CommandLine, parallel to `render`; only entered for the `sessions` verb so the
+            // banner / --version behavior above stays exactly as-is.
+            ("sessions", SessionsCommand.BuildRoot),
+
             // `charter poll [<plan.charter.md>] [--session <descriptor>] [--url <cap-url>] [--wait] [--apply]`: drain
             // queued review feedback (annotations + answers) from a running review server, closing the
             // author -> review -> handoff loop. Discovers the session via the per-user registry (or --session / --url),

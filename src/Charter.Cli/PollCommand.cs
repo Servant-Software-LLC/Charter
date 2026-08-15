@@ -140,9 +140,68 @@ internal static class PollCommand
     public static int Execute(string? input, string? sessionPath, string? url, bool wait, bool apply)
         => ExecuteAsync(input, sessionPath, url, wait, apply).GetAwaiter().GetResult();
 
+    // Emitted at most once per process, on stderr only, when stdout is a terminal (Charter #144).
+    private static bool _humanNoticeShown;
+
+    /// <summary>
+    /// Tell a human what they have just started, when the evidence says a human started it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>poll</c> is Charter's agent IPC, and the review page used to hand a human its raw command line. Run
+    /// in a terminal it works PERFECTLY — a wall of single-line JSON envelopes, one every ~30s forever — and
+    /// it consumes the round: annotations drain destructively, so two review notes went into a console nobody
+    /// was reading and nothing said so. The page now hands over <c>/charter-drain</c> instead, but the verb
+    /// stays runnable, so it must stop being silent about what it just did.
+    /// </para>
+    /// <para>
+    /// <b>stderr only, and stdout stays byte-identical.</b> Every agent consuming this verb parses stdout; a
+    /// word of prose there would break them. A redirected stdout is the signal that a program is reading, so
+    /// the notice appears only for an interactive terminal.
+    /// </para>
+    /// </remarks>
+    private static void NoticeIfAHumanIsWatching(bool apply)
+    {
+        // A redirected stdout means a PROGRAM is reading the envelopes. Only an attached terminal implies a
+        // person. That one-line read is the sole untested part of this — a test host captures stdout by
+        // construction, so `IsOutputRedirected` is always true under xunit and the interactive branch cannot
+        // be reached from there. Everything downstream of the decision takes it as a parameter instead.
+        WriteHumanNotice(!Console.IsOutputRedirected, apply, Console.Error);
+    }
+
+    /// <summary>
+    /// Write the human-facing notice to <paramref name="writer"/> when <paramref name="humanIsWatching"/>,
+    /// at most once per process. Separated from the terminal detection so the message and the once-only
+    /// guarantee are testable without a tty.
+    /// </summary>
+    internal static void WriteHumanNotice(bool humanIsWatching, bool apply, TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        if (!humanIsWatching || _humanNoticeShown)
+        {
+            return;
+        }
+
+        _humanNoticeShown = true;
+        writer.WriteLine(
+            "charter poll: this is the AGENT's channel, not a human one -- it prints one JSON envelope per "
+                + "cycle and DRAINS the review round as it goes. Annotations are removed from the queue and "
+                + "are not written anywhere: whatever scrolls past here is the only copy, and the reviewer "
+                + "will be told their notes were delivered."
+                + (apply ? " (Question answers ARE applied inline to the plan, so those are safe.)" : string.Empty));
+        writer.WriteLine(
+            "charter poll: if you meant to hand this review to your agent, send it `/charter-drain <plan>` "
+                + "instead -- the review page offers that line ready to paste.");
+    }
+
+    /// <summary>Test seam: forget that the notice was shown, so a second case can observe it.</summary>
+    internal static void ResetHumanNoticeForTests() => _humanNoticeShown = false;
+
     private static async Task<int> ExecuteAsync(
         string? input, string? sessionPath, string? url, bool wait, bool apply)
     {
+        NoticeIfAHumanIsWatching(apply);
+
         var resolution = await ResolveSessionAsync(input, sessionPath, url).ConfigureAwait(false);
         if (resolution.Client is null)
         {

@@ -93,7 +93,8 @@ that is a plotting task, not a Charter deliverable).
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
 | `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]` | Convert the plan's `:::` directives to **plain CommonMark** for the **autonomous** Guardrails `plan-breakdown` path. (That path is also called "headless" — an unrelated sense of the word from the `charter headless` verb above. `handoff` writes no record; `headless` writes no CommonMark.) |
 | `charter reply <plan.charter.md> --to <comment-id> --body <text>` | **Answer a review comment in its thread** — your voice back to the reviewer. Accept it, **push back on it**, or ask what was meant. Writes one `reply` record to your own author log: it does **not** touch the plan (single-writer), does not contact the review server, and does **not** settle the comment (that stays a deliberate `resolve`). A reviewer with the page open sees it arrive over the review-log watch. Attributed to `actor: agent` by default; `--as-human` only if you are writing on the human's behalf. |
-| `charter skills install [--project] [--force]` | Install the bundled `charter` + `charter-format` skills so Guardrails `plan-breakdown` can discover them. |
+| `charter skills install [--project] [--force]` | Install the bundled `charter`, `charter-format` + `charter-drain` skills so Guardrails `plan-breakdown` can discover them. |
+| `charter sessions [--prune] [--stop-all]` | List the review servers running on this machine. A **human** verb — surface it when they ask what is running or cannot update the tool; do not run it to hunt for a session yourself (`poll` discovers its own). |
 | `charter --version` | Print the version. |
 
 `poll` discovers the running session from a per-user registry, so the **capability key never crosses your

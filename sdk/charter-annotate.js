@@ -194,8 +194,8 @@ window.CharterAnnotate = (function () {
   // The standing caveat under the breakdown command. Held apart so the open-notes warning can be prepended
   // to it without either half drifting from the other.
   var BREAKDOWN_NOTE =
-    'Stop any `charter poll --watch` first — otherwise it queues behind that command and looks like ' +
-    'nothing happened. This starts a breakdown you review, never a run.';
+    'Have your agent stop draining first — otherwise this queues behind that and looks like nothing ' +
+    'happened. This starts a breakdown you review, never a run.';
 
   var PANEL_WIDTH = 340;
 
@@ -1662,11 +1662,17 @@ window.CharterAnnotate = (function () {
     var settled = pendingCount() === 0 && !state.round.submitted;
 
     if (!ui.drainCommand) {
+      // A SKILL invocation, not a command line (#144). The old row handed over
+      // `charter poll <plan> --watch --apply` under the label "Run this where your agent is" — an invitation
+      // to do the one thing that must not happen. Run in a terminal it WORKS: it prints a wall of JSON
+      // envelopes forever and drains the round into a console nobody is reading, and nothing says so. A
+      // slash command fails loudly in the wrong hands (`command not found`) instead of succeeding quietly,
+      // and it keeps the flag mechanics with the agent that owns them.
       ui.drainCommand = commandRow(
         'drain-command',
-        'Nothing has picked this up. Run this where your agent is:',
-        'charter poll ' + quotePath(state.sourcePath) + ' --watch --apply',
-        'It keeps listening for the rest of the review, so this is the only time you need to run it.');
+        'Nothing has picked this up. Paste this to your agent:',
+        '/charter-drain ' + quotePath(state.sourcePath),
+        'It keeps listening for the rest of the review, so this is the only time you need to send it.');
       ui.commands.appendChild(ui.drainCommand);
     }
 
