@@ -80,6 +80,9 @@ review it in the browser.
   questions that have no answer are handed off flagged).
 - `charter skills install [--project]` — installs the bundled agent skills so your agent (and Guardrails)
   can discover them.
+- `charter sessions [--prune] [--stop-all]` — lists the review servers running on this machine, with the
+  plan each is serving. A review server is easy to start and easy to walk away from; this is how you find
+  one you have forgotten (and why `dotnet tool update` sometimes reports the binary is in use).
 - `charter --version` — prints the version.
 
 A typical author → review → handoff pass:

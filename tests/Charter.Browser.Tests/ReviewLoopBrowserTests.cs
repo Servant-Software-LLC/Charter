@@ -1183,11 +1183,16 @@ public sealed partial class ReviewLoopBrowserTests
             await page.WaitForSelectorAsync(Ui("drain-command"));
             var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
 
-            // A REAL command, not a template: this plan's own path, quoted so a directory with a space in it
-            // does not silently truncate.
-            Assert.StartsWith("charter poll ", command, StringComparison.Ordinal);
-            Assert.Contains("--watch", command, StringComparison.Ordinal);
-            Assert.Contains("--apply", command, StringComparison.Ordinal);
+            // A REAL invocation, not a template: this plan's own path, quoted so a directory with a space in
+            // it does not silently truncate.
+            //
+            // A SKILL, not a command line (#144). The page used to hand over `charter poll <plan> --watch
+            // --apply` under "Run this where your agent is". Pasted into a terminal that WORKS: it prints
+            // JSON forever and drains the round into a console nobody reads. A slash command fails loudly in
+            // the wrong hands instead of succeeding quietly, so the flag mechanics never reach a human.
+            Assert.StartsWith("/charter-drain ", command, StringComparison.Ordinal);
+            Assert.DoesNotContain("charter poll", command, StringComparison.Ordinal);
+            Assert.DoesNotContain("--watch", command, StringComparison.Ordinal);
             Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
             Assert.Contains("\"", command, StringComparison.Ordinal);
             Assert.DoesNotContain("\\", command, StringComparison.Ordinal);   // forward slashes, even on Windows
@@ -1323,9 +1328,11 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
             Assert.Contains("\"", command, StringComparison.Ordinal);
 
-            // The caveat that stops a paste vanishing behind a running watch — and being pasted twice.
+            // The caveat that stops a paste vanishing behind a running drain — and being pasted twice.
+            // Asserted by its SUBSTANCE, not by the flag name: the note stopped naming `--watch` when the
+            // drain became a skill (#144), because flag mechanics are the agent's business, not a reviewer's.
             var note = (await page.InnerTextAsync(Ui("breakdown-command-note"))).Trim();
-            Assert.Contains("--watch", note, StringComparison.Ordinal);
+            Assert.Contains("stop draining", note, StringComparison.OrdinalIgnoreCase);
 
             // It must never offer to RUN anything: `guardrails run` executes real work and merges a branch.
             Assert.DoesNotContain("guardrails run", command, StringComparison.Ordinal);
@@ -1655,7 +1662,7 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.Contains("will not include them", caveat, StringComparison.OrdinalIgnoreCase);
 
             // The standing caveat is not lost to the new one.
-            Assert.Contains("--watch", caveat, StringComparison.Ordinal);
+            Assert.Contains("stop draining", caveat, StringComparison.OrdinalIgnoreCase);
 
             AssertNoBrowserErrors(instrumented);
         }
@@ -2159,8 +2166,8 @@ public sealed partial class ReviewLoopBrowserTests
             // (one ~30s cycle) — so the two instructions on screen disagreed about both.
             await page.WaitForSelectorAsync(Ui("drain-command"));
             var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
-            Assert.Contains("charter poll", command, StringComparison.Ordinal);
-            Assert.Contains("--watch", command, StringComparison.Ordinal);
+            Assert.Contains("/charter-drain", command, StringComparison.Ordinal);
+            Assert.DoesNotContain("charter poll", command, StringComparison.Ordinal);
             Assert.Contains(Path.GetFileName(planPath), command, StringComparison.Ordinal);
 
             // And `charter resolve` must NOT be offered as the alternative: it folds queued ANSWERS inline
