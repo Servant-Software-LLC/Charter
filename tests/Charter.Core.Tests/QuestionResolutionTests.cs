@@ -259,6 +259,86 @@ public class QuestionResolutionTests
         Assert.Equal(new[] { "dup" }, duplicates);
     }
 
+    // ---- the missing-lean lint (Charter #142) ------------------------------------------------
+    //
+    // `recommended` is optional in schema and load-bearing unattended: `charter headless` escalates an open
+    // human question, and the escalation is only useful if it can say what the agent would have chosen.
+    // Eleven questions were authored across two real plans without one because an omitted optional field
+    // produces valid output and nothing objected.
+
+    private const string Select =
+        ":::question\n{{ \"id\": \"{0}\", \"title\": \"T\", \"mode\": \"single\", "
+        + "\"options\": [\"A\", \"B\"]{1}, \"target\": \"{2}\" }}\n:::\n\n";
+
+    private static string Question(string id, string extra = "", string target = "human")
+        => string.Format(System.Globalization.CultureInfo.InvariantCulture, Select, id, extra, target);
+
+    [Fact]
+    public void FindQuestionsMissingRecommendation_ReportsAnOpenHumanSelectWithNoRecommendedKey()
+    {
+        var markdown = Question("needs-a-lean");
+
+        Assert.Equal(new[] { "needs-a-lean" }, QuestionResolution.FindQuestionsMissingRecommendation(markdown));
+    }
+
+    [Fact]
+    public void FindQuestionsMissingRecommendation_AcceptsARecommendation()
+    {
+        var markdown = Question("has-a-lean", ", \"recommended\": \"A\"");
+
+        Assert.Empty(QuestionResolution.FindQuestionsMissingRecommendation(markdown));
+    }
+
+    /// <summary>
+    /// The whole point of the opt-out: an explicit null records "I considered a lean and declined", which must
+    /// be distinguishable from an absent key ("I never knew the field existed"). Both parse to a null
+    /// <see cref="QuestionSpec.Recommended"/>, which is exactly why the lint reads the raw JSON body.
+    /// </summary>
+    [Fact]
+    public void FindQuestionsMissingRecommendation_ExplicitNullIsADeliberateAbstention_NotReported()
+    {
+        var markdown = Question("considered-and-declined", ", \"recommended\": null");
+
+        Assert.Empty(QuestionResolution.FindQuestionsMissingRecommendation(markdown));
+
+        // ...and the parsed spec is identical either way — the distinction exists ONLY in the source bytes.
+        Assert.Null(QuestionSpec.Parse(
+            "{ \"id\": \"x\", \"title\": \"T\", \"mode\": \"single\", \"options\": [\"A\"], "
+            + "\"recommended\": null, \"target\": \"human\" }").Recommended);
+    }
+
+    [Fact]
+    public void FindQuestionsMissingRecommendation_SkipsAnsweredAgentTargetedAndNonSelectQuestions()
+    {
+        // Answered: the decision is already on record, so a lean would change nothing.
+        var answered =
+            ":::question\n{ \"id\": \"answered\", \"title\": \"T\", \"mode\": \"single\", "
+            + "\"options\": [\"A\", \"B\"], \"answer\": [\"A\"], \"target\": \"human\" }\n:::\n";
+        // Agent-targeted: resolved downstream, never escalated to a person.
+        var agent = Question("agent-side", target: "agent");
+        // Non-select: nothing to lean toward.
+        var free =
+            ":::question\n{ \"id\": \"prose\", \"title\": \"T\", \"mode\": \"free-text\", "
+            + "\"target\": \"human\" }\n:::\n";
+
+        Assert.Empty(QuestionResolution.FindQuestionsMissingRecommendation(answered));
+        Assert.Empty(QuestionResolution.FindQuestionsMissingRecommendation(agent));
+        Assert.Empty(QuestionResolution.FindQuestionsMissingRecommendation(free));
+    }
+
+    [Fact]
+    public void FindQuestionsMissingRecommendation_ReportsInDocumentOrder_AndOnlyTheOffenders()
+    {
+        var markdown =
+            Question("first-missing")
+            + Question("has-one", ", \"recommended\": \"B\"")
+            + Question("second-missing");
+
+        Assert.Equal(
+            new[] { "first-missing", "second-missing" },
+            QuestionResolution.FindQuestionsMissingRecommendation(markdown));
+    }
+
     [Fact]
     public void FindDuplicateQuestionIds_AllUnique_ReturnsEmpty()
     {

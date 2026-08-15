@@ -124,10 +124,16 @@ internal static class HeadlessCommand
             $"charter headless: {openForHuman.Count + blockingNotes.Count} item(s) need a human -- exit "
                 + $"{HeadlessExitCodes.NeedsHuman}. Everything is on disk; see {recordFileName}.");
 
+        // Whether each escalation carries a lean, on the escalation line itself (Charter #142). This is the
+        // difference between a decision a human clears in ten seconds and one they must reconstruct from
+        // scratch, and it was previously discoverable only by opening the plan and reading the block.
         foreach (var question in openForHuman)
         {
+            var lean = question.Recommended is { Length: > 0 } value
+                ? $" [agent recommends: {value}]"
+                : " [no recommendation]";
             Console.Error.WriteLine(
-                $"  unanswered question '{question.Id}' (line {question.SourceLine}): {question.Title}");
+                $"  unanswered question '{question.Id}' (line {question.SourceLine}): {question.Title}{lean}");
         }
 
         foreach (var note in blockingNotes)

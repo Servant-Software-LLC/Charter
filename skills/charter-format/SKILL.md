@@ -186,6 +186,27 @@ Interpreting it: on an **open** question it says which way the plan was heading.
 sharper — an `answer` that differs from `recommended` is a human deliberately overriding the agent, and work
 built from that plan must not drift back toward the rejected option.
 
+**Optional in schema, load-bearing unattended.** `charter headless` escalates an open `human` question as a
+blocking decision, and whether that escalation is useful depends entirely on whether it can say what the
+agent would have chosen. Without a lean it reports that a human must decide while offering nothing to decide
+*with*, and the Guardrails handoff emits a fork carrying no default.
+
+So `charter render`, `charter review` and `charter handoff` **warn** when an open, `human`-targeted select
+question has no `recommended` key. To record a considered abstention, write it explicitly as null:
+
+````markdown
+:::question
+{ "id": "log-format", "title": "JSON or logfmt for the service logs?",
+  "mode": "single", "options": ["JSON", "logfmt"], "recommended": null,
+  "rationale": "Genuinely even here: JSON parses better, logfmt reads better, and nothing downstream depends on either.",
+  "target": "human" }
+:::
+````
+
+An **absent** key and an explicit `null` both parse to "no recommendation" — the difference is what they say
+to the next reader. `null` means *I considered a lean and declined*; absent is indistinguishable from *I never
+knew the field existed*. Only the absent form is warned about.
+
 ### `rationale` — the reasoning, bound to the question
 
 `rationale` is why the agent is asking, or why it leans as it does. The renderer puts it **inside** the

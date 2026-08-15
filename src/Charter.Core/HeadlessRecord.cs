@@ -165,7 +165,8 @@ public sealed class HeadlessRecord
                 spec.Options,
                 spec.Answer,
                 anchorId,
-                startLine));
+                startLine,
+                spec.Recommended));
         }
 
         var needsHuman =
@@ -240,6 +241,12 @@ public sealed class HeadlessRecord
                 ["options"] = ToJsonArray(question.Options),
                 ["answered"] = question.Answered,
                 ["answer"] = ToJsonArray(question.Answer),
+                // The authoring agent's lean, or null (Charter #142). An UNANSWERED human question is a
+                // blocking escalation, and this is the field that decides whether the record can say what
+                // the agent would have chosen or merely that someone must choose. Emitted always, including
+                // as an explicit null, so a triage reading the record never has to distinguish "no lean"
+                // from "this Charter is too old to report one".
+                ["recommended"] = question.Recommended is null ? null : JsonValue.Create(question.Recommended),
                 ["anchorId"] = question.AnchorId,
                 ["sourceLine"] = question.SourceLine,
             });
@@ -349,7 +356,8 @@ public sealed record HeadlessQuestion(
     IReadOnlyList<string> Options,
     IReadOnlyList<string> Answer,
     string AnchorId,
-    int SourceLine)
+    int SourceLine,
+    string? Recommended = null)
 {
     /// <summary>True when the question carries a non-empty answer — the on-disk resolved marker.</summary>
     public bool Answered => Answer.Count > 0;

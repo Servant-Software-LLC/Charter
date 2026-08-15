@@ -203,6 +203,41 @@ internal static class CharterCommands
                 + "and `charter poll --apply` / `charter resolve` will refuse the write.");
     }
 
+    // The missing-lean lint (Charter #142). An omitted optional field produces valid output, so nothing in the
+    // pipeline ever objected — eleven questions were authored across two real plans without a `recommended` and
+    // the omission surfaced only when a human noticed the absent "(Recommended)" tags in the review panel.
+    // This turns an invisible omission into a visible one at the moment of authoring, which is the only moment
+    // it is cheap to fix.
+    //
+    // A WARNING, never an error: some forks genuinely are 50/50, and the deliberate `"recommended": null`
+    // opt-out is already excluded by the lint itself.
+    private static void WarnOnMissingRecommendation(string verb, string markdown)
+    {
+        IReadOnlyList<string> missing;
+        try
+        {
+            missing = QuestionResolution.FindQuestionsMissingRecommendation(markdown);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        // ASCII only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+        Console.Error.WriteLine(
+            $"charter {verb}: warning: {missing.Count} open question(s) carry no `recommended`: "
+                + $"{string.Join(", ", missing)}. "
+                + "`charter headless` escalates an open human question, and without a lean that escalation says "
+                + "a human must decide while offering nothing to decide with. Add `recommended` (verbatim one of "
+                + "the options), or write `\"recommended\": null` to record that you considered a lean and "
+                + "declined -- an ABSENT key is indistinguishable from never having known the field exists.");
+    }
+
     // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
     private static RootCommand BuildRenderRoot()
     {
@@ -236,6 +271,7 @@ internal static class CharterCommands
             string markdown = File.ReadAllText(inputPath);
             WarnOnVersionMarker("render", markdown);
             WarnOnDuplicateQuestionIds("render", markdown);
+            WarnOnMissingRecommendation("render", markdown);
             string html = CharterRenderer.Render(markdown);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -414,6 +450,7 @@ internal static class CharterCommands
             string markdown = File.ReadAllText(inputPath);
             WarnOnVersionMarker("handoff", markdown);
             WarnOnDuplicateQuestionIds("handoff", markdown);
+            WarnOnMissingRecommendation("handoff", markdown);
             string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -695,6 +732,7 @@ internal static class CharterCommands
             string planMarkdown = File.ReadAllText(inputPath);
             WarnOnVersionMarker("review", planMarkdown);
             WarnOnDuplicateQuestionIds("review", planMarkdown);
+            WarnOnMissingRecommendation("review", planMarkdown);
 
             // The session confines the served root to the plan's directory and mints a per-session capability
             // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates

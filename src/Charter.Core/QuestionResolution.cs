@@ -201,6 +201,111 @@ public static class QuestionResolution
     }
 
     /// <summary>
+    /// The missing-lean lint (Charter #142): the ids of OPEN, human-targeted, select-mode questions in
+    /// <paramref name="markdown"/> that carry no <c>recommended</c> key at all, in document order.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>recommended</c> is optional in schema and load-bearing in the unattended path. <c>charter headless</c>
+    /// escalates an open human question, and the usefulness of that escalation depends entirely on whether the
+    /// record can say what the authoring agent would have chosen. Without a lean the escalation says "a human
+    /// must decide" and offers nothing to decide WITH. Eleven questions were authored across two real plans
+    /// without one and nothing anywhere noticed, because an omitted optional field produces valid output — the
+    /// worst available combination of silent and wrong.
+    /// </para>
+    /// <para>
+    /// <b>An explicit <c>"recommended": null</c> is NOT reported.</b> That is the deliberate opt-out: some forks
+    /// genuinely are 50/50, and "I considered a lean and declined to give one" must be distinguishable from "I
+    /// never knew the field existed". Only a key that is ABSENT reads as the latter. This is why the lint works
+    /// on the raw JSON body rather than on a parsed <see cref="QuestionSpec"/> — the parse maps both spellings
+    /// to a null <see cref="QuestionSpec.Recommended"/> and the distinction is gone.
+    /// </para>
+    /// <para>
+    /// Scoped to what a lean can actually mean: <c>free-text</c> and <c>bool</c> have no options to recommend,
+    /// an <c>agent</c>-targeted question is answered downstream rather than escalated to a person, and an
+    /// ANSWERED question's lean is moot — the decision is already recorded.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> FindQuestionsMissingRecommendation(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown))
+        {
+            return Array.Empty<string>();
+        }
+
+        var missing = new List<string>();
+
+        foreach (var block in BlockDocument.Parse(markdown).Blocks)
+        {
+            if (block.Kind != BlockKind.Question)
+            {
+                continue;
+            }
+
+            var body = QuestionBody(block.RawContent);
+            if (body is null)
+            {
+                continue;
+            }
+
+            JsonObject? root;
+            try
+            {
+                root = JsonNode.Parse(body) as JsonObject;
+            }
+            catch (JsonException)
+            {
+                continue;   // a malformed body is the parser's problem to report, not this lint's
+            }
+
+            if (root is null || !root.TryGetPropertyValue("id", out var idNode))
+            {
+                continue;
+            }
+
+            var id = idNode?.GetValue<string>();
+            if (string.IsNullOrEmpty(id))
+            {
+                continue;
+            }
+
+            // Absent `recommended` only. A present-but-null key is the deliberate decline.
+            if (root.ContainsKey("recommended"))
+            {
+                continue;
+            }
+
+            // An answered question has a decision on record; a lean would change nothing about it.
+            if (root.TryGetPropertyValue("answer", out var answerNode)
+                && answerNode is JsonArray answered && answered.Count > 0)
+            {
+                continue;
+            }
+
+            // `agent` questions are resolved downstream, not escalated to a person.
+            var target = root.TryGetPropertyValue("target", out var targetNode)
+                ? targetNode?.GetValue<string>()
+                : null;
+            if (target is not null && !string.Equals(target, "human", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Only a select mode has options to lean toward.
+            var mode = root.TryGetPropertyValue("mode", out var modeNode) ? modeNode?.GetValue<string>() : null;
+            if (!string.Equals(mode, "single", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(mode, "multi", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            missing.Add(id);
+        }
+
+        return missing;
+    }
+
+    /// <summary>
     /// The document-unique-question-id lint: the distinct ids carried by more than one <c>:::question</c> block
     /// in <paramref name="markdown"/>, in first-seen order (empty when every question id is unique). A duplicate
     /// id is a review-time error because <see cref="Apply"/> would write the same answer into every block that
