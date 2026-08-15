@@ -4563,4 +4563,137 @@ public sealed partial class ReviewLoopBrowserTests
 
         return null;
     }
+
+    /// <summary>
+    /// Enough filler between the two anchored paragraphs that a jump has somewhere to go — a selection that
+    /// scrolls is only observable when the target is off-screen to begin with.
+    /// </summary>
+    private static readonly string SelectionPlan =
+        "# Selection Plan\n\n" +
+        "The first paragraph, which the first note is written against.\n\n" +
+        string.Concat(System.Linq.Enumerable.Repeat(
+            "Filler prose that pushes the two anchors far enough apart to make scrolling observable.\n\n", 40)) +
+        "The last paragraph, which the second note is written against.\n";
+
+    /// <summary>
+    /// Charter #137 — selecting a review note jumps to its anchor and marks it, in both directions.
+    ///
+    /// <para>
+    /// The capability already existed: <c>jumpTo</c> scrolls, flashes and paints a text-range overlay. It had
+    /// exactly ONE call site — a small "Jump" button — so the link was bidirectional in capability but not in
+    /// gesture: clicking a badge went content→note, while note→content demanded a button press. This asserts
+    /// the gesture, the PERSISTENCE that distinguishes selection from the transient flash, and the anti-
+    /// ping-pong rule that a badge click marks the card without scrolling the content back out from under
+    /// the reviewer.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Selecting_a_note_jumps_to_its_anchor_and_a_badge_click_selects_without_scrolling_back()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(), "charter-selection-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var planPath = Path.Combine(directory, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, SelectionPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.SetViewportSizeAsync(1000, 700);
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            // Two notes, on the first and last paragraphs — far apart by construction.
+            await page.ClickAsync("body > p:nth-of-type(1)", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "first note");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            await page.ClickAsync("body > p:nth-of-type(42)", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "last note");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            var cards = page.Locator(Ui("item"));
+            Assert.Equal(2, await cards.CountAsync());
+
+            // Nothing is selected until the reviewer selects something.
+            Assert.Equal(0, await page.Locator("[data-charter-selected='true']").CountAsync());
+            Assert.Equal(0, await page.Locator(".charter-anchor-selected").CountAsync());
+
+            // --- the gesture: click the CARD BODY, not the Jump button -------------------------
+            var first = cards.First;
+            var firstId = await first.GetAttributeAsync("data-annotation-id");
+            await first.Locator(Ui("item-note")).ClickAsync();
+            await WaitForEventAsync(page, "annotation-jumped");
+
+            Assert.Equal("true", await first.GetAttributeAsync("data-charter-selected"));
+            // The mark lands on the PLAN's element, and on exactly one of them.
+            Assert.Equal(1, await page.Locator(".charter-anchor-selected").CountAsync());
+            Assert.True(await page.Locator("body > p:nth-of-type(1).charter-anchor-selected").CountAsync() == 1);
+
+            // --- persistence: the flash expires, the selection does not ------------------------
+            // flash() clears itself after 1400ms. If selection had been built on the same timer this is
+            // where it would disappear, and the reviewer would lose their place mid-read.
+            await Task.Delay(1800);
+            Assert.Equal(1, await page.Locator(".charter-anchor-selected").CountAsync());
+            Assert.Equal(0, await page.Locator(".charter-anchor-flash").CountAsync());
+            Assert.Equal("true", await first.GetAttributeAsync("data-charter-selected"));
+
+            // --- keyboard: ArrowDown walks to the next note and selects it ---------------------
+            await first.PressAsync("ArrowDown");
+            await WaitForEventAsync(page, "annotation-selected");
+
+            var second = cards.Nth(1);
+            Assert.Equal("true", await second.GetAttributeAsync("data-charter-selected"));
+            Assert.Equal("false", await first.GetAttributeAsync("data-charter-selected"));
+            // Selection is single: moving it MOVES it rather than accumulating outlines on the plan.
+            Assert.Equal(1, await page.Locator(".charter-anchor-selected").CountAsync());
+            Assert.True(await page.Locator("body > p:nth-of-type(42).charter-anchor-selected").CountAsync() == 1);
+
+            // --- the anti-ping-pong rule ------------------------------------------------------
+            // A badge click means "show me this note". The reviewer is already looking at the anchor, so the
+            // matching card must be SELECTED without the content pane scrolling back to where it already is.
+            //
+            // Measured INSIDE one page evaluation, deliberately: Playwright's own click auto-scrolls the
+            // target into view, so a scrollY read taken around an out-of-view click would be measuring the
+            // TEST HARNESS moving the page, not the SDK. Dispatching the click from in-page — after settling
+            // on the badge's own paragraph — leaves the SDK as the only thing that could move it.
+            var scrolled = await page.EvaluateAsync<string>(
+                "async () => {" +
+                "  const p = document.querySelector('body > p:nth-of-type(1)');" +
+                "  p.scrollIntoView({ block: 'center' });" +
+                "  const frame = () => new Promise(r => requestAnimationFrame(() => r()));" +
+                "  await frame(); await frame();" +
+                "  const before = window.scrollY;" +
+                "  p.querySelector('[data-charter-ui=\"badge\"]').click();" +
+                "  await frame(); await frame();" +
+                "  return before + '|' + window.scrollY;" +
+                "}");
+            var parts = scrolled.Split('|');
+            Assert.Equal(parts[0], parts[1]);
+
+            // ...and the card is nonetheless selected — marked, not scrolled to.
+            Assert.Equal("true", await first.GetAttributeAsync("data-charter-selected"));
+            Assert.Equal("false", await second.GetAttributeAsync("data-charter-selected"));
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
 }
