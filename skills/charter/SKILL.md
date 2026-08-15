@@ -103,6 +103,23 @@ command line**. The loopback HTTP endpoints still sit beneath it — `references
 
 ### 1. AUTHOR — write the plan, then `charter render`
 
+> **Load the `charter-format` skill BEFORE writing your first `:::` block.** Not "consult if unsure" — a
+> required step, the way `plan-breakdown` gates on `guardrails --version`. The catalog below cites the
+> schema; it does not carry it, and the fields you have never seen are exactly the ones you will omit.
+>
+> **Do not derive a block's shape from another block you wrote.** Copying the previous question is the path
+> of least resistance, always produces schema-valid output, and silently drops every optional field you have
+> not seen — with no feedback signal, because optional fields are optional. Eleven `:::question` blocks were
+> authored across two real plans this way, every one missing `recommended`; the omission surfaced only when a
+> human noticed the absent *(Recommended)* tags in the review panel. Derive the shape from `charter-format`.
+>
+> **Before you finish, check each `:::question` carries:** `rationale` (why you are asking, or why you lean
+> as you do — it renders inside the box), `target` (`human` or `agent`), and — for a `human`-targeted select
+> question — **`recommended`**, verbatim one of the options. If a fork genuinely is 50/50, write
+> `"recommended": null` to record that you considered a lean and declined. An *absent* key is
+> indistinguishable from never having known the field exists, which is why `charter render`, `review` and
+> `handoff` warn about it.
+
 Write the plan as a `.charter.md` file using the [block catalog](#block-catalog). Begin the file with a
 plain-YAML frontmatter marker declaring the format version (`---` / `charter-format-version: 1` / `---`) —
 normative in the `charter-format` skill. Starting from a prompt, an existing doc, a PDF, or a Confluence
