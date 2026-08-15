@@ -11,3 +11,7 @@ path — they are not under any topic.
 ## Distribution
 
 - `Distribution/Release` — packaging and shipping Charter: the release pipeline and version conventions, Homebrew tap mechanics, NuGet dotnet-tool publishing, native-binary RIDs, macOS Gatekeeper/signing, and target-framework/SDK decisions.
+
+## Dogfooding
+
+- `Dogfooding/Charter-Guardrails` — driving Charter output through Guardrails end-to-end (`/plan-breakdown` → `/guardrails-review` → `run`): the two-session lane split, cross-repo handoffs, and the bug backlog each dogfood run turns up in both tools.
