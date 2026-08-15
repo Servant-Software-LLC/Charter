@@ -97,7 +97,11 @@ window.CharterAnnotate = (function () {
     overlayRange: null,   // the Range the transient text highlight is drawn from
     overlayTimer: 0,
     flashTimer: 0,
-    flashed: null
+    flashed: null,
+    // The selected note (#137). Held as an ID rather than a card, because render() rebuilds every card
+    // — the selection is re-projected onto the new DOM instead of pointing at a detached node.
+    selectedId: '',
+    selectedAnchorEl: null
   };
 
   // ---- capability key: read from the page URL's ?key= query string --------------------
@@ -1451,7 +1455,13 @@ window.CharterAnnotate = (function () {
     '  color: var(--charter-muted); font-size: 12px; }',
 
     '.charter-item { border: 1px solid var(--charter-border); border-radius: 6px; padding: 8px;',
-    '  margin-bottom: 8px; background: var(--charter-code-bg); }',
+    '  margin-bottom: 8px; background: var(--charter-code-bg); cursor: pointer; }',
+    // Selecting a card is the note→content half of the link a badge click already provides
+    // content→note (#137). The selected card and its anchor are marked with the SAME accent so the
+    // pair reads as one thing across the two panes.
+    '.charter-item[data-charter-selected="true"], .charter-item[data-charter-selected="orphaned"] {',
+    '  border-color: var(--charter-accent); box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
+    '.charter-item:focus-visible { outline: 2px solid var(--charter-accent); outline-offset: 2px; }',
     '.charter-item-target { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px;',
     '  color: var(--charter-muted); font-size: 11px; }',
     '.charter-item-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
@@ -1542,7 +1552,11 @@ window.CharterAnnotate = (function () {
     '  cursor: pointer; background: var(--charter-accent); color: #fff;',
     '  border: 1px solid var(--charter-accent); }',
     '.charter-annotate-target { outline: 2px solid var(--charter-accent); outline-offset: 2px; }',
-    '.charter-anchor-flash { outline: 2px dashed var(--charter-accent); outline-offset: 3px; }'
+    '.charter-anchor-flash { outline: 2px dashed var(--charter-accent); outline-offset: 3px; }',
+    // DASHED flash vs SOLID selection, deliberately: the flash is a transient "here it is" that a timer
+    // clears, while selection persists for as long as the note stays selected so the reviewer can look
+    // back and forth between the note and what it is attached to (#137).
+    '.charter-anchor-selected { outline: 2px solid var(--charter-accent); outline-offset: 3px; }'
   ].join('\n');
 
   function make(tag, className, uiName, text) {
@@ -1732,6 +1746,15 @@ window.CharterAnnotate = (function () {
     header.appendChild(close);
 
     var list = make('div', 'charter-panel-list', 'panel-list');
+    // Delegated to the list, not bound per card, so arrow navigation survives the panel being rebuilt
+    // by render(). Only claims the arrows while focus is inside the notes list — the composer's own
+    // textarea keeps them for caret movement (#137).
+    list.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+      if (ev.target && ev.target.closest && ev.target.closest('.charter-composer')) return;
+      ev.preventDefault();
+      moveSelection(ev.key === 'ArrowDown' ? 1 : -1);
+    }, false);
     var status = make('div', 'charter-panel-status charter-hidden', 'panel-status');
 
     // The round hand-off. Disabled until there is queued feedback to send (and again once sent), so the
@@ -2201,10 +2224,26 @@ window.CharterAnnotate = (function () {
       item.appendChild(replyEl);
     }
 
+    // The whole card is the selection gesture (#137). The Jump button STAYS: it is the discoverable
+    // affordance and the only one that reads as an action, and retiring it would leave the behaviour
+    // undiscoverable for anyone who does not think to click the card.
+    item.setAttribute('tabindex', '0');
+    item.addEventListener('click', function (ev) {
+      // The action row owns its own clicks — a Resolve must not also scroll the document.
+      if (ev.target && ev.target.closest && ev.target.closest('.charter-item-actions')) return;
+      selectNote(record);
+    }, false);
+    item.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      if (ev.target && ev.target.closest && ev.target.closest('.charter-item-actions')) return;
+      ev.preventDefault();
+      selectNote(record);
+    }, false);
+
     var actions = make('div', 'charter-item-actions', 'item-actions');
     var jump = button('charter-btn', 'item-jump', 'Jump');
     jump.disabled = !entry.el || orphaned;
-    jump.addEventListener('click', function () { jumpTo(record); }, false);
+    jump.addEventListener('click', function () { selectNote(record); }, false);
     actions.appendChild(jump);
 
     // Edit and Delete are the AUTHOR's own: a retract by anyone else is retained and reported by the fold
@@ -2241,6 +2280,11 @@ window.CharterAnnotate = (function () {
     } else {
       for (var i = 0; i < entries.length; i++) list.appendChild(buildItem(entries[i]));
     }
+
+    // A selected note that has since been deleted or retracted out of the list must not leave a
+    // dangling anchor outline behind; otherwise re-project the selection onto the rebuilt cards.
+    if (state.selectedId && !entryById(state.selectedId)) clearSelection();
+    else markSelectedItem();
 
     ui.title.textContent = 'Review notes (' + entries.length + ')';
 
@@ -2332,7 +2376,12 @@ window.CharterAnnotate = (function () {
     var quoted = String(anchorId).replace(/["\\]/g, '\\$&');
     var item = null;
     try { item = state.ui.list.querySelector('[data-anchor-id="' + quoted + '"]'); } catch (e) { item = null; }
-    if (item && item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
+    if (!item) return;
+    if (item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
+    // Select, but do NOT jump: the reviewer clicked the badge, so they are already looking at the
+    // anchor. Scrolling the content back to it would be the pane arguing with the gesture (#137).
+    var entry = entryById(item.getAttribute('data-annotation-id'));
+    if (entry) selectNote(entry.record, { jump: false });
   }
 
   function render() {
@@ -2355,6 +2404,112 @@ window.CharterAnnotate = (function () {
       if (range) drawOverlay(range, 1600);
     }
     emit('annotation-jumped', { id: record.id });
+  }
+
+  // ---- selection (#137) ----------------------------------------------------------------
+  //
+  // Clicking a badge already jumped content→note; note→content needed a small secondary button,
+  // so the link was bidirectional in capability but not in gesture. Selecting a card now does what
+  // the Jump button does — and keeps doing it, which the transient flash cannot.
+  //
+  // `jump: false` is the anti-ping-pong lever. A badge click has already put the reviewer where the
+  // anchor is; selecting the matching card must mark it, not scroll the content back out from under
+  // them. The two panes agree on WHAT is selected without arguing about WHERE to scroll.
+  function selectNote(record, opts) {
+    if (!record) return;
+    opts = opts || {};
+    var changed = state.selectedId !== record.id;
+    state.selectedId = record.id || '';
+
+    var el = anchorElement(record.anchorId);
+    markSelectedAnchor(el);
+    markSelectedItem();
+
+    // An orphan's card already states, in its own words, that its block is not in the plan. The rule
+    // it must obey is only that selecting it never scrolls nowhere and pretends that was a jump.
+    if (!el) {
+      if (changed) emit('annotation-selected', { id: record.id, anchor: 'orphaned' });
+      return;
+    }
+
+    // Never yank the viewport out from under someone mid-sentence. Marking is still correct — it is
+    // the SCROLL that would be rude — so selection lands and the jump is simply skipped.
+    var composing = !!(state.composer && hasDraft());
+    if (opts.jump === false || composing) {
+      if (changed) emit('annotation-selected', { id: record.id, anchor: 'resolved', jumped: false });
+      return;
+    }
+
+    jumpTo(record);
+    // Persistent, unlike jumpTo's own 1600ms overlay: a selected text range stays painted for as long
+    // as the note stays selected. drawOverlay with no duration registers no timer, and the existing
+    // onViewportChange redraw keeps it on the text through scrolling.
+    if (record.kind === KIND.textRange && record.quote) {
+      var range = findQuoteRange(el, record.quote);
+      if (range) drawOverlay(range);
+    }
+    if (changed) emit('annotation-selected', { id: record.id, anchor: 'resolved', jumped: true });
+  }
+
+  function clearSelection() {
+    if (!state.selectedId) return;
+    state.selectedId = '';
+    markSelectedAnchor(null);
+    markSelectedItem();
+    clearOverlay();
+  }
+
+  // The anchor mark lives on the plan's own element, so it is a CLASS toggle and nothing else — the
+  // same discipline flash() and the overlay follow (§ never mutate the plan's DOM).
+  function markSelectedAnchor(el) {
+    if (state.selectedAnchorEl && state.selectedAnchorEl.classList) {
+      state.selectedAnchorEl.classList.remove('charter-anchor-selected');
+    }
+    state.selectedAnchorEl = el || null;
+    if (el && el.classList) el.classList.add('charter-anchor-selected');
+  }
+
+  // Re-applied after every render(): the panel is rebuilt from scratch each time, so selection has to
+  // be re-projected onto the new cards rather than living in them.
+  function markSelectedItem() {
+    if (!state.ui || !state.ui.list) return;
+    var items = state.ui.list.querySelectorAll('.charter-item');
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var mine = state.selectedId && el.getAttribute('data-annotation-id') === state.selectedId;
+      if (!mine) { el.setAttribute('data-charter-selected', 'false'); continue; }
+      el.setAttribute('data-charter-selected',
+        el.getAttribute('data-charter-orphan') === 'true' ? 'orphaned' : 'true');
+    }
+  }
+
+  // Arrow keys walk the rendered order and select as they go, so a review pass is drivable from the
+  // keyboard. Delegated to the list so it survives the panel being re-rendered under it.
+  function moveSelection(delta) {
+    if (!state.ui || !state.ui.list) return;
+    var items = state.ui.list.querySelectorAll('.charter-item');
+    if (!items.length) return;
+    var at = -1;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].getAttribute('data-annotation-id') === state.selectedId) { at = i; break; }
+    }
+    var next = at < 0 ? (delta > 0 ? 0 : items.length - 1) : at + delta;
+    if (next < 0 || next >= items.length) return;   // stop at the ends rather than wrapping
+    var id = items[next].getAttribute('data-annotation-id');
+    var entry = entryById(id);
+    if (!entry) return;
+    if (items[next].scrollIntoView) items[next].scrollIntoView({ block: 'nearest' });
+    if (items[next].focus) items[next].focus();
+    selectNote(entry.record);
+  }
+
+  function entryById(id) {
+    if (!id) return null;
+    var entries = orderedEntries();
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].record && entries[i].record.id === id) return entries[i];
+    }
+    return null;
   }
 
   function flash(el) {
@@ -3138,6 +3293,9 @@ window.CharterAnnotate = (function () {
       state.events = null;
     }
     closeComposer(null);
+    // The selection outline sits on the PLAN's own element and, unlike flash(), no timer will ever take
+    // it off. A disposed SDK must leave the document indistinguishable from the exported artifact's.
+    clearSelection();
     clearMarkers();
     if (state.ui) {
       var owned = [state.ui.style, state.ui.panel, state.ui.toggle, state.ui.overlay, state.ui.banner];
@@ -3154,6 +3312,8 @@ window.CharterAnnotate = (function () {
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
     state.staleQueue = null;
     state.staleQueueShown = false;
+    state.selectedId = '';
+    state.selectedAnchorEl = null;
     state.started = false;
   }
 
