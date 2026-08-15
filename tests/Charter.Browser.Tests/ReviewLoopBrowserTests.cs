@@ -4572,6 +4572,166 @@ public sealed partial class ReviewLoopBrowserTests
     }
 
     /// <summary>
+    /// Charter #116 — the handover must be verifiably RESOLVABLE, not merely present.
+    ///
+    /// <para>
+    /// v0.20.0 replaced the raw <c>charter poll</c> command line with <c>/charter-drain &lt;plan&gt;</c>
+    /// (#144), which is only an improvement if the skill actually exists on the machine. Handing over an
+    /// invocation that resolves to nothing trades one silent failure for another — precisely the defect #144
+    /// set out to remove.
+    /// </para>
+    /// <para>
+    /// The rule under test is asymmetric on purpose: the invocation is offered EITHER WAY, because the lookup
+    /// cannot enumerate every place an agent might have skills installed. What changes is whether the install
+    /// step is offered beside it. A wrong "missing" costs one extra true sentence; a wrong "installed" costs a
+    /// paste that does nothing and no explanation.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task With_the_drain_skill_missing_the_page_offers_the_install_step_beside_the_invocation()
+    {
+        // A repo-shaped fixture with NO skills installed. The `.git` marker bounds the project walk here, so
+        // the developer's own ~/.claude/skills cannot answer for it — without that, this test passes or fails
+        // depending on whose machine it runs on.
+        var repo = Path.Combine(Path.GetTempPath(), "charter-skillgap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+        var planPath = Path.Combine(repo, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        // STATED, not discovered. Discovery reads the real machine, and a developer with the skill installed
+        // in their own home makes this case unassertable — it reported "installed" the first time this was
+        // written. The lookup's own behaviour is covered hermetically in DrainSkillLookupTests.
+        using var server = ReviewServer.Start(
+            session,
+            new ReviewServerOptions
+            {
+                BindAddress = IPAddress.Loopback,
+                Port = 0,
+                DrainSkillInstalled = false,
+            });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "round-loaded");
+            await page.ClickAsync(Ui("panel-toggle"));
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note the agent would act on");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+
+            // Hand off with nothing listening — the one cell where the drain row appears at all.
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+            await page.WaitForSelectorAsync(Ui("drain-command"));
+
+            var drain = page.Locator(Ui("drain-command"));
+            Assert.Equal("missing", await drain.GetAttributeAsync("data-charter-drain-skill"));
+
+            // The invocation is STILL offered — never withheld on the strength of a lookup that can be wrong.
+            var command = (await page.InnerTextAsync(Ui("drain-command-text"))).Trim();
+            Assert.StartsWith("/charter-drain ", command, StringComparison.Ordinal);
+
+            // ...and the prerequisite is offered beside it, above, in the order you would do them.
+            await page.WaitForSelectorAsync(Ui("install-command"));
+            Assert.Equal(
+                "charter skills install",
+                (await page.InnerTextAsync(Ui("install-command-text"))).Trim());
+
+            var note = (await page.InnerTextAsync(Ui("drain-command-note"))).Trim();
+            Assert.Contains("cannot find that skill", note, StringComparison.OrdinalIgnoreCase);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try { Directory.Delete(repo, recursive: true); } catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>
+    /// The other half: with the skill installed, the page hands over the invocation and says nothing extra.
+    /// Without this, the test above would pass against a page that ALWAYS nags to install.
+    /// </summary>
+    [SkippableFact]
+    public async Task With_the_drain_skill_installed_the_page_offers_only_the_invocation()
+    {
+        var repo = Path.Combine(Path.GetTempPath(), "charter-skillok-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+        var planPath = Path.Combine(repo, "plan.charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var session = ReviewSession.Create(planPath);
+        // Stated for the same reason as its sibling — and here it also stops the test passing for the WRONG
+        // reason: with discovery on, the developer's home install answers, so this would go green even if the
+        // repo-scoped lookup were broken.
+        using var server = ReviewServer.Start(
+            session,
+            new ReviewServerOptions
+            {
+                BindAddress = IPAddress.Loopback,
+                Port = 0,
+                DrainSkillInstalled = true,
+            });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "round-loaded");
+            await page.ClickAsync(Ui("panel-toggle"));
+
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "a note the agent would act on");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+            await WaitForSendEnabledAsync(page);
+
+            await page.ClickAsync(Ui("send-to-agent"));
+            await WaitForEventAsync(page, "round-sent");
+            await page.WaitForSelectorAsync(Ui("drain-command"));
+
+            var drain = page.Locator(Ui("drain-command"));
+            Assert.Equal("installed", await drain.GetAttributeAsync("data-charter-drain-skill"));
+
+            // No install step, and no warning in the note — nothing to fix, so nothing said.
+            Assert.True(await page.Locator(Ui("install-command")).IsHiddenAsync());
+            var note = (await page.InnerTextAsync(Ui("drain-command-note"))).Trim();
+            Assert.DoesNotContain("cannot find that skill", note, StringComparison.OrdinalIgnoreCase);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            try { Directory.Delete(repo, recursive: true); } catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>
     /// Enough filler between the two anchored paragraphs that a jump has somewhere to go — a selection that
     /// scrolls is only observable when the target is off-screen to begin with.
     /// </summary>

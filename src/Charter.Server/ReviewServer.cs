@@ -57,6 +57,8 @@ public sealed class ReviewServer : IReviewServer
     private TimeSpan Beat { get; init; } = TimeSpan.FromSeconds(15);
 
     private readonly ReviewSession _session;
+    // Charter #116: null = discover whether /charter-drain resolves; non-null states it. See ReviewServerOptions.
+    private readonly bool? _drainSkillInstalled;
     private readonly AnnotationStore _store;
     private readonly AnswerStore _answers;
 
@@ -84,9 +86,11 @@ public sealed class ReviewServer : IReviewServer
         ReviewSidecar? sidecar,
         ReviewLogBridge reviewLog,
         HttpListener listener,
-        Uri address)
+        Uri address,
+        bool? drainSkillInstalled)
     {
         _session = session;
+        _drainSkillInstalled = drainSkillInstalled;
         _store = store;
         _answers = answers;
         _sidecar = sidecar;
@@ -212,7 +216,8 @@ public sealed class ReviewServer : IReviewServer
         // leave no trace beside their plan), so the /events stream arms its watcher lazily instead.
         var reviewLog = new ReviewLogBridge(session.SourcePath, options.ReviewLog);
 
-        return new ReviewServer(session, store, answers, sidecar, reviewLog, listener, address)
+        return new ReviewServer(
+            session, store, answers, sidecar, reviewLog, listener, address, options.DrainSkillInstalled)
         {
             StaleAnnotations = stale,
             Restored = recovered,
@@ -737,6 +742,13 @@ public sealed class ReviewServer : IReviewServer
             {
                 sourcePath = _session.SourcePath,
                 sourceFile = Path.GetFileName(_session.SourcePath),
+                // Whether this machine can resolve the `/charter-drain` invocation the panel hands over
+                // (Charter #116). Read here rather than in the browser because it is a filesystem fact, and
+                // read per request rather than cached because a reviewer's fix — running `charter skills
+                // install` in the terminal beside the browser — must be visible on the next page load
+                // without restarting the server they are reviewing through.
+                drainSkillInstalled =
+                    _drainSkillInstalled ?? DrainSkillLookup.IsInstalled(_session.SourcePath),
             },
             AnnotationApi.JsonOptions);
 
