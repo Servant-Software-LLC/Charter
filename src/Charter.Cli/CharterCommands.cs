@@ -246,6 +246,46 @@ internal static class CharterCommands
                 + "declined -- an ABSENT key is indistinguishable from never having known the field exists.");
     }
 
+    // The untracked-deferral lint (Charter #156). A deferral written in prose has no owner and no expiry:
+    // the plan is handed off, executed and archived, and the deferred item survives only as a sentence in a
+    // document nobody re-reads. On the page "deferred to #228, which is open" and "deferred into the void"
+    // look identical, so a reviewer has to think to interrogate the silence. One did, which is why this
+    // exists — the same shape as the `recommended` warning: make the omission visible while authoring.
+    //
+    // Charter checks the CONVENTION only — that something is named. Whether that issue exists, is open, or
+    // is even about the right thing is a network lookup against one vendor's tracker, and it stays with the
+    // agent, which already has the tooling and already knows the project. That keeps the binary offline and
+    // makes the convention work for GitLab, Jira or a text file just as well as GitHub.
+    private static void WarnOnUntrackedDeferrals(string verb, string markdown)
+    {
+        IReadOnlyList<UntrackedDeferral> deferrals;
+        try
+        {
+            deferrals = DeferralLint.Find(markdown);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        if (deferrals.Count == 0)
+        {
+            return;
+        }
+
+        // ASCII only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+        Console.Error.WriteLine(
+            $"charter {verb}: warning: {deferrals.Count} deferral(s) name nothing that tracks them:");
+        foreach (var deferral in deferrals)
+        {
+            Console.Error.WriteLine($"  line {deferral.SourceLine}: {deferral.Excerpt}");
+        }
+
+        Console.Error.WriteLine(
+            "  Cite the issue that tracks each one (`#123`, or a ticket URL). If nothing tracks it yet, that "
+                + "is the decision to put in front of the reviewer -- file it, or ask them in a :::question.");
+    }
+
     // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
     private static RootCommand BuildRenderRoot()
     {
@@ -280,6 +320,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("render", markdown);
             WarnOnDuplicateQuestionIds("render", markdown);
             WarnOnMissingRecommendation("render", markdown);
+            WarnOnUntrackedDeferrals("render", markdown);
             string html = CharterRenderer.Render(markdown);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -459,6 +500,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("handoff", markdown);
             WarnOnDuplicateQuestionIds("handoff", markdown);
             WarnOnMissingRecommendation("handoff", markdown);
+            WarnOnUntrackedDeferrals("handoff", markdown);
             string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -741,6 +783,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("review", planMarkdown);
             WarnOnDuplicateQuestionIds("review", planMarkdown);
             WarnOnMissingRecommendation("review", planMarkdown);
+            WarnOnUntrackedDeferrals("review", planMarkdown);
 
             // The session confines the served root to the plan's directory and mints a per-session capability
             // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates
