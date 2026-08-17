@@ -4572,6 +4572,97 @@ public sealed partial class ReviewLoopBrowserTests
     }
 
     /// <summary>
+    /// Charter #157 — an agent's replies were displayed under the human reviewer's name.
+    ///
+    /// <para>
+    /// The data was never wrong: <c>actor</c> has been recorded correctly on every record, and both view
+    /// models carry it. The panel simply never read it, so an agent's words appeared as the reviewer's. That
+    /// made <c>charter reply --as-human</c> UNOBSERVABLE — the one distinction the CLI asks an agent to be
+    /// careful about had no effect on the only surface a human reads, and the careless outcome the flag
+    /// exists to prevent was what you got by default.
+    /// </para>
+    /// <para>
+    /// It misattributes DISAGREEMENT specifically: a reply is where an agent pushes back, and these logs are
+    /// permanent in git history, so a teammate reads a contested agent opinion as the maintainer's ruling.
+    /// </para>
+    /// <para>
+    /// Asserted as a DIFFERENCE between the two bylines, per the issue: a test that merely checked a byline
+    /// appears would have passed against the defect.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task An_agent_reply_is_attributed_to_the_agent_not_to_the_human_whose_log_carries_it()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-reply-voice-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var writer = new ReviewLogWriter(planPath, new ReviewAuthor("David Maltby", "david@example.com"));
+
+        // One comment, then two replies in the SAME thread under the SAME git identity — because that is the
+        // real shape: an agent has no identity of its own, so its records travel in the human's log.
+        var comment = writer.AppendCreate(
+            new ReviewAnchor("charter-block-1", "element", null, null),
+            "This needs a concrete example.");
+        writer.AppendReply(comment.Id, "You are right; revising now.", ReviewActors.Agent);
+        writer.AppendReply(comment.Id, "Actually I meant the second paragraph.", ReviewActors.Human);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = writer,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+            await page.ClickAsync(Ui("panel-toggle"));
+            await page.WaitForSelectorAsync(Ui("item-reply"));
+
+            var replies = page.Locator(Ui("item-reply"));
+            Assert.Equal(2, await replies.CountAsync());
+
+            var agentReply = replies.Filter(new LocatorFilterOptions { HasTextString = "revising now" });
+            var humanReply = replies.Filter(new LocatorFilterOptions { HasTextString = "second paragraph" });
+
+            var agentText = (await agentReply.InnerTextAsync()).Trim();
+            var humanText = (await humanReply.InnerTextAsync()).Trim();
+
+            // THE assertion: the same git identity, two different voices, two different bylines.
+            Assert.Equal("agent", await agentReply.GetAttributeAsync("data-charter-actor"));
+            Assert.Equal("human", await humanReply.GetAttributeAsync("data-charter-actor"));
+            Assert.StartsWith("Agent (via David Maltby)", agentText, StringComparison.Ordinal);
+            Assert.StartsWith("David Maltby:", humanText, StringComparison.Ordinal);
+
+            // Provenance is kept, not discarded — the record really does live in that person's log file.
+            Assert.Contains("David Maltby", agentText, StringComparison.Ordinal);
+            // ...and the human's own reply is never dressed up as the agent's.
+            Assert.DoesNotContain("Agent (via", humanText, StringComparison.Ordinal);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
     /// Charter #116 — the handover must be verifiably RESOLVABLE, not merely present.
     ///
     /// <para>

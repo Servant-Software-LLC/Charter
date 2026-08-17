@@ -2178,7 +2178,29 @@ window.CharterAnnotate = (function () {
   // the fold hands over both precisely so the disagreement is visible instead of being ordered away.
   function sideLine(side) {
     var verb = side.op === 'reopen' ? 'reopened' : 'resolved';
-    return verb + ' by ' + (side.authorName || side.authorEmail || 'someone');
+    return verb + ' by ' + byline(side);
+  }
+
+  // ---- attribution (#157) ---------------------------------------------------------------
+  //
+  // `author` is PROVENANCE, not voice. Charter reads identity from git, an agent has no git identity of its
+  // own, and these records travel to teammates by git — so every record an agent writes legitimately carries
+  // the human's name. `actor` is the field that says who actually spoke, it has been recorded correctly all
+  // along, and the panel simply never read it: an agent's replies rendered under the reviewer's own name.
+  //
+  // That made `charter reply --as-human` unobservable — the one distinction the CLI asks an agent to be
+  // careful about had no effect on the only surface a human reads, and the careless outcome the flag exists
+  // to prevent was what you got by default. It misattributes DISAGREEMENT specifically, because a reply is
+  // where an agent pushes back, and these logs are permanent in git history.
+  function actorOf(entry) {
+    return (entry && entry.actor) || 'human';
+  }
+
+  // "Agent (via David Maltby)" keeps BOTH facts: who spoke, and whose checkout the record travelled through.
+  // Dropping the provenance would be its own small lie — the record really is in that person's log file.
+  function byline(entry) {
+    var who = (entry && (entry.authorName || entry.authorEmail)) || 'someone';
+    return actorOf(entry) === 'human' ? who : 'Agent (via ' + who + ')';
   }
 
   function buildItem(entry) {
@@ -2272,8 +2294,9 @@ window.CharterAnnotate = (function () {
     for (var r = 0; r < record.replies.length; r++) {
       var reply = record.replies[r];
       var replyEl = make('div', 'charter-item-reply', 'item-reply',
-        (reply.authorName || reply.authorEmail || '') + ': ' +
+        byline(reply) + ': ' +
         (reply.retracted ? '(reply withdrawn by author)' : (reply.body || '')));
+      replyEl.setAttribute('data-charter-actor', actorOf(reply));
       item.appendChild(replyEl);
     }
 

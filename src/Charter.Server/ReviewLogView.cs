@@ -62,7 +62,10 @@ public static class ReviewStatusTokens
 /// <param name="AuthorName">Who claimed it.</param>
 /// <param name="AuthorEmail">Their identity.</param>
 /// <param name="Ts">When they say they claimed it — presentation only (rule 3).</param>
-public sealed record ReviewLogSide(string Id, string Op, string AuthorName, string AuthorEmail, string? Ts);
+/// <param name="Actor">Whether a human or an agent settled it — an agent-authored resolve is otherwise
+/// indistinguishable from the reviewer's own (Charter #157).</param>
+public sealed record ReviewLogSide(
+    string Id, string Op, string AuthorName, string AuthorEmail, string Actor, string? Ts);
 
 /// <summary>One reply in a comment's thread, as the panel renders it.</summary>
 /// <param name="Id">The reply record's id.</param>
@@ -210,7 +213,7 @@ public sealed record ReviewLogView(
     }
 
     private static ReviewLogSide Side(ReviewRecord record)
-        => new(record.Id, record.Op, DisplayName(record.Author), record.Author.Email, record.Ts);
+        => new(record.Id, record.Op, DisplayName(record.Author), record.Author.Email, record.Actor, record.Ts);
 
     private static ReviewLogReplyView Reply(ReviewReply reply)
         => new(reply.Id, DisplayName(reply.Author), reply.Author.Email, reply.Actor, reply.Body, reply.IsRetracted, reply.Record.Ts);
