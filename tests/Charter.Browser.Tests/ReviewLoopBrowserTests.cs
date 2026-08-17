@@ -4572,6 +4572,104 @@ public sealed partial class ReviewLoopBrowserTests
     }
 
     /// <summary>
+    /// Charter #158 — a reviewer can continue a thread, and the reply actually reaches the agent.
+    ///
+    /// <para>
+    /// A thread was one round deep by construction. <c>AppendReply</c> defaults its actor to <c>human</c> —
+    /// it was written for the panel — but nothing could reach it: the browser bridge covered create, edit,
+    /// retract and resolve, and <c>reply</c> was produced only by the agent's <c>charter reply</c>. So a
+    /// reviewer who disagreed with the agent's reply could only RESOLVE (settling a thing they did not agree
+    /// with) or open a new note that had lost its parent.
+    /// </para>
+    /// <para>
+    /// The delivery half is what makes the button honest: without it the reply would land in the log and sit
+    /// there until after the review, so the control would look like it worked and change nothing — the
+    /// silence-reads-as-success failure <c>charter-drain</c>'s own rationale warns about. Asserted through a
+    /// REAL drain rather than by inspecting the log.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_reviewer_can_reply_in_a_thread_and_the_reply_reaches_the_draining_agent()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-thread-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, Plan);
+
+        var writer = new ReviewLogWriter(planPath, new ReviewAuthor("David Maltby", "david@example.com"));
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = writer,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            // The reviewer opens a note...
+            await page.ClickAsync("body > p", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "This paragraph needs a concrete example.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "submitted");
+
+            // ...the agent drains it and replies, exactly as `charter reply` does...
+            await DrainAnnotationsAsync(server, session);
+            var comment = ReviewLogStore.ReadForPlan(planPath).State.Comments.First();
+            writer.AppendReply(comment.Id, "I think the example is already there.", ReviewActors.Agent);
+
+            // ...and the reviewer, disagreeing, continues the thread. THIS is what had no affordance.
+            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+            await WaitForEventAsync(page, "review-log-loaded");
+            await page.ClickAsync(Ui("panel-toggle"));
+
+            await page.WaitForSelectorAsync(Ui("item-reply-btn"));
+            await page.ClickAsync(Ui("item-reply-btn"));
+            await page.WaitForSelectorAsync(Ui("composer-input"));
+            await page.FillAsync(Ui("composer-input"), "It is not — that paragraph is about something else.");
+            await page.ClickAsync(Ui("composer-save"));
+            await WaitForEventAsync(page, "annotation-replied");
+
+            // The thread now shows both voices, and the reviewer's own reply is NOT dressed as the agent's
+            // (#157 landing first is what makes this readable at all).
+            await page.WaitForSelectorAsync(Ui("item-reply") + "[data-charter-actor='human']");
+            var human = page.Locator(Ui("item-reply") + "[data-charter-actor='human']");
+            Assert.Equal(1, await human.CountAsync());
+            Assert.Contains(
+                "something else", await human.InnerTextAsync(), StringComparison.Ordinal);
+
+            // The delivery half — that the reply actually reaches a draining agent, carrying its parent and
+            // its parent's anchor — is asserted precisely in
+            // AnnotationManagementApiTests.Reply_IsRecordedAndAlsoDeliveredToTheAgentsDrain, where the drain
+            // can be acknowledged the way a real agent acknowledges it. Repeating it here through the browser
+            // would only re-measure the queue's visibility window.
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
     /// Charter #157 — an agent's replies were displayed under the human reviewer's name.
     ///
     /// <para>

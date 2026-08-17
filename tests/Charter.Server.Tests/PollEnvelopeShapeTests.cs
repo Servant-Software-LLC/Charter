@@ -92,6 +92,73 @@ public sealed class PollEnvelopeShapeTests
         Assert.Equal(JsonValueKind.Null, root.GetProperty("reviewSubmission").ValueKind);
     }
 
+
+    // ---- the reply partition (Charter #158) ------------------------------------------------
+    //
+    // A reviewer's reply rides the SAME queue as a new comment, because it needs the identical delivery
+    // guarantees (visibility window, ack, requeue-on-failure, durability). It is a different thing on the
+    // WIRE, so the envelope splits them: `annotations` keeps meaning what it always meant — new notes — and
+    // `replies` is purely additive.
+
+    private static readonly Annotation ReplyFromReviewer = new(
+        Id: "r1",
+        Kind: AnnotationKind.Element,
+        AnchorId: "b92bb0c5fe0d",
+        Note: "It is not — that paragraph is about something else.",
+        SourceLine: 12,
+        ReplyTo: "a1");
+
+    [Fact]
+    public void A_reply_is_partitioned_out_of_annotations_and_into_replies()
+    {
+        var root = Parse(PollEnvelope.Serialize(
+            Session, new[] { Pending, ReplyFromReviewer }, Array.Empty<Answer>()));
+
+        // The new note is in `annotations`, alone.
+        var annotations = root.GetProperty("annotations");
+        Assert.Equal(1, annotations.GetArrayLength());
+        Assert.Equal("a1", annotations[0].GetProperty("id").GetString());
+
+        // The reply is in `replies`, carrying the parent it belongs to.
+        var replies = root.GetProperty("replies");
+        Assert.Equal(1, replies.GetArrayLength());
+        Assert.Equal("r1", replies[0].GetProperty("id").GetString());
+        Assert.Equal("a1", replies[0].GetProperty("replyTo").GetString());
+    }
+
+    /// <summary>
+    /// The counts an agent reads to see it received something without diffing arrays. `annotations` EXCLUDES
+    /// replies, so an agent that has always trusted that number is not silently told it got a new note when
+    /// what arrived was a reply in a thread it already knows about.
+    /// </summary>
+    [Fact]
+    public void Drained_counts_report_the_two_streams_separately()
+    {
+        var root = Parse(PollEnvelope.Serialize(
+            Session, new[] { Pending, ReplyFromReviewer }, Array.Empty<Answer>()));
+        var drained = root.GetProperty("drained");
+
+        Assert.Equal(1, drained.GetProperty("annotations").GetInt32());
+        Assert.Equal(1, drained.GetProperty("replies").GetInt32());
+        Assert.Equal(0, drained.GetProperty("answers").GetInt32());
+    }
+
+    /// <summary>
+    /// The compatibility guarantee: an envelope with no replies is exactly what it was before. `replyTo` is
+    /// omitted when null, so an existing agent's parse of `annotations` is byte-for-byte unaffected.
+    /// </summary>
+    [Fact]
+    public void An_envelope_with_no_replies_is_unchanged_for_an_existing_agent()
+    {
+        var root = Parse(PollEnvelope.Serialize(Session, new[] { Pending }, Array.Empty<Answer>()));
+
+        Assert.Equal(1, root.GetProperty("annotations").GetArrayLength());
+        Assert.Equal(0, root.GetProperty("replies").GetArrayLength());
+        Assert.False(
+            root.GetProperty("annotations")[0].TryGetProperty("replyTo", out _),
+            "an ordinary note must not gain a replyTo key — the wire shape it has today is the contract.");
+    }
+
     private static JsonElement Parse(string json)
     {
         using var document = JsonDocument.Parse(json);
