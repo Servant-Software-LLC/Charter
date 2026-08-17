@@ -251,7 +251,7 @@ public class SessionRegistryTests
         {
             var planPath = Path.Combine(dir, "plan.charter.md");
             File.WriteAllText(planPath, "# plan\n");
-            // Pid 4242 is MakeDescriptor's default and belongs to nothing on the test host.
+            // MakeDescriptor's default pid is one no OS can assign — see the note there.
             SessionRegistry.Write(dir, MakeDescriptor(planPath));
 
             Assert.Equal(1, SessionRegistry.Prune(dir));
@@ -359,7 +359,7 @@ public class SessionRegistryTests
             File.WriteAllText(deadPlan, "# dead\n");
             File.WriteAllText(livePlan, "# live\n");
 
-            SessionRegistry.Write(dir, MakeDescriptor(deadPlan));            // pid 4242 — nothing
+            SessionRegistry.Write(dir, MakeDescriptor(deadPlan));            // unassignable pid
             SessionRegistry.Write(dir, MakeDescriptor(livePlan) with
             {
                 Pid = Environment.ProcessId,
@@ -387,7 +387,12 @@ public class SessionRegistryTests
             Key: key,
             SourcePath: planPath,
             SourceFile: Path.GetFileName(planPath),
-            Pid: 4242,
+            // A pid NO operating system can assign, so "this process is gone" is a fact rather than a
+            // guess about the test host. 4242 was wrong: Windows pids are multiples of 4 so it can never
+            // exist there (which is why this passed locally and on Windows), but on Linux it is an
+            // ordinary pid — CI had a live process at 4242, the prune correctly kept the descriptor, and
+            // the test failed on ubuntu alone.
+            Pid: int.MaxValue,
             CreatedAt: DateTimeOffset.UtcNow);
 
     private static string NewTempDir()
