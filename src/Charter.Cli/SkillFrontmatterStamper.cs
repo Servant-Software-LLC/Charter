@@ -24,6 +24,25 @@ internal static class SkillFrontmatterStamper
     /// <summary>The frontmatter key carrying the tool version (under <c>metadata:</c>).</summary>
     public const string VersionKey = "charter-version";
 
+    /// <summary>
+    /// The placeholder an authored skill BODY carries where its own version belongs (Charter #152). Install
+    /// replaces every occurrence with the tool version.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The frontmatter stamp answers "what is on DISK", which is what <c>charter --version</c> compares
+    /// against the binary. It cannot answer the question that actually bites: <b>what did this session
+    /// LOAD?</b> Frontmatter is discovery metadata and does not reliably reach the agent's context, so a
+    /// skill has no way to read its own loaded version — and a session holding a copy from before the last
+    /// <c>charter skills install</c> runs it indefinitely while disk and binary agree perfectly.
+    /// </para>
+    /// <para>
+    /// A stamp in the BODY is prose the agent has definitely read, because reading the body is what loading
+    /// a skill means. That makes the loaded version self-reportable, and the three-way comparison possible.
+    /// </para>
+    /// </remarks>
+    public const string BodyVersionPlaceholder = "@CHARTER_VERSION@";
+
     /// <summary>The top-level YAML key whose child is <see cref="VersionKey"/>.</summary>
     public const string MetadataKey = "metadata";
 
@@ -42,7 +61,9 @@ internal static class SkillFrontmatterStamper
 
         if (!TryFindFrontmatterFence(lines, out int closeFence))
         {
-            return content; // no frontmatter fence (or an opening fence with no close) — nothing to stamp
+            // No frontmatter to stamp — but a body placeholder still must be filled, or the skill would
+            // report its own version as the literal placeholder.
+            return content.Replace(BodyVersionPlaceholder, version, StringComparison.Ordinal);
         }
 
         var frontmatter = new List<string>();
@@ -58,7 +79,9 @@ internal static class SkillFrontmatterStamper
         result.Add(lines[closeFence]);
         for (int i = closeFence + 1; i < lines.Length; i++)
         {
-            result.Add(lines[i]);
+            // Body only: the placeholder is filled BELOW the frontmatter fence, so a `description:` that
+            // happened to quote it stays verbatim rather than being silently rewritten.
+            result.Add(lines[i].Replace(BodyVersionPlaceholder, version, StringComparison.Ordinal));
         }
 
         return string.Join(newline, result);

@@ -5,6 +5,27 @@ description: Use when a human hands you a Charter review round to pick up — "d
 
 # Charter — drain a review round
 
+> **This skill is version `@CHARTER_VERSION@`.**
+>
+> **Before your first `charter` command, run `charter --version` and compare.** It is one command, and it
+> tells you two different things at once:
+>
+> | What you see | What it means | What to do |
+> |---|---|---|
+> | Version matches, no warning | Everything agrees | Carry on |
+> | It prints a `skill(s) are out of date` warning | The copy **on disk** is older than the tool | `charter skills install --force`, **then restart this session** |
+> | No warning, but the version differs from `@CHARTER_VERSION@` above | Disk and tool agree; **this session loaded an older copy** | **Restart this session** — re-installing changes nothing you can see |
+>
+> The second and third rows are different faults with different remedies, and only reading both numbers
+> separates them. Installing without restarting is the trap: the files on disk change, the warning clears,
+> and you keep running the copy you loaded at session start.
+>
+> Why this matters more here than for a reference document: this skill is a set of **CLI driving
+> instructions**. A stale copy makes you call a surface that has moved — inventing flags that were renamed,
+> or concluding a verb does not exist because your copy never listed it. That exact error has happened
+> (Charter #138): `reply` shipped, the help banner omitted it, and an agent filed a bug asking for a feature
+> that was already there.
+
 A human has reviewed a `.charter.md` in the browser and handed the round to you. Your job is to collect
 their feedback, act on it, and stay attached until the review is finished.
 
