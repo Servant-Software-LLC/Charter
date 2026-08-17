@@ -243,6 +243,52 @@ If the run is genuinely unattended (a firstmate crewmate, CI), review has nobody
 a human must decide or fix something. It is review's **sibling, not its replacement**: it collects no
 feedback and answers no question. Details in `references/unattended.md`.
 
+
+#### Before you hand it over: check your deferrals
+
+A plan that defers work is doing the right thing — that is how a stage stays shippable. But a deferral
+written in prose has **no owner and no expiry**. The plan gets handed off, executed and archived, and the
+deferred item survives only as a sentence in a document nobody re-reads. On the page these look identical:
+
+> …the resolver is **deferred to #226**, which is open and owned.
+> …probes, the ladder and steering **stay v2 and are out of scope**.
+
+The second one is a deferral into the void, and a reviewer had to *think to ask* before anyone noticed.
+
+`charter render` / `review` / `handoff` warn when a deferral names nothing:
+
+```
+charter render: warning: 1 deferral(s) name nothing that tracks them:
+  line 10: - **Out:** probes, the ladder and steering stay v2 and are out of scope.
+```
+
+**That warning is the whole of Charter's half, deliberately.** Charter checks only that *something is
+named*. Whether the issue exists, is open, or is even about the right thing is **your** job — you already
+have the tracker tooling (`gh issue view`, or whatever this project uses), and Charter stays offline and
+vendor-neutral so the same convention works for GitLab, Jira or a text file.
+
+So for each warning, and for each deferral that *does* name an issue:
+
+1. **Look it up.** `gh issue view <n> --json number,title,state` (or the project's equivalent).
+2. **A deferral pointing at a CLOSED issue is worse than an untracked one** — it reads as covered when it
+   is not. Treat it as untracked.
+3. **If nothing tracks it, do not quietly file one and do not quietly ignore it.** Raise a `:::question`
+   asking the reviewer what to do, with `target: human`, a `recommended` lean, and a `rationale` naming the
+   specific deferred item. Filing an issue is a decision with an owner attached; it is theirs to make.
+
+```markdown
+:::question
+{ "id": "track-probes-deferral", "title": "Nothing tracks the deferred probes/ladder/steering work — file an issue?",
+  "mode": "single", "options": ["File one issue covering all three", "File one issue each", "Leave it untracked — it is recorded here and that is enough"],
+  "recommended": "File one issue covering all three",
+  "rationale": "The scope section defers probes, the escalation ladder and steering to v2 and names nothing. Once this plan is archived that sentence is the only record, and nobody re-reads an archived plan. One issue keeps the three together, which is how they were deferred.",
+  "target": "human" }
+:::
+```
+
+The point is that the **absence** of tracking becomes a decision the reviewer is asked to make, rather than
+a silence they have to notice.
+
 ### 3. HANDOFF — `charter export` (optional) then `charter handoff`
 
 Optionally capture a shareable snapshot of the approved plan:
