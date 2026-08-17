@@ -134,7 +134,24 @@ public sealed record Annotation(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Base = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? BaseStatus = null)
+    string? BaseStatus = null,
+    /// <summary>
+    /// The comment this is a REPLY to, or <see langword="null"/> for an ordinary new note (Charter #158).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A reviewer's reply rides the SAME queue as a new comment — it needs the identical delivery
+    /// guarantees (the visibility window, the ack, the requeue-on-failure, the durability sidecar), and
+    /// building a second store to restate all of them would be a second place for them to drift.
+    /// </para>
+    /// <para>
+    /// It is PARTITIONED back out at the wire (<c>PollEnvelope</c>), so an agent's <c>annotations</c> array
+    /// keeps meaning exactly what it meant before: new notes. Omitted when null, so every envelope that
+    /// exists today serializes byte-identically.
+    /// </para>
+    /// </remarks>
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ReplyTo = null)
 {
     /// <summary>
     /// Whether <see cref="AnchorId"/> resolved when <see cref="SourceLine"/> was last computed. DERIVED from

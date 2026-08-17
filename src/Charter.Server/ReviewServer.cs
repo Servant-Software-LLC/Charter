@@ -651,6 +651,19 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // POST /api/{key}/annotations/{id}/reply — CONTINUE a thread (Charter #158). Five segments, matched
+        // alongside /resolve and /delete. Unlike resolve this IS a dual write: the reply is appended to the
+        // durable log AND enqueued for delivery, because a reply nobody receives is the silence-reads-as-
+        // success failure the drain skill exists to warn about.
+        if (segments.Length == 5 &&
+            string.Equals(segments[2], "annotations", StringComparison.Ordinal) &&
+            string.Equals(segments[4], "reply", StringComparison.Ordinal) &&
+            string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleAnnotationReplyAsync(context, segments[1], segments[3]).ConfigureAwait(false);
+            return;
+        }
+
         // POST /api/{key}/annotations/{id} — EDIT a still-pending annotation's note (state-changing:
         // capability key in the path + CSRF gated). A command-POST with the id as the trailing segment, the
         // same write idiom as /answers/ack — no second HTTP verb vocabulary for a single new operation.
@@ -1176,6 +1189,87 @@ public sealed class ReviewServer : IReviewServer
         _sidecar?.Persist();
 
         WriteJson(response, JsonSerializer.Serialize(new { updated = true }, AnnotationApi.JsonOptions));
+    }
+
+    /// <summary>
+    /// <c>POST /api/{key}/annotations/{id}/reply</c> — the reviewer continues a thread (Charter #158).
+    /// </summary>
+    /// <remarks>
+    /// A DUAL WRITE, unlike resolve: the reply is appended to the durable log AND enqueued for delivery. Only
+    /// the first half is a record; without the second the button would look like it worked and change nothing
+    /// until after the review, which is the silence-reads-as-success failure the drain skill warns about.
+    /// The queued copy carries <c>ReplyTo</c>, which is what the envelope partitions on.
+    /// </remarks>
+    private async Task HandleAnnotationReplyAsync(
+        HttpListenerContext context, string keyFromPath, string commentId)
+    {
+        var request = context.Request;
+        var response = context.Response;
+
+        if (!_session.Key.Matches(keyFromPath))
+        {
+            response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            return;
+        }
+
+        if (!AnnotationApi.IsAllowedOrigin(request.Headers["Origin"], Address))
+        {
+            response.StatusCode = (int)HttpStatusCode.Forbidden;
+            return;
+        }
+
+        string body;
+        using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+        {
+            body = await reader.ReadToEndAsync().ConfigureAwait(false);
+        }
+
+        AnnotationApi.NoteUpdate? submission;
+        try
+        {
+            submission = JsonSerializer.Deserialize<AnnotationApi.NoteUpdate>(body, AnnotationApi.JsonOptions);
+        }
+        catch (JsonException)
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        // An empty reply is not a reply. Rejected rather than recorded, because a blank record in a log that
+        // travels to teammates is worse than a refused click.
+        if (string.IsNullOrWhiteSpace(submission?.Note))
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
+        }
+
+        var logged = _reviewLog.Reply(commentId, submission!.Note!);
+        if (logged is null)
+        {
+            // No writer, or no such comment in the fold — the bridge never guesses which comment was meant.
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            return;
+        }
+
+        // The anchor is the PARENT's, so a reply drains pointing at the same block the thread is about.
+        var markdown = await File.ReadAllTextAsync(_session.SourcePath).ConfigureAwait(false);
+        var parentAnchor = _reviewLog.BuildView(markdown).Comments
+            .FirstOrDefault(c => string.Equals(c.Id, commentId, StringComparison.Ordinal));
+
+        var annotation = new Annotation(
+            Id: logged.Id,
+            Kind: AnnotationKind.Element,
+            AnchorId: parentAnchor?.AnchorId ?? string.Empty,
+            Note: submission.Note!,
+            SourceLine: parentAnchor is null
+                ? null
+                : SourceMap.Build(markdown).LineForAnchor(parentAnchor.AnchorId),
+            ReplyTo: commentId);
+
+        _store.Enqueue(annotation);
+        _sidecar?.Persist();
+
+        WriteJson(response, JsonSerializer.Serialize(annotation, AnnotationApi.JsonOptions));
     }
 
     private void HandleAnnotationResolve(HttpListenerContext context, string keyFromPath, string commentId)

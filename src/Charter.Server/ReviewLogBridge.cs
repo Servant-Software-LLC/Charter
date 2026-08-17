@@ -61,6 +61,26 @@ internal sealed class ReviewLogBridge
         => _writer?.AppendCreate(anchor, body);
 
     /// <summary>
+    /// Continue a thread: append the reviewer's REPLY to <paramref name="commentId"/> (Charter #158),
+    /// returning the appended record, or null when this Charter has no writer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>AppendReply</c> has always defaulted its actor to <c>human</c> — it was written for exactly this
+    /// caller — and until now nothing could reach it: the browser bridge covered create/edit/retract/resolve,
+    /// and <c>reply</c> was produced only by the agent's <c>charter reply</c>. So a thread was one round deep
+    /// by construction: a reviewer who disagreed with the agent's reply could only RESOLVE it (settling a
+    /// thing they did not agree with) or open a new, unlinked note.
+    /// </para>
+    /// <para>
+    /// A reply deliberately does NOT change the comment's status. Reopening a settled decision as a side
+    /// effect of adding a sentence would be a surprising write; reopen stays its own act.
+    /// </para>
+    /// </remarks>
+    public ReviewRecord? Reply(string commentId, string body)
+        => _writer?.AppendReply(commentId, body);
+
+    /// <summary>
     /// The plan's content hash, stamped into a new comment's <c>anchor.base</c> (§4). It is written NOW
     /// because records are immutable and committed forever: build-order step 5 renders an orphan's diff by
     /// fetching this plan revision from git, and a record that never carried the hash can never acquire one.
