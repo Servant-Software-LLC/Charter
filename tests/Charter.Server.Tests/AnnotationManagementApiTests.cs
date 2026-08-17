@@ -460,6 +460,61 @@ public class AnnotationManagementApiTests
 
     // ---- Helpers -----------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Charter #158 — a reviewer's reply is BOTH recorded and delivered. The record alone would make the
+    /// panel button look like it worked while the agent received nothing until after the review.
+    /// </summary>
+    [Fact]
+    public async Task Reply_IsRecordedAndAlsoDeliveredToTheAgentsDrain()
+    {
+        var planPath = WriteTempPlan();
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            var writer = new ReviewLogWriter(planPath, new ReviewAuthor("David Maltby", "david@example.com"));
+            using var server = ReviewServer.Start(session, new ReviewServerOptions
+            {
+                BindAddress = IPAddress.Loopback,
+                Port = 0,
+                ReviewLog = writer,
+            });
+            using var client = new HttpClient();
+
+            var created = await PostAnnotationAsync(client, server, session, "Please clarify this paragraph.");
+            Assert.Single(await PollAndAckAsync(client, server, session));   // the agent takes the note
+
+            var uri = new Uri(
+                server.Address,
+                $"api/{Uri.EscapeDataString(session.Key.Value)}/annotations/{Uri.EscapeDataString(created.Id)}/reply");
+            using var request = new HttpRequestMessage(HttpMethod.Post, uri)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { note = "It is not — that paragraph is about something else." }),
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+            request.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            // RECORDED: the reply is in the durable log, in the parent's thread, in the HUMAN's voice.
+            var comment = Assert.Single(ReviewLogStore.ReadForPlan(planPath).State.Comments);
+            var reply = Assert.Single(comment.Replies);
+            Assert.Equal(ReviewActors.Human, reply.Actor);
+
+            // DELIVERED: and it reaches the agent's drain in this round, carrying its parent.
+            var drained = await PollAndAckAsync(client, server, session);
+            var delivered = Assert.Single(drained);
+            Assert.Equal(created.Id, delivered.ReplyTo);
+            Assert.Contains("something else", delivered.Note, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDelete(planPath);
+        }
+    }
+
     private static async Task<Annotation> PostAnnotationAsync(
         HttpClient client, ReviewServer server, ReviewSession session, string note)
     {
@@ -498,6 +553,38 @@ public class AnnotationManagementApiTests
 
         return JsonSerializer.Deserialize<List<Annotation>>(
             await response.Content.ReadAsStringAsync(), AnnotationApi.JsonOptions) ?? new List<Annotation>();
+    }
+
+    /// <summary>
+    /// Drain AND acknowledge, which is what a real agent does. An un-acked batch stays in flight and blocks
+    /// the next drain for the whole visibility window (at-least-once delivery, working as designed) — so a
+    /// test that polls twice without acking measures that window rather than the behaviour it means to.
+    /// </summary>
+    private static async Task<IReadOnlyList<Annotation>> PollAndAckAsync(
+        HttpClient client, ReviewServer server, ReviewSession session)
+    {
+        var uri = new Uri(
+            server.Address, "api/poll?wait=0&key=" + Uri.EscapeDataString(session.Key.Value));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var response = await client.GetAsync(uri, cts.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var drained = JsonSerializer.Deserialize<List<Annotation>>(
+            await response.Content.ReadAsStringAsync(cts.Token), AnnotationApi.JsonOptions)
+            ?? new List<Annotation>();
+
+        if (response.Headers.TryGetValues(ReviewServer.DrainSequenceHeader, out var values))
+        {
+            var ackUri = new Uri(
+                server.Address,
+                $"api/{Uri.EscapeDataString(session.Key.Value)}/annotations/ack?sequence={values.First()}");
+            using var ack = new HttpRequestMessage(HttpMethod.Post, ackUri);
+            ack.Headers.TryAddWithoutValidation("Origin", SameOrigin(server.Address));
+            using var ackResponse = await client.SendAsync(ack, cts.Token);
+            Assert.Equal(HttpStatusCode.OK, ackResponse.StatusCode);
+        }
+
+        return drained;
     }
 
     private static async Task<IReadOnlyList<Annotation>> PollAsync(

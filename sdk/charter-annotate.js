@@ -719,6 +719,33 @@ window.CharterAnnotate = (function () {
 
   // Close a comment in the review log. Open to ANYONE (review is collaborative) and always attributed —
   // unlike retract, which only the comment's own author may write.
+  // Charter #158 — the reviewer's side of a thread. `AppendReply` has always defaulted its actor to
+  // `human` because it was written for exactly this caller, and until now nothing could reach it: the panel
+  // could create, edit, retract and resolve, but not CONTINUE. So a thread was one round deep by
+  // construction, and a reviewer who disagreed with the agent's reply could only settle a thing they did not
+  // agree with, or start a new note that had lost its parent.
+  function replyToNote(id, text) {
+    return fetch(annotationUrl(id, 'reply'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: text })
+    }).then(function (res) {
+      if (res.ok) {
+        setStatus('');
+        hydrateLog();
+        emit('annotation-replied', { id: id });
+        return true;
+      }
+      setStatus('Could not post that reply (' + res.status + ').');
+      emit('annotation-reply-error', { id: id, status: res.status });
+      return false;
+    }).catch(function () {
+      setStatus('Could not reach the review server.');
+      emit('annotation-reply-error', { id: id, reason: 'network' });
+      return false;
+    });
+  }
+
   function resolveNote(id) {
     return fetch(annotationUrl(id, 'resolve'), { method: 'POST' }).then(function (res) {
       if (res.ok) {
@@ -2035,6 +2062,16 @@ window.CharterAnnotate = (function () {
     });
   }
 
+  function openComposerForReply(record, target) {
+    showComposer({
+      context: 'Replying in the thread on: ' + recordLabel(record),
+      note: '',
+      target: target,
+      saveLabel: 'Reply',
+      onSave: function (text) { return replyToNote(record.id, text); }
+    });
+  }
+
   // ---- the review panel: list / jump / edit / delete the PENDING notes (#42) ------------
 
   // ---- one list from two sources -------------------------------------------------------------------
@@ -2331,6 +2368,17 @@ window.CharterAnnotate = (function () {
       remove.addEventListener('click', function () { deleteNote(record.id); }, false);
       actions.appendChild(edit);
       actions.appendChild(remove);
+    }
+
+    // Reply, on any committed comment that has not been withdrawn — INCLUDING a resolved one (#158).
+    // Reviewers whose only way to move on was "resolve" have settled threads they actually wanted to
+    // continue, so refusing them the reply would punish them for the very gap this closes. A reply does not
+    // change the status: reopening a settled decision as a side effect of adding a sentence would be a
+    // surprising write, and reopen deserves to stay its own act.
+    if (record.committed && !retracted) {
+      var reply = button('charter-btn', 'item-reply-btn', 'Reply');
+      reply.addEventListener('click', function () { openComposerForReply(record, item); }, false);
+      actions.appendChild(reply);
     }
 
     // Resolve is open to anyone — review is collaborative — but only for a committed comment that is not

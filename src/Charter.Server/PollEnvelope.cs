@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace Charter.Server;
@@ -60,13 +61,23 @@ public static class PollEnvelope
         ArgumentNullException.ThrowIfNull(annotations);
         ArgumentNullException.ThrowIfNull(answers);
 
+        // Charter #158: a reviewer's reply rides the annotation QUEUE (same delivery guarantees) but is a
+        // different thing on the WIRE. Partitioned here, once, so every caller gets it and no call site has
+        // to know: `annotations` keeps meaning exactly what it meant before — new notes — and `replies` is
+        // purely additive. An agent that ignores `replies` behaves precisely as it does today.
+        var newNotes = annotations.Where(a => string.IsNullOrEmpty(a.ReplyTo)).ToList();
+        var replies = annotations.Where(a => !string.IsNullOrEmpty(a.ReplyTo)).ToList();
+
         var payload = new
         {
             session,
             source,
-            annotations,
+            annotations = newNotes,
             answers,
-            drained = new { annotations = annotations.Count, answers = answers.Count },
+            // The reviewer's side of a thread the agent already replied in. `target` is the comment id, so an
+            // agent answers back into the same thread with `charter reply --to <that id>`.
+            replies,
+            drained = new { annotations = newNotes.Count, answers = answers.Count, replies = replies.Count },
             drainError,
 
             // "The human explicitly handed me this round" vs "I woke because one more comment arrived". The
