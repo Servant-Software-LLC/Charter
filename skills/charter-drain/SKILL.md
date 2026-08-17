@@ -67,9 +67,14 @@ text-range note, and the reviewer's comment. For each one, either:
 
 - **revise the plan** — edit the `.charter.md` and let the reviewer see the new version (the served page
   offers them a reload); or
-- **reply** — `charter reply <plan> --id <annotation-id> --body "<your response>"` when the right answer is
+- **reply** — `charter reply <plan> --to <annotation-id> --body "<your response>"` when the right answer is
   a response rather than an edit. A note you neither acted on nor answered is a note the human will assume
   you missed.
+
+  **Do not pass `--as-human`.** The default is your own voice, and the panel now shows it as
+  *"Agent (via &lt;their name&gt;)"* — the record carries the human's git identity because that is how it
+  travels to their teammates, not because they said it. `--as-human` is only for writing something the
+  human asked you to put in their words, and it is permanent in git history.
 
 Nothing else drains the queue. You are the only reader, so a note you skip is simply gone.
 
