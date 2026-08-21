@@ -4631,12 +4631,19 @@ public sealed partial class ReviewLoopBrowserTests
             var comment = ReviewLogStore.ReadForPlan(planPath).State.Comments.First();
             writer.AppendReply(comment.Id, "I think the example is already there.", ReviewActors.Agent);
 
-            // ...and the reviewer, disagreeing, continues the thread. THIS is what had no affordance.
-            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.Load });
-            await WaitForEventAsync(page, "ready");
-            await WaitForEventAsync(page, "review-log-loaded");
-            await page.ClickAsync(Ui("panel-toggle"));
+            // The agent's reply lands in the log, and the panel picks it up LIVE — the server watches the
+            // review directory and pushes `review-log`, which refreshes the panel and deliberately never
+            // navigates (a navigation would discard a half-typed note).
+            //
+            // This used to reload the page instead. That was both unnecessary and unfaithful to how a
+            // reviewer actually experiences it, and it was flaky: a full navigation mid-session
+            // intermittently crashed WebKit with "WebKit encountered an internal error", failing CI on a
+            // branch that had touched no browser code at all. Waiting for the event the SDK already emits
+            // removes the navigation and tests the real path.
+            await WaitForEventAsync(page, "review-log-changed");
 
+            // No panel-toggle click: the panel is already open from writing the note above, and the toggle
+            // pill HIDES while it is open. The reload this replaced is what used to close it.
             await page.WaitForSelectorAsync(Ui("item-reply-btn"));
             await page.ClickAsync(Ui("item-reply-btn"));
             await page.WaitForSelectorAsync(Ui("composer-input"));
