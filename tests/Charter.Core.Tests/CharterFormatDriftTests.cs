@@ -197,6 +197,61 @@ public class CharterFormatDriftTests
         Assert.True(min >= 1, "format-min must be a positive integer.");
     }
 
+    /// <summary>
+    /// The BODY's stated version range must equal the frontmatter's — and therefore the code's (Charter #155).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The frontmatter is already pinned to <see cref="CharterFormat.Version"/> by the test above, so it
+    /// cannot drift from the code. The body's prose was a separate, hand-written copy of the same two numbers
+    /// and was bound to nothing — bump the format and the sentence a reader actually reads would quietly
+    /// become false.
+    /// </para>
+    /// <para>
+    /// That matters more here than the usual documentation-drift argument, because the body is the half a
+    /// CONSUMER can read. Frontmatter is discovery metadata and does not reliably reach an agent's context, so
+    /// Guardrails' <c>plan-breakdown</c> — which cites this skill as the authority for interpreting a
+    /// <c>.charter.md</c> — would be checking the plan's marker against a number no test defended.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Skill_BodyStatesTheSameVersionRangeAsItsFrontmatter()
+    {
+        var text = ReadSkill();
+        var frontMatter = FrontMatter(text);
+
+        var version = FrontMatterInt(frontMatter, "format-version");
+        var min = FrontMatterInt(frontMatter, "format-min");
+        // Everything past the closing frontmatter fence — the half a reader (and an agent's context)
+        // actually gets. Searched from offset 4 so the OPENING fence is not mistaken for the close.
+        var closeFence = text.IndexOf("\n---", 4, StringComparison.Ordinal);
+        Assert.True(closeFence > 0, "charter-format/SKILL.md has no closing frontmatter fence.");
+        var body = text[(closeFence + 4)..];
+
+        Assert.Contains($"`format-version: {version}`", body, StringComparison.Ordinal);
+        Assert.Contains($"`format-min: {min}`", body, StringComparison.Ordinal);
+
+        // ...and the numbers really are the code's, so all three are one fact rather than three copies.
+        Assert.Equal(CharterFormat.Version, version);
+        Assert.Equal(CharterFormat.MinVersion, min);
+    }
+
+    /// <summary>
+    /// A consumer that finds the pairing wrong must be told the remedy is a CHARTER command — re-installing
+    /// its own tool's skills will not help, and a Guardrails-side agent has no reason to think of it.
+    /// </summary>
+    [Fact]
+    public void Skill_TellsAConsumerTheRemedyAndWhoseRepoItIsIn()
+    {
+        var text = ReadSkill();
+
+        Assert.Contains("charter skills install --force", text, StringComparison.Ordinal);
+        // Installing alone is not enough: the loaded copy does not change when the file on disk does (#152).
+        Assert.Contains("restarting your session", text, StringComparison.OrdinalIgnoreCase);
+        // And it must name the consumer this is written for, or it reads as advice to Charter's own agents.
+        Assert.Contains("plan-breakdown", text, StringComparison.Ordinal);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------------------
 
     /// <summary>The lowercase wire tokens of every public instance field of <see cref="QuestionSpec"/>.</summary>

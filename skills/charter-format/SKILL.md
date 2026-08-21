@@ -27,6 +27,35 @@ A `.charter.md` stamps the format it was authored against in a plain-YAML frontm
 `format-min ≤ F ≤ format-version`. **Any change to the catalog below bumps `format-version`** — the drift
 test binds the version to the code, so a semantic change with no bump fails the build.
 
+### If you are a CONSUMER of this skill
+
+You may not be a Charter agent at all. Guardrails' `plan-breakdown` cites this skill as the authority for
+interpreting a `.charter.md`, and other tools may too. So the numbers above are stated **here, in the body**
+rather than only in frontmatter: frontmatter is discovery metadata and does not reliably reach your context,
+and the copy you can actually read is the copy you are actually using.
+
+**Check the pairing before you interpret a plan**, because nothing else can. Charter's `--version` compares
+this skill to the *Charter* binary; your own tool's `--version` compares *its* skills to *itself*. Neither
+looks at the pair, so both can be perfectly clean while this skill is too old to read the plan in front of
+you:
+
+1. Read the plan's `charter-format-version: F` marker — plain YAML, no parsing of this skill required.
+2. Compare against the range above. Consumable iff `format-min ≤ F ≤ format-version`.
+3. **`F` greater than `format-version`** — the plan uses a catalog generation this skill does not define.
+   Do not guess at the unknown blocks; a `:::` directive you cannot interpret is not prose to be passed
+   through.
+4. **`F` less than `format-min`** — the plan predates what this skill still understands.
+
+**The remedy lives in Charter's repo, not yours.** A stale `charter-format` is fixed by:
+
+```
+charter skills install --force
+```
+
+…and then restarting your session, because the copy you loaded does not change when the file on disk does.
+That is a *Charter* command, which is exactly why it is written here — a Guardrails-side agent has no reason
+to think of it, and re-installing its own skills will not help.
+
 ## The block catalog (the only blocks that exist)
 
 Primitives are plain CommonMark. The `:::` directives are the rich, validated blocks.
