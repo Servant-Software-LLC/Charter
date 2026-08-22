@@ -241,9 +241,71 @@ window.CharterAnnotate = (function () {
     return !!(el && el.nodeType === 1 && typeof el.matches === 'function' && el.matches(DIAGRAM_BLOCK));
   }
 
-  // Walk up to the nearest ancestor that carries a stable anchor: the renderer stamps each
+  // ---- opaque regions: the two boxes Charter does not own the insides of ----------------
+  //
+  // A rendered plan contains exactly two regions whose CONTENT is markup Charter did not author, and whose
+  // ids therefore mean nothing to the anchor model:
+  //
+  //   .custom-html-scroll  the :::custom-html escape hatch's body, emitted VERBATIM. An author's own
+  //                        `id` survives into the render — that is what an escape hatch is for.
+  //   pre.mermaid          a rendered :::diagram, whose <svg> and every g.node carry ids Mermaid
+  //                        generated and regenerates on the next render (Charter #48).
+  //
+  // Neither kind of id is ever produced by `AnchorAssignment`, so `SourceMap` cannot map one to a markdown
+  // line: a note anchored to one reaches the agent with `sourceLine: null`, orphaned (Charter #166). Worse
+  // for an author id, which is not unique by construction: `document.getElementById` answers with the FIRST
+  // element carrying it, so two copy-pasted escape hatches made a note taken in the second one resolve to the
+  // first — misattribution, which is precisely what the duplicate discriminator in `AnchorAssignment` exists
+  // to make impossible.
+  var OPAQUE_REGION = '.custom-html-scroll, ' + DIAGRAM_BLOCK;
+
+  // Is `el` INSIDE an opaque region? Strictly inside: a region is not its own ancestor, so `pre.mermaid`
+  // itself stays the anchor for a top-level :::diagram exactly as it was before.
+  function insideOpaqueRegion(el) {
+    var parent = el ? el.parentElement : null;
+    if (!parent || typeof parent.closest !== 'function') return false;
+    return !!parent.closest(OPAQUE_REGION);
+  }
+
+  // THE PREDICATE. An element is an anchor iff it carries an id / data-anchor / data-charter-anchor AND no
+  // ancestor of it is an opaque region. It gates the WHOLE acceptance test, uniformly: :::custom-html passes
+  // all three attributes through verbatim, so accepting `data-anchor` from inside a region while refusing
+  // `id` would leave the same hole under a different name.
+  //
+  // WHY FORGERY CANNOT DEFEAT IT. An author can write class="custom-html-scroll" or class="mermaid" inside
+  // their own body, but the REAL region is an ancestor of everything in that body — so a forged inner region
+  // only ever ADDS an ancestor match. The predicate is MONOTONE: forgery can make more things unanchorable,
+  // never fewer. And "unanchorable" is not "null" — the walk below continues outward and lands on the
+  // enclosing real block. So no "outermost region" computation is needed, and there is nothing to win by
+  // faking one.
+  //
+  // The residue it CANNOT see is markup that breaks out of both wrappers (`</div></div><div id="pwn">`),
+  // which the HTML parser hoists clear of the region. Balancing an author's body means parsing it. That case
+  // is covered from the other side instead: the review panel reads the server's `anchorStatus` for a pending
+  // note, so an unmappable anchor is STATED as an orphan rather than drawn as healthy (see buildItem).
+  function isAnchorElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (!(el.id || el.hasAttribute('data-charter-anchor') || el.hasAttribute('data-anchor'))) return false;
+    return !insideOpaqueRegion(el);
+  }
+
+  // Walk up to the nearest ancestor that IS an anchor by the predicate above: the renderer stamps each
   // block's content-derived stable id on its root element (and may also expose an explicit
   // data-charter-anchor / data-anchor attribute). Text nodes resolve to their parent.
+  //
+  // The walk CONTINUES OUTWARD past an element the predicate refuses — it does not stop on the region and it
+  // does not give up. That is the whole design, and an early return of the region itself would be a new bug:
+  // `RenderBody`'s anchor pass iterates TOP-LEVEL nodes only, so a :::custom-html or :::diagram nested inside
+  // a ::::note or a list item renders with NO id, and returning it would yield `anchorId: null` — which
+  // `textRangeAnchor` does not guard, so the composer would open, take the reviewer's note, and `submit()`
+  // would drop it. Continuing outward lands on the callout or the <li> instead: a real anchor, with a real
+  // sourceLine.
+  //
+  // This subsumes the explicit `pre.mermaid` short-circuit that used to sit here for Charter #48 — every id
+  // inside a rendered diagram now fails the predicate on the same rule, and the walk stops on the block. It
+  // also repairs what that short-circuit got wrong: it returned `pre.mermaid` UNCONDITIONALLY, so a :::diagram
+  // nested inside a ::::note (id-less, as above) hit `onClick`'s `!anchorIdOf(block)` guard and was
+  // un-annotatable — no composer, no error, nothing at all.
   function closestAnchored(node) {
     var el = (node && node.nodeType === 3) ? node.parentElement : node;
     if (!el || el.nodeType !== 1 || typeof el.closest !== 'function') return null;
@@ -251,18 +313,8 @@ window.CharterAnnotate = (function () {
     // Without it a selection that ends inside the panel would anchor to the panel and post a
     // bogus annotation — carrying a quote copied out of another reviewer's note — to the agent.
     if (el.closest(UNANCHORABLE)) return null;
-    // The same guard, one layer down: INSIDE a rendered diagram the only Charter anchor is the block
-    // itself, so resolve it explicitly rather than letting the generic id walk stop on whichever Mermaid
-    // id it meets first. Doing it here rather than in each caller means no path — click, selection, or a
-    // future one — can walk out carrying a Mermaid id, by construction (Charter #48).
-    var diagram = diagramBlock(el);
-    if (diagram) return diagram;
     while (el && el.nodeType === 1) {
-      if (el.id ||
-          el.hasAttribute('data-charter-anchor') ||
-          el.hasAttribute('data-anchor')) {
-        return el;
-      }
+      if (isAnchorElement(el)) return el;
       el = el.parentElement;
     }
     return null;
@@ -278,19 +330,38 @@ window.CharterAnnotate = (function () {
   // Resolve an anchor id back to its live element, or null when the block is gone (the plan was
   // re-rendered and that block no longer exists — an ORPHANED annotation, which the panel still
   // lists rather than dropping). SDK chrome can never satisfy this: it carries no ids.
+  //
+  // The READ path is gated by the SAME predicate as the write path, and it is the more serious half. The
+  // write path only decides where NEW notes go; this decides where every note ALREADY TAKEN points — every
+  // committed note on an author id included, which no fix to the write path can reach. Left ungated, two
+  // escape hatches that both contain <table id="raw-t"> (a copy-paste — what an escape hatch is for) made a
+  // note taken in the second one jump to, scroll to, mark and quote the FIRST, while the agent was handed
+  // `sourceLine: null`. That is misattribution, not orphaning: the reviewer sees a confident, wrong answer.
+  //
+  // `getElementById` answers with the first element in document order, so a rejection has to keep LOOKING
+  // rather than give up — a forged id inside a region must not shadow a real Charter anchor further down.
   function anchorElement(anchorId) {
     if (!anchorId) return null;
     var found = null;
     try { found = document.getElementById(anchorId); } catch (e) { found = null; }
-    if (found && !isSdkUi(found)) return found;
+    if (usableAnchor(found)) return found;
+    var matches = null;
     try {
       var quoted = String(anchorId).replace(/["\\]/g, '\\$&');
-      found = document.querySelector(
-        '[data-charter-anchor="' + quoted + '"], [data-anchor="' + quoted + '"]');
+      matches = document.querySelectorAll(
+        '[id="' + quoted + '"], [data-charter-anchor="' + quoted + '"], [data-anchor="' + quoted + '"]');
     } catch (e) {
-      found = null;
+      return null;
     }
-    return (found && !isSdkUi(found)) ? found : null;
+    for (var i = 0; i < matches.length; i++) {
+      if (usableAnchor(matches[i])) return matches[i];
+    }
+    return null;
+  }
+
+  // An element this anchor id may legitimately resolve TO: not SDK chrome, and not inside an opaque region.
+  function usableAnchor(el) {
+    return !!el && !isSdkUi(el) && !insideOpaqueRegion(el);
   }
 
   function isSdkUi(node) {
@@ -344,7 +415,13 @@ window.CharterAnnotate = (function () {
     // A rendered diagram carries no annotatable prose — its granularities are the NODE and the WHOLE block
     // — so a selection landing inside one is never a text range, however it got there. This is the half of
     // the #61 fix that does not depend on the stylesheet reaching the browser.
-    if (isDiagramBlock(block)) return null;
+    //
+    // Asked of the SELECTION as well as of the resolved block, because the two stopped being the same
+    // question with the containment predicate: a diagram nested inside a ::::note now resolves OUT to the
+    // callout, so `isDiagramBlock(block)` alone would let a drag across Mermaid's own markup become a text
+    // range on the callout — with offsets measured through the <svg>'s theme <style>. It used to be refused
+    // here only by accident, because the walk stopped on the id-less <pre>.
+    if (diagramBlock(selection.anchorNode) || isDiagramBlock(block)) return null;
     var span = blockSpan(block, range);
     return {
       kind: KIND.textRange,
@@ -2198,6 +2275,13 @@ window.CharterAnnotate = (function () {
     };
   }
 
+  // A note still in the queue, as `/api/annotations` reports it. That route re-resolves every anchor through
+  // AnchorResolution before answering (#78), so its `anchorStatus` is the SAME verdict the drain gives the
+  // agent — and it used to be thrown away here and hardcoded null, which left the panel unable to say
+  // "orphaned" about a note the server had already called orphaned. The panel then fell back to "is the
+  // element on the page?", which says nothing at all about whether Charter can map it to a markdown line: an
+  // anchor the assignment pass never produced (an author's own id inside :::custom-html — Charter #166) is
+  // right there in the DOM and unmappable, so the card was drawn healthy while the agent got sourceLine null.
   function pendingRecord(annotation) {
     return {
       id: annotation.id,
@@ -2210,8 +2294,10 @@ window.CharterAnnotate = (function () {
       authorEmail: null,
       actor: null,
       status: 'open',
-      anchorStatus: null,
-      baseStatus: null,
+      anchorStatus: annotation.anchorStatus || null,
+      // Review-log only on the wire, so this is null for every pending note — carried rather than hardcoded
+      // so there is one shape of record and no second place for the two to drift apart.
+      baseStatus: annotation.baseStatus || null,
       mine: true,
       sides: [],
       replies: [],
@@ -2335,8 +2421,14 @@ window.CharterAnnotate = (function () {
   function buildItem(entry, marking) {
     var record = entry.record;
     // An anchor resolves by EXACT block-id match or it is orphaned (§4.3) — there is no fuzzy re-binding.
-    // The server's verdict wins when it has one; a pending-only note falls back to the live DOM.
-    var orphaned = record.anchorStatus ? (record.anchorStatus === 'orphaned') : !entry.el;
+    //
+    // A DISJUNCTION, deliberately, because the two sources answer different questions and either one alone is
+    // blind. The server knows whether the anchor maps to a markdown LINE, which the DOM cannot tell you — an
+    // id the assignment pass never produced is present on the page and unmappable (#166). The DOM knows
+    // whether the block is on the PAGE, which the server cannot tell you — a note whose element this render
+    // does not contain is stranded here whatever the plan file says. So "the server wins outright" would draw
+    // a missing block as healthy, and "the DOM wins outright" is what #166 was.
+    var orphaned = record.anchorStatus === 'orphaned' || !entry.el;
     var retracted = record.status === 'retracted';
 
     var item = make('div', 'charter-item', 'item');
@@ -2399,12 +2491,20 @@ window.CharterAnnotate = (function () {
     // whole document, and it is made only when `baseStatus` backs it (§4.3.1). It used to be asserted on every
     // orphan, including the ones where the plan is byte-identical to what the reviewer saw and the anchor
     // simply never resolved.
+    //
+    // The THIRD sentence is earned by the same discipline, one case further down. `baseStatus` is review-log
+    // only, so a pending orphan can never reach the first branch — and the second branch is a plain falsehood
+    // whenever the block IS still on the page and it is the anchor that cannot be mapped (#166): the reviewer
+    // is looking straight at the thing it says is gone. Each sentence therefore states only what its own
+    // evidence supports, and none of them says "addressed".
     if (orphaned) {
       var orphan = make('div', 'charter-item-orphan', 'item-orphan');
       orphan.appendChild(make('div', null, 'item-orphan-note',
         record.baseStatus === 'different'
           ? 'The plan has changed since this comment was written.'
-          : 'The block this comment was written on is not in the plan.'));
+          : entry.el
+            ? 'This is still on the page, but Charter cannot trace it back to a line of the plan.'
+            : 'The block this comment was written on is not in the plan.'));
       if (record.quote) {
         orphan.appendChild(make('div', 'charter-item-quote', 'item-quote',
           '“' + truncate(record.quote, 160) + '”'));
@@ -2687,10 +2787,10 @@ window.CharterAnnotate = (function () {
   //   * a top-level <table> climbs through its anchor-invisible .table-scroll wrapper to a body child, so the
   //     rail lands OUTSIDE the horizontal scroll box — which is what stops the badge riding away with
   //     scrollLeft, the Charter #51 lesson;
-  //   * a <table> inside :::custom-html climbs .custom-html-scroll and stops on .custom-html, which HAS an
-  //     anchor, so it gets no rail. That block stays deliberately unbadged: closestAnchored accepts any
-  //     author-supplied id, but SourceMap never registers one, so a note on it reaches the agent ORPHANED —
-  //     and advertising a count on a note that cannot round-trip is worse than showing nothing.
+  //   * a :::custom-html block is `div.custom-html`, a body child, so it climbs to itself and badges in
+  //     place — and it is the only element inside that block that CAN be an anchor, because everything in
+  //     `.custom-html-scroll` is inside an opaque region (see isAnchorElement). Nothing here needs to know
+  //     that: an author id can no longer reach this function at all.
   function railMount(el) {
     var node = el;
     while (node && node.parentElement && node.parentElement !== document.body) {

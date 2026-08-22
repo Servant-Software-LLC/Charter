@@ -286,7 +286,8 @@ path silently re-attaches to the *read* path — and the agent "fixes" the wrong
 
 This costs less than it appears: ids are per-block and content-derived, so editing block X never orphans a
 comment on block Y. Orphaning is confined to (a) the commented block itself changing — semantically
-correct — and (b) a *duplicate* block whose neighbourhood changed, which is collateral from the #50 fix.
+correct — (b) a *duplicate* block whose neighbourhood changed, which is collateral from the #50 fix, and
+(c) an anchor that was **never assigned**, so no edit could ever make it resolve (added by #166, below).
 
 **An orphan is never blind.** Each record carries `base` (the plan's content hash when written) and the
 `quote`, so the panel can show *"you commented on «…»; the plan has changed since"* — with a diff
@@ -308,6 +309,27 @@ ambiguity rule: **any rank matching more than one candidate yields `Orphaned`, n
 cases: folding a `:::question` answer rewrites that block, changing its id — so every comment on that
 question orphans **though nobody addressed anything**. The panel must render `Orphaned` as a neutral fact.
 Claiming "Addressed" requires positive evidence that the *commented* block's content changed.
+
+*Amended by #166 (2026-08-22): cause (c), the anchor that was never assigned.* §4.3 assumed every anchor a
+comment can carry is one `AnchorAssignment` produced — true of the write path only if the SDK refuses to
+manufacture anchors from ids it did not stamp, which it did not do. A `:::custom-html` body is emitted
+verbatim, so an author's own `id` reached the anchor walk and was accepted; `SourceMap` had never registered
+it, so the note orphaned on arrival and **no edit to the plan could ever make it resolve**. Two corrections,
+and the second is the one §4.3's own principle demands:
+
+1. **The SDK's anchor rule is now a containment predicate** — an element is an anchor iff it carries an
+   anchor attribute **and no ancestor of it is an opaque region** (`div.custom-html-scroll`, `pre.mermaid`),
+   with the walk continuing OUTWARD where it fails. Cause (c) is closed for well-formed bodies on both the
+   write path and the read path. The read path mattered more: `document.getElementById` answers with the
+   first match in document order, so a duplicated author id resolved a note taken in one block onto another
+   — **misattribution**, which §4.3 exists to make impossible, arriving through the one surface §4.3 had not
+   considered.
+2. **What the predicate cannot see is DIAGNOSED rather than hidden.** Author markup that closes both wrappers
+   escapes the region entirely, and balancing it means parsing it. So the panel now reads the `anchorStatus`
+   the server already computes for a pending note, instead of inferring one from "is the element on the
+   page?". This is §4.3's *"an orphan is never blind"* applied to the reviewer's side while they can still do
+   something about it — with a third, earned sentence for exactly this case, because *"the block is not in the
+   plan"* is a falsehood when the reviewer is looking straight at it.
 
 ### 4.3.1 Review-log staleness: the quarantine does not cross over (resolves #74)
 
