@@ -67,10 +67,13 @@ internal static class CharterCommands
             // verb so the banner / --version behavior above stays exactly as-is.
             ("headless", BuildHeadlessRoot),
 
-            // `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>]`: read the markdown and, via
-            // Charter.Core.HandoffMarkdown, convert every ::: directive block into plain CommonMark Guardrails can
-            // consume — resolving each :::question against the optional --answers file (or flagging it open when no
-            // answer is supplied) — then write the handoff markdown. Parsed with System.CommandLine, parallel to
+            // `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>] [--fail-if-needs-human]`:
+            // read the markdown and, via Charter.Core.HandoffMarkdown, convert every ::: directive block into plain
+            // CommonMark Guardrails can consume — resolving each :::question against the optional --answers file (or
+            // flagging it open when no answer is supplied) — then write the handoff markdown. THIS is the verb that
+            // feeds Guardrails; `headless` above writes no CommonMark at all. With --fail-if-needs-human it also
+            // evaluates Charter.Core.HandoffGate AFTER the write and returns HeadlessExitCodes.NeedsHuman when a
+            // decision nobody made survived --answers (Charter #172). Parsed with System.CommandLine, parallel to
             // `render`; only entered for the `handoff` verb so the banner / --version behavior above stays as-is.
             ("handoff", BuildHandoffRoot),
 
@@ -453,12 +456,31 @@ internal static class CharterCommands
         {
             Description = "Optional path to a JSON file mapping question id -> answer value(s), resolving open questions.",
         };
+        var failIfNeedsHumanOption = new Option<bool>("--fail-if-needs-human")
+        {
+            Description =
+                "Exit " + HeadlessExitCodes.NeedsHuman + " when the plan still needs a human AFTER --answers is "
+                + "merged. The handoff IS STILL WRITTEN -- this is an escalation, not a refusal. Blocks on: an "
+                + "unanswered `target: human` question; an unanswered `target: agent` question carrying neither "
+                + "`options` nor `recommended` (nothing to decide it with); a :::question body that will not "
+                + "parse; an unrecognized ::: directive (a misspelled :::questoin hides its target there); and "
+                + "duplicate question ids. Each is named on stderr with its id, title and target, along with any "
+                + "--answers id that matched no question in the plan. Default behaviour is unchanged.",
+        };
 
-        var handoff = new Command("handoff", "Convert a reviewed Charter plan (.charter.md) to plain-CommonMark handoff markdown for Guardrails.")
+        var handoff = new Command(
+            "handoff",
+            "Convert a reviewed Charter plan (.charter.md) to plain-CommonMark handoff markdown for Guardrails. "
+                + "Exit codes: 0 the handoff was written and nothing is outstanding; "
+                + HeadlessExitCodes.NeedsHuman + " (only with --fail-if-needs-human) the handoff WAS STILL "
+                + "WRITTEN and something needs a human -- read stderr, then the file; 1 a verb error (plan not "
+                + "found, unreadable --answers) and NOTHING was written. "
+                + ExitCodeVocabularyNote)
         {
             inputArgument,
             outOption,
             answersOption,
+            failIfNeedsHumanOption,
         };
 
         handoff.SetAction(parseResult => RunVerb("handoff", () =>
@@ -466,6 +488,7 @@ internal static class CharterCommands
             string inputPath = parseResult.GetValue(inputArgument)!;
             string outputPath = parseResult.GetValue(outOption)!;
             string? answersPath = parseResult.GetValue(answersOption);
+            bool failIfNeedsHuman = parseResult.GetValue(failIfNeedsHumanOption);
 
             if (!File.Exists(inputPath))
             {
@@ -511,13 +534,82 @@ internal static class CharterCommands
 
             File.WriteAllText(outputPath, handoffMarkdown);
             Console.WriteLine($"Handed off {inputPath} -> {outputPath}");
-            return 0;
+
+            if (!failIfNeedsHuman)
+            {
+                return 0;
+            }
+
+            // The gate runs AFTER the write, never instead of it (Charter #172). Every exit 2 in this pipeline
+            // means "the output exists, go read it" -- `charter headless`'s, Guardrails' BreakdownCommand's,
+            // and Guardrails' ExitCodes.TaskFailed's -- and inverting that here would be the exact class of
+            // seam-level surprise the flag exists to prevent. Refusing to write also would not WORK: the write
+            // above is unconditional, so a refusal leaves the PREVIOUS run's plan.md in place, and a stale
+            // flattened plan carries no open-question markers at all -- internally consistent, passing any
+            // lint, and indistinguishable to a consumer that only checks the file extension.
+            return ReportHandoffGate(HandoffGate.Evaluate(markdown, answers), outputPath);
         }));
 
         return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
         {
             handoff,
         };
+    }
+
+    /// <summary>
+    /// The one sentence every verb whose help mentions an exit <c>2</c> appends, so a pipeline author reading
+    /// ANY of them meets the same warning. Charter #173 asked for the opposite note — it assumed Charter's 2
+    /// and Guardrails' 2 disagree — but reading Guardrails' source settles it the other way: its
+    /// <c>BreakdownCommand.NotCleanExitCode</c> ("a 2 means READ THE FOLDER") and its
+    /// <c>ExitCodes.TaskFailed</c> ("the run completed but at least one task needs a human") share exactly
+    /// this post-condition. The outlier is Charter's own drain vocabulary.
+    /// ASCII only, so the line is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+    /// </summary>
+    internal const string ExitCodeVocabularyNote =
+        "NOTE ON 2: a 2 here means the same thing it means in `charter headless` and in Guardrails -- the "
+        + "output exists, go read it. The OUTLIER is Charter's own `poll`/`resolve` 2, which means a queue was "
+        + "found and it was empty. Do not read one vocabulary as the other.";
+
+    /// <summary>
+    /// Name every blocking item on STDERR (stdout keeps its single written-file line) and return the
+    /// escalation code, or 0 when nothing blocks. Same shape as <c>charter headless</c>'s escalation report,
+    /// and ASCII only for the same reason.
+    /// </summary>
+    private static int ReportHandoffGate(HandoffGateResult gate, string outputPath)
+    {
+        // Reported whether or not anything BLOCKS, and deliberately not itself a blocker. An id the plan does
+        // not carry means a stale id, a renamed question, or a generator written against a different plan --
+        // all of which Charter used to discard in silence, so "your answers file had 3 ids and none matched"
+        // was unobservable. It does not change the exit code because the questions it failed to answer already
+        // do, and inventing a second veto here would be a rule nothing else in the pipeline shares.
+        if (gate.UnmatchedAnswerIds.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"charter handoff: warning: {gate.UnmatchedAnswerIds.Count} --answers id(s) matched no "
+                    + $":::question in the plan and were discarded: {string.Join(", ", gate.UnmatchedAnswerIds)}.");
+        }
+
+        if (!gate.NeedsHuman)
+        {
+            return 0;
+        }
+
+        Console.Error.WriteLine(
+            $"charter handoff: {gate.Blockers.Count} item(s) need a human -- exit "
+                + $"{HeadlessExitCodes.NeedsHuman}. The handoff WAS written to {outputPath}; this is an "
+                + "escalation, not a failure. Settle these in the .charter.md (or in --answers) and re-run.");
+
+        foreach (HandoffBlocker blocker in gate.Blockers)
+        {
+            string where = blocker.SourceLine is { } line ? $" (line {line})" : string.Empty;
+            string who = blocker.Id is { Length: > 0 } id ? $" '{id}'" : string.Empty;
+            string target = blocker.Target is { Length: > 0 } value ? $" [target: {value}]" : string.Empty;
+            string title = blocker.Title is { Length: > 0 } text ? $": {text}" : string.Empty;
+
+            Console.Error.WriteLine($"  {blocker.Kind}{who}{where}{target}{title} -- {blocker.Detail}");
+        }
+
+        return HeadlessExitCodes.NeedsHuman;
     }
 
     // Builds the root command hosting the `convert` subcommand wired to Charter.Core.MarkdownConvert.
@@ -1171,9 +1263,23 @@ internal static class CharterCommands
                 + "never written into the plan and never discarded.",
         };
 
+        // The exit codes `resolve` has always returned and never documented anywhere a caller looks (Charter
+        // #173). Worded from ReviewExitCodes, which stays the normative source; this is where a pipeline
+        // author reads it.
         var resolve = new Command(
             "resolve",
-            "Apply a solo reviewer's queued :::question answers INLINE into the plan (single-writer-safe; via a live review server or the durable sidecar).")
+            "Apply a solo reviewer's queued :::question answers INLINE into the plan (single-writer-safe; via a "
+                + "live review server or the durable sidecar). Exit codes: "
+                + ReviewExitCodes.Drained + " at least one answer was applied; "
+                + ReviewExitCodes.CleanEmpty + " a queue was found and it was EMPTY (a clean no-op); "
+                + ReviewExitCodes.NoSession + " no live review session and no readable sidecar for this plan; "
+                + ReviewExitCodes.DrainFailed + " the drain could not complete, so the queue state is UNKNOWN "
+                + "-- never read this as 'nothing queued'; "
+                + ReviewExitCodes.ApplyFailed + " the inline apply did not happen: it either FAILED (duplicate "
+                + "question ids, a concurrent external edit, an I/O error) or was REFUSED because a queued "
+                + "answer's :::question changed shape -- either way the answers are PRESERVED and stderr says "
+                + "which; 1 a generic verb error. "
+                + ExitCodeVocabularyNote)
         {
             inputArgument,
             applyStaleOption,

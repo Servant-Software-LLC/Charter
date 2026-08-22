@@ -84,7 +84,8 @@ public class HandoffFenceFidelityTests
         // rendering it as a diagram.
         var output = HandoffMarkdown.Emit(FencedDiagramDoc);
 
-        var code = Assert.Single(BlockDocument.Parse(output).Blocks);
+        // The trailing provenance stamp is a block of its own; this fact is about the CONTENT.
+        var code = Assert.Single(HandoffOutput.ContentBlocks(output));
         Assert.Equal(BlockKind.Code, code.Kind);
 
         var inner = InnerFenceContent(output);
@@ -96,7 +97,8 @@ public class HandoffFenceFidelityTests
     {
         var output = HandoffMarkdown.Emit(FencedDiffDoc);
 
-        var code = Assert.Single(BlockDocument.Parse(output).Blocks);
+        // The trailing provenance stamp is a block of its own; this fact is about the CONTENT.
+        var code = Assert.Single(HandoffOutput.ContentBlocks(output));
         Assert.Equal(BlockKind.Code, code.Kind);
         Assert.Equal("+new feature added\n-old behavior removed", InnerFenceContent(output));
     }
@@ -134,7 +136,8 @@ public class HandoffFenceFidelityTests
         Assert.StartsWith("````diff\n", output.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
         Assert.Contains(" unchanged code line", output, StringComparison.Ordinal);
 
-        var code = Assert.Single(BlockDocument.Parse(output).Blocks);
+        // The trailing provenance stamp is a block of its own; this fact is about the CONTENT.
+        var code = Assert.Single(HandoffOutput.ContentBlocks(output));
         Assert.Equal(BlockKind.Code, code.Kind);
     }
 
@@ -160,7 +163,9 @@ public class HandoffFenceFidelityTests
     /// <summary>The text BETWEEN the first line (the opening fence) and the last line (the closing fence).</summary>
     private static string InnerFenceContent(string output)
     {
-        var lines = output.Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd('\n').Split('\n');
+        // The trailing provenance stamp (Charter #172/#187) is Charter's own line, not the fence's content —
+        // dropped before the opener/closer are trimmed, or it would be mistaken for the closing fence.
+        var lines = HandoffOutput.WithoutStamp(output).TrimEnd('\n').Split('\n');
         Assert.True(lines.Length >= 2, "a fenced handoff block must have at least an opener and a closer.");
         return string.Join("\n", lines[1..^1]);
     }

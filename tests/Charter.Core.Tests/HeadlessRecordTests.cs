@@ -309,7 +309,9 @@ public class HeadlessRecordTests
         Assert.False(record.NeedsHuman);
         Assert.Empty(json.GetProperty("questions").EnumerateArray());
         Assert.Empty(json.GetProperty("notes").EnumerateArray());
-        Assert.Equal(1, json.GetProperty("schema").GetInt32());
+        // Bound to the code constant, never a re-typed literal: the schema number is a contract, and
+        // HeadlessRecordContractTests is what holds the SHAPE to its documentation when it moves.
+        Assert.Equal(HeadlessRecord.Schema, json.GetProperty("schema").GetInt32());
         Assert.NotEmpty(json.GetProperty("sourceMap").EnumerateObject());
     }
 }

@@ -65,10 +65,40 @@ public static class HandoffMarkdown
             parts.Add(EmitBlock(block, source, answers).TrimEnd());
         }
 
+        // The in-band provenance stamp (Charter #172/#187). Until it existed the flattened plan
+        // self-identified as NOTHING — no version, no hash, no link to its source; front matter is stripped
+        // and a test pins that it is — so "did the plan Charter recorded match the plan Guardrails consumed"
+        // could not be answered even in principle.
+        //
+        // Four properties earn it its place, and no out-of-band record has all four: an HTML comment is
+        // CommonMark-safe (it is a leaf HTML block and renders as nothing), it is INVISIBLE in a rendered
+        // diff on GitHub, it is deterministic in the plan text, and — the one that decides it — it SURVIVES A
+        // CONSUMER THAT IGNORES EXIT CODES AND SIDE FILES. Out-of-band signalling cannot fix a failure of
+        // out-of-band signalling.
+        //
+        // The hash is of the plan text EXACTLY AS READ, not of the normalized source above, so it is
+        // byte-identical to `planSha256` in the same plan's `charter headless` record. Those two values are
+        // the join; hashing different text here would make the join silently meaningless.
+        parts.Add(Stamp(markdown ?? string.Empty));
+
         // A blank line between blocks keeps each one a distinct CommonMark block when the output is itself
         // re-parsed (the self-parse round-trip invariant 5 asserts).
         return string.Join("\n\n", parts);
     }
+
+    /// <summary>
+    /// The trailing provenance comment: <c>&lt;!-- charter: plan-sha256=&lt;hex&gt; --&gt;</c>. One line, no
+    /// clock, no local path — the same discipline the forensic record keeps, so the flattened plan stays as
+    /// safe to hand on as the artifact.
+    /// </summary>
+    public static string Stamp(string markdown)
+        => $"<!-- {StampPrefix}{PlanHash.Sha256Hex(markdown)} -->";
+
+    /// <summary>
+    /// The stamp's fixed prefix — the string a consumer scans for. Exposed so a reader locates the stamp by
+    /// the producer's own constant instead of a re-typed literal.
+    /// </summary>
+    public const string StampPrefix = "charter: plan-sha256=";
 
     /// <summary>Convert one parsed block to its plain-CommonMark handoff text, dispatching on its kind.</summary>
     private static string EmitBlock(Block block, string source, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
@@ -402,11 +432,21 @@ public static class HandoffMarkdown
     /// </summary>
     private static string EmitQuestion(string rawContent, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
     {
-        var body = string.Join("\n", InnerLines(rawContent));
+        // ONE question-body parse, shared with `charter headless`'s forensic record (Charter #172). This used
+        // to be a private line-split here, and the two diverged in both directions: an unterminated container
+        // at EOF flattened perfectly while the record called it malformed, and a `::::question` fence read
+        // perfectly in the record while the flatten DELETED the question's title, id and target behind a
+        // "Malformed question" line. QuestionBodyParityTests pins the agreement.
+        var body = QuestionResolution.QuestionBody(rawContent);
 
         // Degrade a malformed/empty :::question to a clearly-flagged line rather than throwing (which would
         // abort the whole handoff). The flag is a single blockquote line, so it never starts a line with :::
         // (invariant 5), and every other block still emits.
+        if (body is null)
+        {
+            return "> **Malformed question (could not parse): the container is not a well-formed :::question.**";
+        }
+
         if (!QuestionSpec.TryParse(body, out var spec, out var error) || spec is null)
         {
             return $"> **Malformed question (could not parse): {error}**";
@@ -415,9 +455,9 @@ public static class HandoffMarkdown
         // Migration-bridge faithfulness (DA blocker 1): the external answers dict wins when it carries this id,
         // else fall back to the answer carried INLINE in the resolved :::question (spec.Answer). Without the
         // fallback, a resolved .charter.md flattens as all-questions-open and every human decision is lost.
-        var resolved = answers is not null && answers.TryGetValue(spec.Id, out var values)
-            ? values
-            : spec.Answer;
+        // Shared with HandoffGate so a --fail-if-needs-human verdict can never describe a different document
+        // from the one this emits (Charter #172).
+        var resolved = HandoffGate.ResolvedAnswer(spec.Id, spec.Answer, answers);
 
         var metadata = QuestionMetadataLine(spec);
 
@@ -441,8 +481,46 @@ public static class HandoffMarkdown
             return why is null ? answered : answered + "\n" + why;
         }
 
-        var open = $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
-        return why is null ? open : open + "\n> " + why;
+        // An open question DELEGATED to an agent must TELL the agent what to do, not leave it to infer
+        // (Charter #172). On this path there is no parser and no routing table — the flattened plan is prose,
+        // and prose is the whole interface. "Open question (unresolved)" reads as something someone ELSE will
+        // settle, which is exactly wrong for a block whose `target` says the reader settles it.
+        var delegated = string.Equals(QuestionSpec.Token(spec.Target), "agent", StringComparison.Ordinal);
+        var lead = delegated
+            ? $"> **Delegated decision — you must settle this before building:** {spec.Title}\n> {metadata}"
+                + $"\n> _{DecisionInstruction(spec)}_"
+            : $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+
+        return why is null ? lead : lead + "\n> " + why;
+    }
+
+    /// <summary>
+    /// What a delegated (<c>target: agent</c>) question tells its reader to DO, phrased for the question's own
+    /// mode and naming the author's lean where there is one.
+    /// </summary>
+    /// <remarks>
+    /// The leading <c>Decide: </c> is load-bearing rather than decorative, exactly as <c>_Why: </c> is: it
+    /// guarantees the line cannot START with <c>:::</c> however the option values are spelled (invariant 5).
+    /// The whole line rides inside the blockquote with the lead and the metadata, so it can never separate
+    /// from the question it belongs to.
+    /// </remarks>
+    private static string DecisionInstruction(QuestionSpec spec)
+    {
+        var choose = QuestionSpec.Token(spec.Mode) switch
+        {
+            "single" => "choose exactly one of the options above",
+            "multi" => "choose one or more of the options above",
+            "bool" => "decide yes or no",
+            "number" => "supply a number",
+            _ => "write the answer yourself",
+        };
+
+        var lean = spec.Recommended is { Length: > 0 } value
+            ? $" The plan's author leans `{value}`; depart from it only with a stated reason."
+            : " The plan's author gave no lean.";
+
+        return $"Decide: {choose}, state the choice and your reason in the work you generate from this plan, "
+            + $"and build against it. Do not carry it forward as an open question.{lean}";
     }
 
     /// <summary>
@@ -457,9 +535,16 @@ public static class HandoffMarkdown
     ///     REJECTED option is what lets it author a guardrail that fails if the implementation reaches for it.
     ///     <c>charter-format</c> tells the interpreter to fold the answer in "keeping the options as
     ///     rationale"; dropping them destroyed exactly that.</description></item>
-    ///   <item><description><c>target</c> is the routing signal the headless breakdown branches on, so without
-    ///     it the flattened path structurally CANNOT honour <c>target: agent</c> and halts for a human on a
-    ///     decision the author had explicitly delegated to the agent.</description></item>
+    ///   <item><description><c>target</c> is the routing signal, so that a consumer <em>can</em> branch on
+    ///     <c>human</c> vs <c>agent</c>: without it the flattened path structurally CANNOT honour
+    ///     <c>target: agent</c>, and a decision the author explicitly delegated to the agent is
+    ///     indistinguishable from one that needs a person.
+    ///     <b>No claim is made that any consumer does branch on it.</b> This used to say the headless
+    ///     breakdown branches on <c>human</c> vs <c>agent</c>; it does not — neither literal this seam emits
+    ///     (<c>Open question (unresolved)</c>, <c>_Question — id</c>) appears anywhere in Guardrails' source,
+    ///     docs or skills. That false claim was the sole justification for exempting <c>target: agent</c>
+    ///     from strict <c>handoff</c>'s gate (Charter #172), which is why the exemption is now narrowed to
+    ///     DECIDABLE agent questions only. Filed reciprocally as Guardrails #500.</description></item>
     /// </list>
     /// The shape is emphasis + inline code — plain CommonMark that renders as a readable sub-line on GitHub and
     /// parses with a trivial <c>key: `value`</c> scan. Fields are separated by <c>;</c> so the <c>,</c> inside

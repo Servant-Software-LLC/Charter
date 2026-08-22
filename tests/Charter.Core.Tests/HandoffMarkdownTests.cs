@@ -273,7 +273,8 @@ public class HandoffMarkdownTests
             " ```\n" +
             ":::";
 
-        var blocks = BlockDocument.Parse(HandoffMarkdown.Emit(diffDoc)).Blocks;
+        // The trailing provenance stamp is a block of its own; this fact is about the CONTENT.
+        var blocks = HandoffOutput.ContentBlocks(HandoffMarkdown.Emit(diffDoc));
 
         var code = Assert.Single(blocks);
         Assert.Equal(BlockKind.Code, code.Kind);
@@ -295,7 +296,8 @@ public class HandoffMarkdownTests
             "```\n" +
             ":::";
 
-        var blocks = BlockDocument.Parse(HandoffMarkdown.Emit(diagramDoc)).Blocks;
+        // The trailing provenance stamp is a block of its own; this fact is about the CONTENT.
+        var blocks = HandoffOutput.ContentBlocks(HandoffMarkdown.Emit(diagramDoc));
 
         var code = Assert.Single(blocks);
         Assert.Equal(BlockKind.Code, code.Kind);

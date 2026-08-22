@@ -110,8 +110,11 @@ public class UnknownDirectiveTests
         Assert.Contains("Charter.Core/", handoff, StringComparison.Ordinal);
 
         // Every emitted line is blockquoted, so invariant 5 holds even for a body containing directive-looking
-        // text — and the preserved body reads as context rather than as plan prose in its own right.
-        foreach (var line in handoff.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        // text — and the preserved body reads as context rather than as plan prose in its own right. The
+        // trailing provenance stamp (Charter #172/#187) is Charter's own line, not the directive's body, and
+        // is excluded here rather than blockquoted: an HTML comment inside a blockquote would read as part of
+        // the preserved content.
+        foreach (var line in HandoffOutput.WithoutStamp(handoff).Split('\n'))
         {
             Assert.StartsWith(">", line, StringComparison.Ordinal);
         }
