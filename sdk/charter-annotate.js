@@ -1536,7 +1536,10 @@ window.CharterAnnotate = (function () {
     '.charter-command-note { font-size: 11px; color: var(--charter-muted); margin-top: 6px; }',
     '.charter-item[data-charter-status="retracted"] .charter-item-note { font-style: italic;',
     '  color: var(--charter-muted); }',
-    '.charter-item-orphan { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
+    // The two "here is a fact you cannot see on the page" lines share one look on purpose: an orphan's block is
+    // gone, a retracted block's marker is gone, and neither absence is visible from the plan (#170).
+    '.charter-item-orphan, .charter-item-unmarked { font-size: 11px; color: var(--charter-muted);',
+    '  margin-bottom: 6px; }',
     '.charter-item-quote { font-style: italic; overflow-wrap: break-word; }',
     '.charter-item-sides { font-size: 11px; color: var(--charter-muted); margin-bottom: 6px; }',
     '.charter-item-reply { font-size: 12px; border-left: 2px solid var(--charter-border);',
@@ -1590,6 +1593,20 @@ window.CharterAnnotate = (function () {
     '.charter-zoom-hint { font-size: 11px; color: var(--charter-muted); }',
 
     '.charter-has-annotations { position: relative; box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
+    // The accent bar on a table's scroll region has to be drawn OUTSIDE it (#167).
+    //
+    // An inset box-shadow paints on the element's own background layer, underneath every descendant — which is
+    // fine for a <p>, a <ul> or a <pre>, whose left edge nothing else paints on. A table's cells DO paint
+    // there: `th { background: var(--charter-code-bg) }` covers the bar across the whole header, and with
+    // `border-collapse: collapse` the collapsed row borders chop what is left into one short segment per body
+    // row. Measured on the served page: four disconnected dashes and nothing on the header — decoration that
+    // reads as row striping rather than a marker.
+    //
+    // An OUTER box-shadow is clipped to outside the border box, so nothing inside the block can paint over it,
+    // and a shadow of any offset costs zero layout — an annotated table still lays out pixel-identically to an
+    // unannotated one. It lands flush against the region's left edge, occupying [left-3, left] where the inset
+    // bar occupies [left, left+3], so the marker reads the same at a glance on every block type.
+    '.table-scroll.charter-has-annotations { box-shadow: -3px 0 0 0 var(--charter-accent); }',
     // user-select: none is load-bearing, not cosmetic (#164). The badge sits INSIDE the block it counts, so
     // a reviewer selecting the whole block — the ordinary gesture on a list or a table — used to drag the
     // digit into the selection and therefore into the note's `quote`. blockTextNodes skips every
@@ -1839,11 +1856,19 @@ window.CharterAnnotate = (function () {
     var panel = make('div', 'charter-panel charter-hidden', 'panel');
     panel.setAttribute('role', 'complementary');
     panel.setAttribute('aria-label', 'Charter review notes');
+    // Programmatically focusable, never a Tab stop (#168). Opening the panel moves focus here so the labelled
+    // region is what gets announced; -1 keeps it out of the sequential order, where a landmark div would
+    // otherwise cost every reviewer an extra press on the way past.
+    panel.setAttribute('tabindex', '-1');
 
     var header = make('div', 'charter-panel-header', 'panel-header');
     var title = make('span', 'charter-panel-title', 'panel-title', 'Review notes (0)');
     var close = button('charter-btn', 'panel-close', 'Hide');
-    close.addEventListener('click', hidePanel, false);
+    // Explicitly `{ focus: true }` rather than passing hidePanel as the listener: the DOM would hand it the
+    // MouseEvent as its options object, and — more importantly — WebKit does not focus a <button> on click at
+    // all, so "was focus inside the panel?" answers differently on the two engines for the same gesture.
+    // Dismissing the panel on purpose always returns the reviewer to the toggle.
+    close.addEventListener('click', function () { hidePanel({ focus: true }); }, false);
     header.appendChild(title);
     header.appendChild(close);
 
@@ -1927,23 +1952,67 @@ window.CharterAnnotate = (function () {
     state.ui.toggle.className = visible ? 'charter-panel-toggle' : 'charter-panel-toggle charter-hidden';
   }
 
-  function showPanel() {
+  // Move focus without ever letting the gesture scroll the document. The panel and the toggle are both
+  // position: fixed, so there is nothing to scroll to — but `focus()` walks every scrollable ancestor, and an
+  // engine that decides otherwise would yank the reviewer away from the block they were reading.
+  function focusChrome(el) {
+    if (!el || !el.focus) return;
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+  }
+
+  // Opening a disclosure has to put focus INSIDE what it disclosed — and here that is not a nicety.
+  //
+  // The floating toggle HIDES ITSELF the moment the panel opens (setToggleVisible(false) → display: none), so
+  // the control the reviewer just activated stops being focusable and the browser resets focus to <body>. A
+  // keyboard reviewer was then dropped back at the top of the document and had to re-traverse the whole tab
+  // order — badge, table region, table region, badge, the panel's own Hide — before reaching the first note
+  // (#168: measured at ~20 keystrokes to the first Jump on a six-note plan, and reproduced here as focus
+  // landing on BODY the instant Enter opened the panel).
+  //
+  // Focus lands on the PANEL, not on its first control: the container carries role="complementary" and the
+  // "Charter review notes" label, so what a screen reader announces is the region that just opened, and the
+  // next Tab is the first thing inside it. Landing on a note card instead would announce one note and say
+  // nothing about where it arrived.
+  //
+  // `focus` is opt-IN, and every automatic open leaves it off deliberately. The panel opens itself when a note
+  // is saved, when a round is handed off, and once when a quarantined queue needs explaining — none of those
+  // are the reviewer asking for the panel, and stealing the caret from a document they are reading is a worse
+  // bug than the one this fixes.
+  function showPanel(opts) {
     if (!ensureUi()) return;
     state.ui.panel.className = 'charter-panel';
     setToggleVisible(false);
+    if (opts && opts.focus) focusChrome(state.ui.panel);
     emit('panel-opened', {});
   }
 
-  function hidePanel() {
+  // ...and the way back out, which is the same defect mirrored: closing the panel makes it display: none, so
+  // focus still inside it would be dropped to <body> exactly as opening used to drop it. The toggle is the
+  // control that reappears in the panel's place, so that is where the reviewer is put back.
+  //
+  // Focus that was NEVER in the panel is left where it is. A reviewer who clicked Hide and then clicked into
+  // the plan, or a programmatic close, must not have the caret pulled out of the document they are reading —
+  // returning focus is repair, not a claim on it.
+  function hidePanel(opts) {
     if (!state.ui) return;
+    var returning = (opts && opts.focus) || panelHasFocus();
     state.ui.panel.className = 'charter-panel charter-hidden';
     setToggleVisible(true);
+    if (returning) focusChrome(state.ui.toggle);
     emit('panel-closed', {});
   }
 
+  function panelHasFocus() {
+    var active = document.activeElement;
+    return !!(active && state.ui && state.ui.panel.contains(active));
+  }
+
+  // The disclosure gesture itself, so both directions move focus: this is only ever reached from the toggle's
+  // own click (or a host calling api.panel(), which is the same request said in code).
   function togglePanel() {
     if (!ensureUi()) return;
-    if (state.ui.panel.className.indexOf('charter-hidden') >= 0) showPanel(); else hidePanel();
+    if (state.ui.panel.className.indexOf('charter-hidden') >= 0) showPanel({ focus: true });
+    else hidePanel({ focus: true });
   }
 
   // ---- the composer: a near-target, dismissible popover (replaces window.prompt, #41) ---
@@ -2263,7 +2332,7 @@ window.CharterAnnotate = (function () {
     return actorOf(entry) === 'human' ? who : 'Agent (via ' + who + ')';
   }
 
-  function buildItem(entry) {
+  function buildItem(entry, marking) {
     var record = entry.record;
     // An anchor resolves by EXACT block-id match or it is orphaned (§4.3) — there is no fuzzy re-binding.
     // The server's verdict wins when it has one; a pending-only note falls back to the live DOM.
@@ -2343,6 +2412,22 @@ window.CharterAnnotate = (function () {
       item.appendChild(orphan);
     }
 
+    // The same duty, one trigger over: retracting a block's LAST live note removes both the accent bar and the
+    // count, and until now removed them in silence (#170). The behaviour is correct — a withdrawn comment must
+    // not keep marking a block — but it produced exactly the "did I break something?" reading #164 was filed
+    // for. Charter has one vocabulary for ANNOTATED and one for HOW MANY, and none at all for "annotated, but
+    // not shown on the page", so an absence here is unsignalled by construction unless something says it.
+    //
+    // Said the way the orphan block above says its own fact: neutral, and never blind. Not the quote, though —
+    // an orphan prints one because its block is GONE and the quote is the only way back to it, while this
+    // block is still in the plan and the card's target line already names it. Not said on an orphan either:
+    // that card has already explained why nothing marks its block, and two competing reasons would be worse
+    // than one.
+    if (retracted && !orphaned && !(marking && marking[record.anchorId])) {
+      item.appendChild(make('div', 'charter-item-unmarked', 'item-unmarked',
+        'Withdrawn, and the last open note here — so this block no longer shows a marker.'));
+    }
+
     if (record.sides && record.sides.length) {
       var sides = make('div', 'charter-item-sides', 'item-sides');
       for (var s = 0; s < record.sides.length; s++) {
@@ -2416,7 +2501,7 @@ window.CharterAnnotate = (function () {
     return item;
   }
 
-  function renderPanel(entries) {
+  function renderPanel(entries, marking) {
     var ui = state.ui;
     var list = ui.list;
     while (list.firstChild) list.removeChild(list.firstChild);
@@ -2425,7 +2510,7 @@ window.CharterAnnotate = (function () {
       list.appendChild(make('div', 'charter-panel-empty', 'panel-empty',
         'No notes yet. ' + MODIFIER + '+click a block \u2014 or select some text \u2014 to comment on it.'));
     } else {
-      for (var i = 0; i < entries.length; i++) list.appendChild(buildItem(entries[i]));
+      for (var i = 0; i < entries.length; i++) list.appendChild(buildItem(entries[i], marking));
     }
 
     // A selected note that has since been deleted or retracted out of the list must not leave a
@@ -2479,21 +2564,58 @@ window.CharterAnnotate = (function () {
   //     BR                    likewise inline, and never carries an attribute of its own
   //
   // DL is deliberately absent: BlockModel enables no definition-list extension, so Markdig cannot emit one.
+  //
+  // These two lists are the CONTENT-MODEL half only. A block can also need a rail because it is its own
+  // scroll box, which no tag list can decide — see badgePlacement, which is the actual rule.
   var BADGE_DENIED = ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'UL', 'OL', 'HR', 'IMG', 'BR'];
   var BADGE_RAILED = ['TABLE', 'UL', 'OL', 'HR'];
+
+  // Where one block's badge goes: 'append' inside the block, 'rail' on a sibling rail before it, or 'none'.
+  //
+  // There are TWO independent reasons a block cannot host an appended badge, and the deny-list above is only
+  // the first of them:
+  //
+  //   CONTENT MODEL — makeBadge returns a <button>, which is not a legal child of TABLE/UL/OL/HR, so the
+  //   browser relocates it out of the block (#164).
+  //
+  //   ITS OWN SCROLL BOX — a non-diagram <pre> is `overflow: auto` in charter.css and gains
+  //   `position: relative` the moment it is annotated, which makes it both the containing block for the badge
+  //   AND the scroll container that badge lives in. An absolutely positioned box inside a scroll container
+  //   translates with the content, so scrolling right to read a long line carried the badge clean out of the
+  //   viewport: measured on the served page at scrollLeft 2543, a badge that started at x=863 ended at
+  //   x=-1680 and answered for nothing under its own centre (#165). That is #51's lesson again — and a <pre>
+  //   has no wrapper to hoist past, because the <pre> IS the scroll box, so the rail goes before it.
+  //
+  // pre.mermaid is excluded, exactly as charter.css excludes it from the scroll regions (`pre:not(.mermaid)`).
+  // A diagram is not a scroll box as rendered; it becomes one only under #51's review-time pan/zoom, and
+  // pinDiagramChrome already pushes its in-block badge back by scrollLeft/scrollTop on every scroll.
+  function badgePlacement(el) {
+    if (BADGE_RAILED.indexOf(el.tagName) >= 0) return 'rail';
+    if (BADGE_DENIED.indexOf(el.tagName) >= 0) return 'none';
+    if (el.tagName === 'PRE' && !(el.classList && el.classList.contains('mermaid'))) return 'rail';
+    return 'append';
+  }
 
   // What a railed badge's accessible name calls the block it precedes. The rail reads BEFORE its block, so
   // the name has to point forward — "on this block" would be a lie about which way to look. Each word is
   // DISTINCT, because two badges on one page announcing identically leave a screen-reader user unable to tell
   // which block either belongs to — the defect the old shared "N review note(s) on this block" name had for
   // every badge at once. A numbered list is not a bullet list, so it does not borrow that word.
-  var RAIL_SUBJECT = { TABLE: 'table', UL: 'list', OL: 'numbered list', HR: 'horizontal rule' };
+  var RAIL_SUBJECT = {
+    TABLE: 'table', UL: 'list', OL: 'numbered list', HR: 'horizontal rule', PRE: 'code block'
+  };
 
   function clearMarkers() {
     var marked = document.querySelectorAll('.charter-has-annotations');
     for (var i = 0; i < marked.length; i++) {
       dropClass(marked[i], 'charter-has-annotations');
-      marked[i].removeAttribute('data-charter-annotation-count');
+    }
+    // Swept on its own since #167: the accent bar is painted on the block's outermost box of its own
+    // (.table-scroll for a top-level table) while the COUNT stays on the anchor element, so the two are no
+    // longer always the same node and a sweep keyed off the class would strand the attribute on the table.
+    var counted = document.querySelectorAll('[data-charter-annotation-count]');
+    for (var c = 0; c < counted.length; c++) {
+      counted[c].removeAttribute('data-charter-annotation-count');
     }
     // Rails first: each one OWNS the badge inside it, so removing the rail removes the badge with it and the
     // sweep below is left with the in-block badges only. Without this a dispose() leaves empty rails behind
@@ -2508,29 +2630,39 @@ window.CharterAnnotate = (function () {
     }
   }
 
-  function renderMarkers(entries) {
-    clearMarkers();
+  // How many notes are MARKING each block right now, and in what order the blocks were met.
+  //
+  // A withdrawn comment must not keep badging its block — the thread survives in the panel, but the block no
+  // longer carries an open note. This is the ONE place that rule is applied, so the panel can state what the
+  // page is showing rather than re-derive it and drift (#170).
+  function markingCounts(entries) {
     var order = [];
     var counts = Object.create(null);
     for (var i = 0; i < entries.length; i++) {
       var id = entries[i].record.anchorId;
-      // A withdrawn comment must not keep badging its block — the thread survives in the panel, but the
-      // block no longer carries an open note.
       if (!id || !entries[i].el || entries[i].record.status === 'retracted') continue;
       if (counts[id] === undefined) { counts[id] = 0; order.push(id); }
       counts[id]++;
     }
+    return { order: order, counts: counts };
+  }
+
+  function renderMarkers(marking) {
+    clearMarkers();
+    var order = marking.order;
+    var counts = marking.counts;
 
     var rails = [];
     for (var k = 0; k < order.length; k++) {
       var anchorId = order[k];
       var el = anchorElement(anchorId);
       if (!el) continue;
-      el.classList.add('charter-has-annotations');
+      markerBox(el).classList.add('charter-has-annotations');
       el.setAttribute('data-charter-annotation-count', String(counts[anchorId]));
-      if (BADGE_DENIED.indexOf(el.tagName) < 0) {
+      var placement = badgePlacement(el);
+      if (placement === 'append') {
         el.appendChild(makeBadge(anchorId, counts[anchorId], notePhrase(counts[anchorId]) + ' on this block'));
-      } else if (BADGE_RAILED.indexOf(el.tagName) >= 0) {
+      } else if (placement === 'rail') {
         var rail = mountBadgeRail(el, anchorId, counts[anchorId]);
         if (rail) rails.push(rail);
       }
@@ -2573,6 +2705,27 @@ window.CharterAnnotate = (function () {
     return (node && node.parentElement === document.body) ? node : null;
   }
 
+  // The box that PAINTS the "this block is annotated" accent bar — not always the anchor element.
+  //
+  // The bar is an inset box-shadow, which is a decoration of the element's own border box, and a top-level
+  // <table> lives INSIDE .table-scroll. So on a table scrolled right the bar had already travelled out of the
+  // visible region while the rail's badge stayed pinned: measured at scrollLeft 4377, the <table>'s left edge
+  // sat at x=-4323 against a scroll box whose visible left edge was x=54. Two halves of one signal in two
+  // coordinate spaces (#167).
+  //
+  // Painting it on the scroll REGION answers the second half of the same report for free. With
+  // `border-collapse: collapse` a <table> has no continuous left edge of its own to decorate, so the inset
+  // shadow came out as one segment per body row and none at all on the header — four dashes that read as row
+  // striping rather than as an annotation marker. A plain <div> paints one unbroken bar down the whole block.
+  //
+  // railMount is REUSED rather than re-derived: "climb to the outermost box that is still this block, stopping
+  // at any ancestor that owns an anchor of its own" is exactly the question both callers ask. It answers `el`
+  // itself for every block the renderer does not wrap, and null where the climb would pass an anchored
+  // ancestor (a list item, a diff line) — which is precisely where the bar belongs on the element itself.
+  function markerBox(el) {
+    return railMount(el) || el;
+  }
+
   // Insert the rail as the mount's PREVIOUS SIBLING and hang the badge in it.
   //
   // A sibling, never a wrapper. UNANCHORABLE includes [data-charter-ui] and closestAnchored tests
@@ -2600,8 +2753,9 @@ window.CharterAnnotate = (function () {
     var mountRect = placed.mount.getBoundingClientRect();
     var railRect = placed.rail.getBoundingClientRect();
     var badgeHeight = placed.badge.getBoundingClientRect().height;
-    // A thematic break has effectively no height, so there is no corner to sit in — centre the badge on the
-    // rule instead. Anything shorter than the badge itself gets the same treatment for the same reason.
+    // A block shorter than the badge has no corner to hang one off — centre it on the block instead. That is
+    // the <hr> case: charter.css gives a thematic break a real 12px box (#169), deliberately kept below the
+    // badge's own height so this branch, and not the corner branch, is the one that governs a rule.
     var within = mountRect.height < badgeHeight ? (mountRect.height - badgeHeight) / 2 : 2;
     placed.badge.style.top = ((mountRect.top - railRect.top) + within) + 'px';
     placed.badge.style.bottom = 'auto';
@@ -2668,13 +2822,22 @@ window.CharterAnnotate = (function () {
     // lands on the first so an arrow-key walk continues through the rest of the group.
     var entry = entryById(first.getAttribute('data-annotation-id'));
     if (entry) selectNote(entry.record, { jump: false });
+    // ...and focus it (#168). A badge press is a disclosure too — it opens the panel — and it opens it at ONE
+    // named note, so this is the one entry point where the panel container is the wrong landing place and the
+    // card is the right one. The card is tabindex="0" and the arrow walk (#137) continues from the selection,
+    // so the rest of the block's group is one keystroke away. The scrollIntoView calls above already put it in
+    // view, which is why focusChrome refuses to scroll for it.
+    focusChrome(first);
   }
 
   function render() {
     if (!ensureUi()) return;
     var entries = orderedEntries();
-    renderPanel(entries);
-    renderMarkers(entries);
+    // Computed ONCE and handed to both halves: the panel says what the page is showing, so it must read the
+    // same numbers the markers were painted from rather than a second opinion about them (#170).
+    var marking = markingCounts(entries);
+    renderPanel(entries, marking.counts);
+    renderMarkers(marking);
     syncSendButton();
   }
 

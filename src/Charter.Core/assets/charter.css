@@ -89,6 +89,36 @@ a { color: var(--charter-accent); }
 ul, ol { margin: 0 0 1rem; padding-left: 1.6rem; }
 li { margin: 0.2rem 0; }
 
+/*
+ * Thematic break (Charter #169). TWO defects came out of leaving this to the UA default, and only one of them
+ * is about review — which is why the rule belongs here rather than in the SDK.
+ *
+ * The ARTIFACT's own defect, and the reason this is not review-only scaffolding (invariant 1): the UA draws a
+ * <hr> with `border-style: inset` from currentColor, making it the single block element in a rendered plan
+ * that ignores the Charter palette — a dark 3D groove in light mode and a near-white bar against #0d1117 in
+ * dark, in a stylesheet where every other element is themed. A saved or exported plan needs this rule whether
+ * or not anybody ever annotates it.
+ *
+ * The REVIEW consequence it also settles: the UA default is `height: 0; overflow: hidden` with 1px borders —
+ * a 2px box. A <hr> is a real anchor (it carries a stable id and the composer opens on it reading "the hr
+ * block"), but hit-testing across a rendered one measured HR at only y+0 and y-1, with BODY at y-2, y+1 and
+ * y+2. A pointer essentially never landed it, so a reviewer could not comment on a rule by pointing at it and
+ * rules acquired notes only by other routes.
+ *
+ * So the BOX is real (12px) while the RULE stays a hairline painted down its centre, and the margins are
+ * trimmed to match: the block's total vertical footprint is 12 + 2×4 = 20px against the UA default's
+ * 2 + 2×8 = 18px, so the document's rhythm is unchanged to within 2px and the visible line is thinner, not
+ * heavier. The pointer target grows six-fold as a consequence of the box, not as a decoration added for it.
+ * Kept below the count badge's own height so #164's centring sub-rule still applies: a rail badge on a block
+ * shorter than itself is centred ON the rule rather than hung off a corner that does not exist.
+ */
+hr {
+  height: 12px;
+  margin: 0.25rem 0;
+  border: 0;
+  background: linear-gradient(var(--charter-border), var(--charter-border)) center / 100% 1px no-repeat;
+}
+
 /* Callouts: a note and a warning must be visually distinct from prose AND from each other. */
 .note, .warn {
   margin: 1.2rem 0;

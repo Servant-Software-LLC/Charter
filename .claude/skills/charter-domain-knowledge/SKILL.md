@@ -107,13 +107,42 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   above, for chrome that sits *outside* a block rather than inside it. `closestAnchored` tests
   `el.closest(UNANCHORABLE)` — which includes `[data-charter-ui]` — **before** it walks for an id, so a
   chrome-marked ancestor makes every Alt+click anywhere inside that block resolve to `null`: the block silently
-  stops being annotatable at all. That is why the count badge on a `<table>`/`<ul>`/`<ol>`/`<hr>` (where a
-  `<button>` child is invalid content) rides a zero-height `.charter-badge-rail` inserted as the block's
-  **previous sibling**, and why wrapping the block in a positioned frame — at render time or at serve time — is
-  rejected. Reparenting is doubly wrong at serve time: it discards `.table-scroll`'s `scrollLeft` and any focus
-  inside it, and `render()` runs on every SSE frame, so a teammate's pulled note would blow away a scrolled,
-  focused table. A rail is placed only where the climb from the anchor reaches a direct child of `<body>`
-  without passing an ancestor that carries an anchor of its own.
+  stops being annotatable at all. That is why a count badge that cannot live inside its block rides a
+  zero-height `.charter-badge-rail` inserted as the block's **previous sibling**, and why wrapping the block in
+  a positioned frame — at render time or at serve time — is rejected. Reparenting is doubly wrong at serve
+  time: it discards `.table-scroll`'s `scrollLeft` and any focus inside it, and `render()` runs on every SSE
+  frame, so a teammate's pulled note would blow away a scrolled, focused table. A rail is placed only where the
+  climb from the anchor reaches a direct child of `<body>` without passing an ancestor that carries an anchor
+  of its own.
+- **Two independent reasons put a badge on a rail, and a fix for one is not a fix for the other.**
+  `<table>`/`<ul>`/`<ol>`/`<hr>` are railed because the CONTENT MODEL forbids a `<button>` child (#164). A
+  non-diagram `<pre>` is railed because it is ITS OWN horizontal scroll box (#165): `charter.css` gives it
+  `overflow: auto` and `.charter-has-annotations` gives it `position: relative`, so an appended badge is
+  absolutely positioned *inside* the container it scrolls with — measured at `scrollLeft` 2543, a badge that
+  started at x=863 finished at x=-1680. That is #51's lesson, and a `<pre>` has no wrapper to hoist past, so
+  the rail goes before the `<pre>` itself. `pre.mermaid` is excluded, exactly as `charter.css` excludes it from
+  the scroll regions: a diagram becomes a scroll box only under #51's pan/zoom, which already compensates its
+  in-block badge on every scroll.
+- **The accent bar and the count badge must live in the SAME coordinate space** (#167). The bar is an inset
+  `box-shadow`, which decorates the element's own border box — so painting it on a top-level `<table>`, which
+  lives INSIDE `div.table-scroll`, put half of one signal inside the scroll box and half outside it: measured
+  at `scrollLeft` 4377, the table's left edge (and its bar) sat at x=-4323 while the railed badge stayed
+  pinned. `markerBox` therefore reuses `railMount` — "the outermost box that is still this block" — so a
+  table's bar is painted on the scroll REGION, and every other block keeps it on itself. Second rule from the
+  same report: on `.table-scroll` the bar is an **outer** shadow rather than an inset one. An inset shadow
+  paints on the element's own background layer, underneath every descendant, and a table's descendants paint
+  there — `th`'s opaque background hid it across the header and the collapsed cell borders chopped the rest
+  into one dash per body row. An outer shadow is clipped to outside the border box, so nothing in the block can
+  reach it, and a shadow of any offset costs no layout.
+- **An anchor a reviewer cannot POINT at is only half an anchor** (#169). A top-level `<hr>` has always carried
+  a stable id and opened the composer, but `charter.css` had no `hr` rule, so the UA default (`height: 0;
+  overflow: hidden` plus 1px borders) made it a 2px box — a measured hit band of ~2px, which a real click
+  essentially never lands. It now has a **12px box with the rule painted as a hairline down its centre**, with
+  margins trimmed so the block's vertical footprint is unchanged to within 2px. That lives in `charter.css`
+  rather than the SDK, and the justification is invariant 1's own test: the artifact genuinely needs it —
+  `border-style: inset` draws from `currentColor`, which made `<hr>` the one block element in a rendered plan
+  that ignored the Charter palette (a near-white bar in dark mode). The pointer target is a consequence of
+  giving it a real box, not review-only scaffolding added for review's sake.
 - **The reachable-anchor set is exactly: top-level document nodes, plain top-level list items,
   `:::comparison` rows, and `:::diff` lines — nothing else.** `CharterMarkdown.SubAnchors` is the single
   descent that defines the sub-block half, and `AnchorAssignment` walks the same union, so an id the renderer
@@ -188,6 +217,26 @@ writer**, edit/delete then 404 and the UI says "already handed off". With a writ
 review` path) the log still knows the id, so the write appends an `edit`/`retract` record instead — but a
 live-session agent polling `/api/poll` does **not** read the log, so a post-drain retraction never reaches it.
 The panel/markers/composer are runtime-only DOM, so invariant 1 holds.
+
+**Opening the panel MOVES focus into it; an automatic open never does** (#168). The floating toggle hides
+itself the instant the panel opens, so the control the reviewer just activated stops being focusable and the
+browser resets focus to `<body>` — a keyboard reviewer was dropped at the top of the document and had to
+re-traverse it to reach the notes they had just asked for. Focus lands on the panel itself (`tabindex="-1"`,
+`role="complementary"`, labelled), so what is announced is the region that opened; a badge press is the one
+exception and lands on the card it names. Closing returns focus to the toggle, for the mirror reason. The
+`focus` option is **opt-in**, and the three automatic opens — a note saved, a round handed off, a quarantined
+queue explained — deliberately leave it off: stealing the caret out of a document the reviewer is reading
+would be a worse bug than the one this fixes.
+
+**Absence is DISCLOSED, never left to be inferred** (#170, generalizing #164). Charter has one vocabulary for
+*annotated* (the accent bar) and one for *how many* (the count badge), and **no third state meaning "annotated,
+but not shown here"** — so a marker that correctly disappears reads as breakage unless something says
+otherwise. Retracting a block's last live note is exactly that case: `renderMarkers` skips retracted
+annotations, which is right, and the panel keeps the card. The card therefore states the neutral fact, the way
+`renderItem`'s orphan handling already does — not by inventing a third on-page marker. Both halves are
+load-bearing: the sentence appears only when the marker really has gone, so it does not become noise on every
+retraction. `markingCounts` is the single computation the markers are painted from and the panel reads, so the
+two cannot drift.
 
 **A `:::diagram` has exactly TWO annotatable granularities, and BOTH anchor to the block.** It renders as
 `<pre class="mermaid" id="<stable charter id>">` whose content Mermaid replaces with an `<svg>` carrying **its
