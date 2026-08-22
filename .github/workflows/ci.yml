@@ -40,8 +40,9 @@ jobs:
   # rendered SVG, EventSource for live reload). All of those fail SILENTLY: a comment lands on the wrong text,
   # or the page stops updating, and nothing throws.
   #
-  # BLOCKING, not advisory. Two known WebKit defects are quarantined in-test with a pointer to #111, precisely
-  # so this leg can gate: a NEW engine regression fails here immediately instead of hiding behind them.
+  # BLOCKING, not advisory. #111 and #113 are fixed and their in-test quarantines are gone; what remains is a
+  # single named skip where PLAYWRIGHT, not the product, cannot do the job on this engine. The gate below
+  # allows that one by name and nothing else, so a NEW engine regression fails here immediately.
   #
   # Ubuntu because WebKit runs headless there and it is the cheapest runner; the engine is what is under test,
   # not the OS. Only the browser suite runs — the rest of the solution is engine-independent and already
@@ -67,11 +68,27 @@ jobs:
           dotnet test tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj -c Release --no-build \
             --logger "console;verbosity=normal" | tee webkit.log
           # These tests SKIP rather than fail when a browser is missing, so a green tick proves nothing on
-          # its own. #111 and #113 are FIXED, so the expected skip count is now ZERO: any skip means WebKit
-          # silently did not run, which is the exact blindness this job exists to remove.
+          # its own: if WebKit silently did not install, EVERY test skips and the run still reports success.
+          # That is the exact blindness this job exists to remove.
+          #
+          # The check is by NAME, not by count. A count threshold rots — it has to be edited every time a
+          # skip is added or removed, and a stale one either blocks a legitimate change or waves through a
+          # missing engine. The allow-list below states precisely which tests may skip here and why; anything
+          # else skipping fails the job, including all of them skipping because the engine never ran.
+          #
           # (Each check is written as `! grep ... || fail` rather than `grep ... && fail` — under the default
           # `bash -e` an unmatched grep in an && list leaves a non-zero status that can fail the step on the
           # HAPPY path, which is how the previous version of this gate reported failure when there was none.)
           grep -q "Test Run Successful." webkit.log || { echo "::error::WebKit run was not successful"; exit 1; }
           grep -qE "Passed: +[1-9]" webkit.log || { echo "::error::WebKit reported no passing tests"; exit 1; }
-          ! grep -qE "Skipped: +[1-9]" webkit.log || { echo "::error::WebKit skipped tests - the engine did not really run, or a quarantine was added without updating this gate"; exit 1; }
+          # Railed_badges_survive_forced_colors (#164): Playwright emulates forced-colors on Chromium ONLY —
+          # WebKit rejects the emulation, so running it here would measure an ordinary context and PASS while
+          # proving nothing, which is worse than skipping. The test asserts the emulation is really active
+          # before it measures, so it cannot go vacuous on Chromium either.
+          cat > webkit-allowed-skips.txt <<'ALLOWED'
+          Charter.Browser.Tests.ReviewLoopBrowserTests.Railed_badges_survive_forced_colors
+          ALLOWED
+          sed -i 's/^[[:space:]]*//' webkit-allowed-skips.txt
+          grep -oE 'Skipped +[A-Za-z0-9_.]+' webkit.log | sed 's/^Skipped  *//' | sort -u > webkit-skipped.txt
+          UNEXPECTED=$(comm -23 webkit-skipped.txt <(sort -u webkit-allowed-skips.txt) || true)
+          [ -z "$UNEXPECTED" ] || { echo "::error::WebKit skipped tests outside the allow-list - the engine did not really run, or a quarantine was added without updating this gate: $(echo $UNEXPECTED)"; exit 1; }
