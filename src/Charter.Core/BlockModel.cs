@@ -356,14 +356,36 @@ internal static class CharterMarkdown
         .Build();
 
     /// <summary>
-    /// Parse <paramref name="markdown"/> into a Markdig document using the shared pipeline, then STRIP any YAML
-    /// front matter. Front matter is metadata (the <c>charter-format-version</c> marker), not a content block:
-    /// removing the <see cref="YamlFrontMatterBlock"/> here makes every seam that traverses the document —
-    /// render, <see cref="AnchorAssignment"/>/<see cref="SourceMap"/>, <see cref="BlockDocument"/> and thus the
-    /// handoff/export — skip it uniformly (no anchor, never rendered as prose). Removing the node does not shift
-    /// any other block's absolute <see cref="MarkdownObject.Span"/>/line, so anchors stay correct.
+    /// Parse <paramref name="markdown"/> into a Markdig document using the shared pipeline, then STRIP the
+    /// document's NON-CONTENT top-level children. Two Markdig nodes qualify, for the same reason: neither is a
+    /// block the author wrote as content, neither renders anything, and both therefore must not occupy an anchor
+    /// slot. Removing them here makes every seam that traverses the document — render,
+    /// <see cref="AnchorAssignment"/>/<see cref="SourceMap"/>, <see cref="BlockDocument"/> (and thus the
+    /// handoff/export), and <see cref="PlanWalk"/> — skip them uniformly. Removing a node does not shift any
+    /// other block's absolute <see cref="MarkdownObject.Span"/>/line, so anchors stay correct.
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="YamlFrontMatterBlock"/> — metadata (the <c>charter-format-version</c> marker), not content.
     /// <see cref="QuestionResolution"/>.<c>Apply</c> splices on the original source string, so the front matter
     /// is preserved there untouched.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="LinkReferenceDefinitionGroup"/> (Charter #171) — the collected <c>[foo]: http://…</c>
+    /// definitions, which CommonMark renders as nothing. Markdig appends this group as a top-level child with a
+    /// SYNTHETIC position: its <c>Line</c> is always 0 and its <c>Span</c> always starts at offset 0, wherever
+    /// the definitions actually sit. Left in, it claims the anchor slot at 1-based line 1 and — because
+    /// <see cref="AnchorAssignment"/>'s line-keyed assignment is last-writer-wins and the group is walked after
+    /// the real block — overwrites the id of whatever block genuinely starts there, usually the plan title. Its
+    /// span-derived raw content is a meaningless prefix slice of the document, so it also flattened a DUPLICATE
+    /// of the plan's opening blocks into the handoff. Both symptoms disappear with the node.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// Stripping the group cannot break reference links: Markdig resolves every <c>[foo]</c> against the
+    /// document's link-reference dictionary during <see cref="Markdown.Parse(string, MarkdownPipeline, MarkdownParserContext)"/>,
+    /// so the <c>LinkInline</c>s are already materialized before this runs. The group node is only the
+    /// definitions' place in the block tree, and nothing reads it back.
+    /// </para>
     /// </summary>
     internal static MarkdownDocument ParseDocument(string markdown)
     {
@@ -371,7 +393,7 @@ internal static class CharterMarkdown
 
         for (var i = document.Count - 1; i >= 0; i--)
         {
-            if (document[i] is YamlFrontMatterBlock)
+            if (document[i] is YamlFrontMatterBlock or LinkReferenceDefinitionGroup)
             {
                 document.RemoveAt(i);
             }
