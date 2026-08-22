@@ -2830,8 +2830,7 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.DoesNotContain("font-family", wholeContext, StringComparison.OrdinalIgnoreCase);
 
             await page.FillAsync(Ui("composer-input"), "this diagram should flow left to right");
-            await page.ClickAsync(Ui("composer-save"));
-            await WaitForEventAsync(page, "submitted");
+            await SaveComposerAsync(page);
 
             // ---- the posted payloads: both anchored to the BLOCK, both source-mappable ----
             var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
@@ -3546,8 +3545,7 @@ public sealed partial class ReviewLoopBrowserTests
 
         await page.WaitForSelectorAsync(Ui("composer-input"));
         await page.FillAsync(Ui("composer-input"), note);
-        await page.ClickAsync(Ui("composer-save"));
-        await WaitForEventAsync(page, "submitted");
+        await SaveComposerAsync(page);
     }
 
     /// <summary>
@@ -3950,8 +3948,7 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.Contains(
                 "whole diagram", await page.InnerTextAsync(Ui("composer-context")), StringComparison.OrdinalIgnoreCase);
             await page.FillAsync(Ui("composer-input"), "this diagram is missing the retry edge");
-            await page.ClickAsync(Ui("composer-save"));
-            await WaitForEventAsync(page, "submitted");
+            await SaveComposerAsync(page);
 
             // ---- the posted payloads ----
             var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
@@ -4550,6 +4547,23 @@ public sealed partial class ReviewLoopBrowserTests
         Assert.Fail("the SDK never emitted the '" + type + "' event within " + timeoutMs + "ms");
     }
 
+    /// <summary>
+    /// Click the composer's Save and wait for THAT submission to land — the count before the click plus one.
+    ///
+    /// <para><b>Why this is not <c>ClickAsync</c> + <c>WaitForEventAsync("submitted")</c>.</b> That pair reads
+    /// "has the SDK ever emitted a submit?", which is satisfied instantly by a note saved earlier in the same
+    /// test — so the SECOND save in any test returned before it had happened, and every assertion after it
+    /// raced the render. It surfaced as <c>Selecting_a_note_jumps_to_its_anchor…</c> finding one card where it
+    /// expected two, on WebKit, under full-suite load only. Same shape as the trap
+    /// <see cref="WaitForEventCountAsync"/> exists for, and the same fix.</para>
+    /// </summary>
+    private static async Task SaveComposerAsync(IPage page)
+    {
+        var before = await CountEventsAsync(page, "submitted");
+        await page.ClickAsync(Ui("composer-save"));
+        await WaitForEventCountAsync(page, "submitted", before + 1, atLeast: true);
+    }
+
     private static Task<int> CountEventsAsync(IPage page, string type)
         => page.EvaluateAsync<int>(
             "() => (window.__charterEvents || []).filter(function (t) { return t === '" + type + "'; }).length");
@@ -5008,8 +5022,7 @@ public sealed partial class ReviewLoopBrowserTests
             await page.ClickAsync("body > p:nth-of-type(42)", new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
             await page.WaitForSelectorAsync(Ui("composer-input"));
             await page.FillAsync(Ui("composer-input"), "last note");
-            await page.ClickAsync(Ui("composer-save"));
-            await WaitForEventAsync(page, "submitted");
+            await SaveComposerAsync(page);
 
             var cards = page.Locator(Ui("item"));
             Assert.Equal(2, await cards.CountAsync());

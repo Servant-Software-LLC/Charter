@@ -175,6 +175,25 @@ update run `charter skills install --force` too.
   `WaitUntil = NetworkIdle` never settles. Use `WaitUntilState.Load` + a selector/event wait. The suite
   SKIPS cleanly (`Xunit.SkippableFact`) when Chromium is unavailable; the deterministic served-doc-shell
   guards (Core + Server tests) cover the same symptoms on every OS.
+- **`WaitForEventAsync` asks "has this EVER happened", so the SECOND one in a test returns instantly.** It
+  polls for `count > 0` over a tap that accumulates for the whole page life, so `Click(save);
+  WaitForEventAsync("submitted")` is a real wait the first time and a no-op every time after — every assertion
+  following the second save then races the render. It surfaced as `Selecting_a_note_jumps_to_its_anchor…`
+  finding one card where it expected two, on **WebKit, under full-suite load only**, on a branch that had not
+  touched that path. Use `SaveComposerAsync` (captures the count, clicks, waits for +1) or
+  `WaitForEventCountAsync` directly; `WaitForEventAsync` is safe only for an event that can happen once per
+  page. Four tests had two `submitted` waits and all four were latently racy.
+- **`document.elementFromPoint` is VIEWPORT-relative, and `scrollIntoView` scrolls EVERY scrollable ancestor.**
+  Both halves bite in the same test. A badge below the fold hit-tests as a miss however correct it is, so a
+  probe has to bring it into view first — but doing that *between* two readings of a scrolled block is what
+  hides the defect, because centring a badge that lives inside a `<pre>` scrolls the `<pre>` back to column
+  one. Scroll once, before either reading, and never again (`MarkerAffordanceTests`). Same family as
+  `ClickAsync`'s `scrollIntoViewIfNeeded`.
+- **A `box-shadow` marker has no element to query, so assert WHERE IT IS PAINTED.** An INSET shadow paints on
+  the element's own background layer, underneath every descendant; an OUTER one is clipped to outside the
+  border box. That difference is the whole of #167's second half and it is measurable without pixels: derive
+  the bar's column from the computed shadow plus the box's rect, then check whether any descendant that paints
+  a background or a border overlaps it. A pixel diff would have needed a PNG decoder and would have said less.
 
 ## Conventions & gotchas (hard-won)
 
