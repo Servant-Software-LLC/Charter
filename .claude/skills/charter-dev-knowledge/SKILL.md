@@ -262,13 +262,25 @@ update run `charter skills install --force` too.
   `.charter-zoom*` rule to `assets/charter.css`, you have just broken invariant 1 and
   `DiagramPanZoomArtifactTests` will say so. Chrome absolutely positioned inside a scroll container must be
   pushed back by `scrollLeft`/`scrollTop` or it rides away with the content.
-- **Inside a rendered `:::diagram`, only `pre.mermaid` carries a Charter id.** Mermaid stamps its own ids on
-  the `<svg>` and every `g.node`, so a generic "nearest ancestor with an `id`" walk stops on one of those
-  unless short-circuited — which is how a diagram-node note reached the agent with no `sourceLine` (#48).
-  `closestAnchored` resolves `pre.mermaid` explicitly, **at the anchoring layer**; route any new anchoring
-  path through it rather than re-walking. Mermaid's theme CSS also rides in a `<style>` **inside** the `<svg>`,
-  so a text-derived label reads as a stylesheet unless `style`/`script` are skipped — and note an SVG
+- **A generic "nearest ancestor with an `id`" walk is WRONG, and there is exactly one place that knows why.**
+  Two regions in a rendered plan hold markup Charter did not author — `pre.mermaid` (Mermaid stamps ids on the
+  `<svg>` and every `g.node`) and `div.custom-html-scroll` (an author's verbatim body, ids and all) — and
+  neither kind of id exists in `SourceMap`, so a walk that accepts one hands the agent a note with no
+  `sourceLine` (#48) or, for a duplicated author id, a note pointing at the wrong block (#166).
+  `sdk/charter-annotate.js` states the rule ONCE as a containment predicate (`isAnchorElement` /
+  `insideOpaqueRegion`) used by BOTH the write path (`closestAnchored`) and the read path (`anchorElement`);
+  route any new anchoring path through those rather than re-walking, and never re-add a per-region
+  short-circuit — the one that used to exist for #48 returned `pre.mermaid` unconditionally and thereby made a
+  NESTED diagram silently un-annotatable. Mermaid's theme CSS also rides in a `<style>` **inside** the
+  `<svg>`, so a text-derived label reads as a stylesheet unless `style`/`script` are skipped — and note an SVG
   element's `tagName` keeps its lower-case local name where an HTML element's is upper-cased.
+- **`RenderBody`'s anchor pass iterates TOP-LEVEL nodes only** (`foreach (var node in document)`), so a
+  container nested inside another — a `:::custom-html` or `:::diagram` inside a `::::note` or a list item —
+  renders with **no id**. Anything walking the DOM for an anchor must treat that as "keep climbing", never as
+  "here is the anchor" (which yields `anchorId: null`) and never as "no anchor". Two more consequences worth
+  knowing before you file a bug: `hasDiagram` is computed from the same top-level loop, so a nested
+  `:::diagram` never gets the Mermaid runtime inlined and renders as its own source text; and a nested block
+  has no `SourceMap` entry of its own, so the enclosing block's line is the honest answer for it.
 - **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
   handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener

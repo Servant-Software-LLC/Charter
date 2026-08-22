@@ -68,7 +68,7 @@ Primitives are plain CommonMark. The `:::` directives are the rich, validated bl
 | comparison | `:::comparison` | Options weighed side by side — a pipe table or list body. Annotatable **per row**. |
 | diagram | `:::diagram` | A Mermaid diagram. Body is Mermaid source — raw, **or** wrapped in a fenced ` ```mermaid ` block (both accepted; see below). Rendered theme-aware; annotatable **per node**. |
 | diff | `:::diff` | A unified diff. Body is diff lines — raw, **or** wrapped in a fenced ` ```diff ` block (both accepted; see below). Annotatable **per line** (add / remove / context). |
-| custom HTML | `:::custom-html` | The sanctioned raw-HTML escape hatch — its body is passed through live (every other surface escapes raw HTML). Reach for it last. |
+| custom HTML | `:::custom-html` | The sanctioned raw-HTML escape hatch — its body is passed through live (every other surface escapes raw HTML). Reach for it last. Annotatable **as a whole block only**: an `id` you write inside the body is yours, not an anchor, and a note taken anywhere in it belongs to the block. |
 | **question** | **`:::question`** | The elicitation block — asks the human (or downstream agent) to decide something inside the plan. Validated JSON body; see below. |
 
 There is **no** `:::file-tree` and **no** `:::annotated-code`. They have no renderer — do not author them,
