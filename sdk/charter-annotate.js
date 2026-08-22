@@ -1590,10 +1590,22 @@ window.CharterAnnotate = (function () {
     '.charter-zoom-hint { font-size: 11px; color: var(--charter-muted); }',
 
     '.charter-has-annotations { position: relative; box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
+    // user-select: none is load-bearing, not cosmetic (#164). The badge sits INSIDE the block it counts, so
+    // a reviewer selecting the whole block — the ordinary gesture on a list or a table — used to drag the
+    // digit into the selection and therefore into the note's `quote`. blockTextNodes skips every
+    // [data-charter-ui] subtree, so the stored quote could then never be found again: findQuoteRange returns
+    // -1 and the highlight silently never draws. Unselectable text cannot be captured in the first place.
     '.charter-annotation-badge { position: absolute; top: 2px; right: 2px; z-index: 3; font: inherit;',
     '  font-size: 11px; line-height: 1; min-width: 18px; padding: 3px 6px; border-radius: 999px;',
     '  cursor: pointer; background: var(--charter-accent); color: #fff;',
-    '  border: 1px solid var(--charter-accent); }',
+    '  border: 1px solid var(--charter-accent);',
+    '  -webkit-user-select: none; user-select: none; }',
+    // The sibling badge rail (#164): the positioning context for a badge on a block that cannot legally
+    // contain one. Zero height and no margin, so it collapses through between its neighbours and the plan's
+    // layout is exactly what the renderer emitted; position: relative so the badge inside it is placed
+    // against the reading column's right edge. It is a SIBLING of the block, never an ancestor — see
+    // mountBadgeRail for why that distinction is the whole design.
+    '.charter-badge-rail { position: relative; height: 0; margin: 0; }',
     '.charter-annotate-target { outline: 2px solid var(--charter-accent); outline-offset: 2px; }',
     '.charter-anchor-flash { outline: 2px dashed var(--charter-accent); outline-offset: 3px; }',
     // DASHED flash vs SOLID selection, deliberately: the flash is a transient "here it is" that a timer
@@ -1608,6 +1620,17 @@ window.CharterAnnotate = (function () {
     if (uiName) el.setAttribute(UI_ATTR, uiName);
     if (text !== undefined && text !== null) el.textContent = text;
     return el;
+  }
+
+  // Take a class OFF one of the PLAN's own elements. classList.remove empties the attribute but does not
+  // delete it, so a block the renderer emitted with no class keeps a bare class="" for the rest of the
+  // session — and after dispose(), which is where it stops being cosmetic: the SDK's standing claim is that a
+  // disposed document is indistinguishable from the exported artifact's (invariant 1), and class="" is a
+  // difference. Every marker the SDK paints on plan content comes off through here.
+  function dropClass(el, name) {
+    if (!el || !el.classList) return;
+    el.classList.remove(name);
+    if (!el.className) el.removeAttribute('class');
   }
 
   function button(className, uiName, text) {
@@ -1930,7 +1953,7 @@ window.CharterAnnotate = (function () {
     if (!open) return;
     state.composer = null;
     if (open.root && open.root.parentNode) open.root.parentNode.removeChild(open.root);
-    if (open.outlined && open.outlined.classList) open.outlined.classList.remove('charter-annotate-target');
+    dropClass(open.outlined, 'charter-annotate-target');
     clearOverlay();
     if (reason) emit(reason, { });
   }
@@ -2437,15 +2460,47 @@ window.CharterAnnotate = (function () {
   }
 
   // ---- on-page markers: which blocks already carry a note ------------------------------
-  // Elements that must not host an appended badge (the browser would relocate it, or it would
-  // break the element's content model). The highlight class still carries the signal there.
-  var BADGE_DENIED = ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'UL', 'OL', 'DL', 'HR', 'IMG', 'BR'];
+  //
+  // Elements that must not host an APPENDED badge: makeBadge returns a <button>, and a <button> as a direct
+  // child of these violates the content model, so the browser relocates it out of the block. Two different
+  // outcomes follow, and the split is the point of #164 — the deny-list used to end the story, which left the
+  // blocks that collect the MOST notes (lists and tables) as the only ones showing no count at all.
+  //
+  //   BADGE_RAILED — reachable as an anchor, so the count matters and is drawn on a SIBLING rail instead:
+  //     TABLE  a top-level table is the block anchor; its .table-scroll wrapper is anchor-invisible (#68)
+  //     UL/OL  the list's own id still answers a click on its padding, even now that each <li> anchors (#164)
+  //     HR     a thematic break is a top-level block with a stable id like any other
+  //
+  //   Denied outright, no rail, because none of them can BE an anchor element — anchorElement could never
+  //   return one, so a rail for them would be dead code asserting a case that cannot arise:
+  //     THEAD/TBODY/TFOOT/TR  the renderer stamps ids on top-level blocks and on sub-anchor rows, and
+  //                           SubAnchors yields only list items — no <tr> is ever stamped
+  //     IMG                   a top-level image is inline content, so it renders inside the <p> that anchors
+  //     BR                    likewise inline, and never carries an attribute of its own
+  //
+  // DL is deliberately absent: BlockModel enables no definition-list extension, so Markdig cannot emit one.
+  var BADGE_DENIED = ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'UL', 'OL', 'HR', 'IMG', 'BR'];
+  var BADGE_RAILED = ['TABLE', 'UL', 'OL', 'HR'];
+
+  // What a railed badge's accessible name calls the block it precedes. The rail reads BEFORE its block, so
+  // the name has to point forward — "on this block" would be a lie about which way to look. Each word is
+  // DISTINCT, because two badges on one page announcing identically leave a screen-reader user unable to tell
+  // which block either belongs to — the defect the old shared "N review note(s) on this block" name had for
+  // every badge at once. A numbered list is not a bullet list, so it does not borrow that word.
+  var RAIL_SUBJECT = { TABLE: 'table', UL: 'list', OL: 'numbered list', HR: 'horizontal rule' };
 
   function clearMarkers() {
     var marked = document.querySelectorAll('.charter-has-annotations');
     for (var i = 0; i < marked.length; i++) {
-      marked[i].classList.remove('charter-has-annotations');
+      dropClass(marked[i], 'charter-has-annotations');
       marked[i].removeAttribute('data-charter-annotation-count');
+    }
+    // Rails first: each one OWNS the badge inside it, so removing the rail removes the badge with it and the
+    // sweep below is left with the in-block badges only. Without this a dispose() leaves empty rails behind
+    // and the document stops being indistinguishable from the exported artifact's.
+    var rails = document.querySelectorAll('.charter-badge-rail');
+    for (var r = 0; r < rails.length; r++) {
+      if (rails[r].parentNode) rails[r].parentNode.removeChild(rails[r]);
     }
     var badges = document.querySelectorAll('.charter-annotation-badge');
     for (var j = 0; j < badges.length; j++) {
@@ -2466,26 +2521,123 @@ window.CharterAnnotate = (function () {
       counts[id]++;
     }
 
+    var rails = [];
     for (var k = 0; k < order.length; k++) {
       var anchorId = order[k];
       var el = anchorElement(anchorId);
       if (!el) continue;
       el.classList.add('charter-has-annotations');
       el.setAttribute('data-charter-annotation-count', String(counts[anchorId]));
-      if (BADGE_DENIED.indexOf(el.tagName) < 0) el.appendChild(makeBadge(anchorId, counts[anchorId]));
+      if (BADGE_DENIED.indexOf(el.tagName) < 0) {
+        el.appendChild(makeBadge(anchorId, counts[anchorId], notePhrase(counts[anchorId]) + ' on this block'));
+      } else if (BADGE_RAILED.indexOf(el.tagName) >= 0) {
+        var rail = mountBadgeRail(el, anchorId, counts[anchorId]);
+        if (rail) rails.push(rail);
+      }
     }
 
     // A badge inside a PANNED diagram is a fresh element with no scroll compensation on it yet, so it
     // would render at the content's offset instead of pinned to the block's corner (Charter #51).
     for (var v = 0; v < state.diagrams.length; v++) pinDiagramChrome(state.diagrams[v]);
 
-    emit('markers-rendered', { blocks: order.length });
+    // LAST, and after pinDiagramChrome: a rail badge's offset is MEASURED from two live rects, so anything
+    // that reflows the page between placing it and measuring it puts the badge somewhere it does not belong.
+    for (var w = 0; w < rails.length; w++) positionRailBadge(rails[w]);
+
+    emit('markers-rendered', { blocks: order.length, rails: rails.length });
   }
 
-  function makeBadge(anchorId, count) {
+  // The element the rail is inserted BEFORE, or null when this block must stay unbadged.
+  //
+  // Climb from the anchor while the parent carries no anchor of its own, stopping at the first ancestor that
+  // does; rail only if that climb lands on a direct child of <body>. Two things fall out of one rule:
+  //
+  //   * a top-level <table> climbs through its anchor-invisible .table-scroll wrapper to a body child, so the
+  //     rail lands OUTSIDE the horizontal scroll box — which is what stops the badge riding away with
+  //     scrollLeft, the Charter #51 lesson;
+  //   * a <table> inside :::custom-html climbs .custom-html-scroll and stops on .custom-html, which HAS an
+  //     anchor, so it gets no rail. That block stays deliberately unbadged: closestAnchored accepts any
+  //     author-supplied id, but SourceMap never registers one, so a note on it reaches the agent ORPHANED —
+  //     and advertising a count on a note that cannot round-trip is worse than showing nothing.
+  function railMount(el) {
+    var node = el;
+    while (node && node.parentElement && node.parentElement !== document.body) {
+      var parent = node.parentElement;
+      if (parent.id ||
+          parent.hasAttribute('data-charter-anchor') ||
+          parent.hasAttribute('data-anchor')) {
+        return null;
+      }
+      node = parent;
+    }
+    return (node && node.parentElement === document.body) ? node : null;
+  }
+
+  // Insert the rail as the mount's PREVIOUS SIBLING and hang the badge in it.
+  //
+  // A sibling, never a wrapper. UNANCHORABLE includes [data-charter-ui] and closestAnchored tests
+  // el.closest(UNANCHORABLE) BEFORE it walks for an id — so a chrome-marked ANCESTOR would make every
+  // Alt+click inside the block resolve to null, silently killing annotation on exactly the blocks this fix
+  // exists to serve. Reparenting the block would also destroy .table-scroll's scrollLeft and any focus inside
+  // it, and render() runs on every SSE frame, so a teammate's note arriving by pull would blow away a
+  // scrolled, focused table. The rail carries no id, no data-anchor and no data-charter-anchor, and is never
+  // an ancestor of plan content.
+  function mountBadgeRail(el, anchorId, count) {
+    var mount = railMount(el);
+    if (!mount || !mount.parentNode) return null;
+    var badge = makeBadge(anchorId, count, railLabel(el.tagName, count));
+    var rail = make('div', 'charter-badge-rail', 'badge-rail');
+    rail.appendChild(badge);
+    mount.parentNode.insertBefore(rail, mount);
+    return { rail: rail, mount: mount, badge: badge };
+  }
+
+  // Place the badge against the top-right corner of the block that FOLLOWS the rail. The rail has zero
+  // height, so the vertical offset has to be measured rather than inherited: `top` is computed and `bottom`
+  // is pinned to auto, because leaving the inherited `top: 2px` standing alongside any `bottom` squashes the
+  // button to a sliver.
+  function positionRailBadge(placed) {
+    var mountRect = placed.mount.getBoundingClientRect();
+    var railRect = placed.rail.getBoundingClientRect();
+    var badgeHeight = placed.badge.getBoundingClientRect().height;
+    // A thematic break has effectively no height, so there is no corner to sit in — centre the badge on the
+    // rule instead. Anything shorter than the badge itself gets the same treatment for the same reason.
+    var within = mountRect.height < badgeHeight ? (mountRect.height - badgeHeight) / 2 : 2;
+    placed.badge.style.top = ((mountRect.top - railRect.top) + within) + 'px';
+    placed.badge.style.bottom = 'auto';
+    nudgePastInnerBadges(placed);
+  }
+
+  // A note on the whole list and a note on its first bullet both want that same top-right corner, now that
+  // each <li> anchors in its own right (#164 milestone 1). Left alone the item's in-block badge lands ON TOP
+  // of the rail's and the rail badge cannot be clicked at all — the affordance is drawn and still unusable,
+  // which is the failure this whole fix exists to end. Shift the container's badge left past whatever it
+  // covers, so the pair reads [list][item] outward from the block.
+  function nudgePastInnerBadges(placed) {
+    var mine = placed.badge.getBoundingClientRect();
+    var inner = placed.mount.querySelectorAll('.charter-annotation-badge');
+    var shift = 0;
+    for (var i = 0; i < inner.length; i++) {
+      var other = inner[i].getBoundingClientRect();
+      if (other.right <= mine.left || other.left >= mine.right) continue;
+      if (other.bottom <= mine.top || other.top >= mine.bottom) continue;
+      shift = Math.max(shift, (mine.right - other.left) + 4);
+    }
+    if (shift > 0) placed.badge.style.right = (2 + shift) + 'px';
+  }
+
+  function notePhrase(count) {
+    return count + ' review note' + (count === 1 ? '' : 's');
+  }
+
+  function railLabel(tagName, count) {
+    return notePhrase(count) + ' on the following ' + (RAIL_SUBJECT[tagName] || 'block');
+  }
+
+  function makeBadge(anchorId, count, label) {
     var badge = button('charter-annotation-badge', 'badge', String(count));
     badge.setAttribute('data-anchor-id', anchorId);
-    badge.setAttribute('aria-label', count + ' review note(s) on this block');
+    badge.setAttribute('aria-label', label);
     badge.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -2495,16 +2647,26 @@ window.CharterAnnotate = (function () {
     return badge;
   }
 
+  // Reveal EVERY note on the badged block, not just the first (#164). A badge reading 3 that selected note 1
+  // of 3 and said nothing about the other two promised a group and delivered a single card — and on a list or
+  // a table, where one anchor routinely collects several notes, that is the normal case rather than the edge.
+  // orderedEntries sorts by anchor element and falls back to arrival order within one element, so a block's
+  // notes are CONTIGUOUS in the panel: revealing the last and then the first brings the whole run into view
+  // where it fits, and the top of it where it does not.
   function focusPanelEntry(anchorId) {
     if (!state.ui) return;
     var quoted = String(anchorId).replace(/["\\]/g, '\\$&');
-    var item = null;
-    try { item = state.ui.list.querySelector('[data-anchor-id="' + quoted + '"]'); } catch (e) { item = null; }
-    if (!item) return;
-    if (item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
-    // Select, but do NOT jump: the reviewer clicked the badge, so they are already looking at the
-    // anchor. Scrolling the content back to it would be the pane arguing with the gesture (#137).
-    var entry = entryById(item.getAttribute('data-annotation-id'));
+    var items = [];
+    try { items = state.ui.list.querySelectorAll('[data-anchor-id="' + quoted + '"]'); } catch (e) { items = []; }
+    if (!items.length) return;
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (last.scrollIntoView) last.scrollIntoView({ block: 'nearest' });
+    if (first.scrollIntoView) first.scrollIntoView({ block: 'nearest' });
+    // Select the first, but do NOT jump: the reviewer clicked the badge, so they are already looking at the
+    // anchor. Scrolling the content back to it would be the pane arguing with the gesture (#137). Selection
+    // lands on the first so an arrow-key walk continues through the rest of the group.
+    var entry = entryById(first.getAttribute('data-annotation-id'));
     if (entry) selectNote(entry.record, { jump: false });
   }
 
@@ -2586,9 +2748,7 @@ window.CharterAnnotate = (function () {
   // The anchor mark lives on the plan's own element, so it is a CLASS toggle and nothing else — the
   // same discipline flash() and the overlay follow (§ never mutate the plan's DOM).
   function markSelectedAnchor(el) {
-    if (state.selectedAnchorEl && state.selectedAnchorEl.classList) {
-      state.selectedAnchorEl.classList.remove('charter-anchor-selected');
-    }
+    dropClass(state.selectedAnchorEl, 'charter-anchor-selected');
     state.selectedAnchorEl = el || null;
     if (el && el.classList) el.classList.add('charter-anchor-selected');
   }
@@ -2638,11 +2798,11 @@ window.CharterAnnotate = (function () {
 
   function flash(el) {
     if (state.flashTimer) window.clearTimeout(state.flashTimer);
-    if (state.flashed && state.flashed.classList) state.flashed.classList.remove('charter-anchor-flash');
+    dropClass(state.flashed, 'charter-anchor-flash');
     el.classList.add('charter-anchor-flash');
     state.flashed = el;
     state.flashTimer = window.setTimeout(function () {
-      if (state.flashed && state.flashed.classList) state.flashed.classList.remove('charter-anchor-flash');
+      dropClass(state.flashed, 'charter-anchor-flash');
       state.flashed = null;
       state.flashTimer = 0;
     }, 1400);

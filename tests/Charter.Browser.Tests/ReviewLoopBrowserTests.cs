@@ -1880,8 +1880,13 @@ public sealed partial class ReviewLoopBrowserTests
             Assert.Equal(0, await page.Locator(Ui("overlay-rect")).CountAsync());
 
             // ---- the self-guard: SDK chrome is never annotatable, and never carries an id ----
-            // The count badge lives INSIDE the annotated block, so without the [data-charter-ui] guard at the
-            // anchoring layer an Alt+click on it would resolve the block as an anchor and post a bogus note.
+            // On most blocks the count badge lives INSIDE the block it counts, so without the
+            // [data-charter-ui] guard at the anchoring layer an Alt+click on it would resolve the block as an
+            // anchor and post a bogus note. On a list, table or horizontal rule the badge instead rides a
+            // sibling .charter-badge-rail placed just BEFORE the block (#164) — chrome may be a block's
+            // sibling but never its ancestor, because closestAnchored short-circuits on UNANCHORABLE before
+            // the id walk, so a chrome-marked ancestor would make every Alt+click inside the block resolve to
+            // null. Either way the guard below holds for both shapes: no SDK-owned element carries an id.
             Assert.True(
                 await page.EvaluateAsync<bool>(
                     "() => Array.prototype.every.call(document.querySelectorAll('[data-charter-ui]')," +
@@ -4415,9 +4420,19 @@ public sealed partial class ReviewLoopBrowserTests
     /// The suite's single browser-context factory. Everything that navigates goes through here, which is what
     /// makes <see cref="NavigationTimeoutMs"/> a property of the suite rather than of one call site.
     /// </summary>
-    private static async Task<IBrowserContext> NewContextAsync(IBrowser browser)
+    private static Task<IBrowserContext> NewContextAsync(IBrowser browser)
+        => NewContextAsync(browser, null);
+
+    /// <param name="options">
+    /// Extra context options — <c>ForcedColors</c> for the #164 high-contrast gate, for instance. Routed
+    /// through THIS factory rather than <c>browser.NewContextAsync</c> directly so an emulated context still
+    /// inherits <see cref="NavigationTimeoutMs"/>; a test that built its own context would reintroduce the #66
+    /// flake on a contended runner for a reason having nothing to do with what it asserts.
+    /// </param>
+    private static async Task<IBrowserContext> NewContextAsync(
+        IBrowser browser, BrowserNewContextOptions? options)
     {
-        var context = await browser.NewContextAsync();
+        var context = await browser.NewContextAsync(options);
         context.SetDefaultNavigationTimeout(NavigationTimeoutMs);
         return context;
     }
@@ -4461,9 +4476,15 @@ public sealed partial class ReviewLoopBrowserTests
     /// <c>window.prompt</c> spy (issue #41's headline assertion is that it is never called), and the browser's
     /// own error channels collected.
     /// </summary>
-    private static async Task<Instrumented> NewInstrumentedPageAsync(Launched launched)
+    /// <param name="contextOptions">
+    /// Optional emulation for this page's context — <c>ForcedColors</c> for the #164 high-contrast gate. It
+    /// still goes through <see cref="NewContextAsync(IBrowser, BrowserNewContextOptions?)"/>, so an emulated
+    /// page keeps the suite's navigation timeout and its postMessage tap.
+    /// </param>
+    private static async Task<Instrumented> NewInstrumentedPageAsync(
+        Launched launched, BrowserNewContextOptions? contextOptions = null)
     {
-        var context = await NewContextAsync(launched.Browser);
+        var context = await NewContextAsync(launched.Browser, contextOptions);
         var page = await context.NewPageAsync();
 
         var console = new List<string>();
