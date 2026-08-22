@@ -178,9 +178,21 @@ internal sealed class AnchorAssignment
     // make two discriminated ids collide.
     private const string DocumentStart = "";
 
+    // Two namespaces, deliberately: a BLOCK slot and a SUB-ANCHOR slot can share a markdown line. A plain
+    // top-level list starts on exactly the line its first item starts on (Markdig gives ListBlock and its
+    // first ListItemBlock the same Line), so one line-keyed dictionary would let the item's id overwrite the
+    // list's — handing the <ul> and its first <li> the same anchor, which is the misattribution the whole
+    // scheme exists to prevent. A :::comparison's rows and a :::diff's lines never collide this way, so this
+    // split is invisible to them.
     private readonly IReadOnlyDictionary<int, string> _idByLine;
+    private readonly IReadOnlyDictionary<int, string> _subIdByLine;
 
-    private AnchorAssignment(IReadOnlyDictionary<int, string> idByLine) => _idByLine = idByLine;
+    private AnchorAssignment(
+        IReadOnlyDictionary<int, string> idByLine, IReadOnlyDictionary<int, string> subIdByLine)
+    {
+        _idByLine = idByLine;
+        _subIdByLine = subIdByLine;
+    }
 
     /// <summary>
     /// Walk <paramref name="document"/> once and assign every anchor slot its unique, duplicate-discriminated
@@ -196,7 +208,7 @@ internal sealed class AnchorAssignment
         // Pass 1 — which base ids are duplicated at all. Only those get a discriminator; unique content keeps
         // its pure hash, so a duplicate-free document is unaffected by any of this.
         var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var (_, baseId) in slots)
+        foreach (var (_, _, baseId) in slots)
         {
             occurrences[baseId] = occurrences.TryGetValue(baseId, out var seen) ? seen + 1 : 1;
         }
@@ -208,19 +220,20 @@ internal sealed class AnchorAssignment
         // collide with another slot's pure id either.
         var runLengths = RunLengths(slots);
         var idByLine = new Dictionary<int, string>();
+        var subIdByLine = new Dictionary<int, string>();
         var previousId = DocumentStart;
         for (var i = 0; i < slots.Count; i++)
         {
-            var (line, baseId) = slots[i];
+            var (line, isSubAnchor, baseId) = slots[i];
             var id = occurrences[baseId] == 1
                 ? baseId
                 : baseId + "-" + Discriminator(previousId, runLengths[i]);
 
-            idByLine[line] = id;
+            (isSubAnchor ? subIdByLine : idByLine)[line] = id;
             previousId = id;
         }
 
-        return new AnchorAssignment(idByLine);
+        return new AnchorAssignment(idByLine, subIdByLine);
     }
 
     /// <summary>
@@ -230,7 +243,7 @@ internal sealed class AnchorAssignment
     /// "the note orphans" (detectable, and reported as such). Adjacent identical siblings are otherwise
     /// indistinguishable by content or context at any depth, so this is the best available answer there.
     /// </summary>
-    private static int[] RunLengths(IReadOnlyList<(int Line, string BaseId)> slots)
+    private static int[] RunLengths(IReadOnlyList<(int Line, bool IsSubAnchor, string BaseId)> slots)
     {
         var lengths = new int[slots.Count];
         var start = 0;
@@ -270,29 +283,37 @@ internal sealed class AnchorAssignment
         return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
     }
 
-    /// <summary>The assigned (possibly duplicate-discriminated) id of the anchor slot that starts at
+    /// <summary>The assigned (possibly duplicate-discriminated) id of the BLOCK slot that starts at
     /// <paramref name="line"/> (its 1-based markdown line).</summary>
     public string IdForLine(int line) => _idByLine[line];
 
+    /// <summary>The assigned (possibly duplicate-discriminated) id of the SUB-ANCHOR slot at
+    /// <paramref name="line"/> (its 1-based markdown line) — a <c>:::comparison</c> row, a <c>:::diff</c>
+    /// line, or a plain top-level list's item. Held apart from <see cref="IdForLine"/> because a plain list
+    /// and its first item share a line.</summary>
+    public string SubIdForLine(int line) => _subIdByLine[line];
+
     /// <summary>
-    /// Every anchor slot in canonical document order — the exact union both consumers already produce: for
+    /// Every anchor slot in canonical document order — the exact union all consumers already produce: for
     /// each top-level node, its block slot (start line + content-derived base id) followed by its sub-anchor
-    /// slots (a <c>:::comparison</c>'s rows, a <c>:::diff</c>'s lines) in <see cref="CharterMarkdown.SubAnchors"/>
-    /// order. Walked once here so duplicate detection — and therefore discrimination — is single-sourced, and
-    /// so the "preceding slot" a duplicate's discriminator chains off is one agreed sequence rather than two.
-    /// Each slot has a distinct 1-based line (a block starts before its sub-elements, sibling sub-elements sit
-    /// on their own lines), so keying the assignment by line identifies each slot uniquely.
+    /// slots (a plain list's items, a <c>:::comparison</c>'s rows, a <c>:::diff</c>'s lines) in
+    /// <see cref="CharterMarkdown.SubAnchors"/> order. Walked once here so duplicate detection — and therefore
+    /// discrimination — is single-sourced, and so the "preceding slot" a duplicate's discriminator chains off
+    /// is one agreed sequence rather than three. A slot is identified by its 1-based line AND whether it is a
+    /// sub-anchor: those two together are unique, where the line alone is not (a plain list starts on its
+    /// first item's line).
     /// </summary>
-    private static IEnumerable<(int Line, string BaseId)> Slots(MarkdownDocument document, string markdown)
+    private static IEnumerable<(int Line, bool IsSubAnchor, string BaseId)> Slots(
+        MarkdownDocument document, string markdown)
     {
         foreach (var node in document)
         {
             var (_, rawContent) = CharterMarkdown.Describe(node, markdown);
-            yield return (CharterMarkdown.StartLine(node), Block.StableId(rawContent));
+            yield return (CharterMarkdown.StartLine(node), false, Block.StableId(rawContent));
 
             foreach (var (_, subAnchor, line) in CharterMarkdown.SubAnchors(node, markdown))
             {
-                yield return (line, subAnchor);
+                yield return (line, true, subAnchor);
             }
         }
     }
@@ -450,17 +471,36 @@ internal static class CharterMarkdown
         => string.Equals(container.Info?.Trim(), "note", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The reusable sub-anchor descent — the foundation of the sub-block anchor model. For a container that
-    /// is annotatable per sub-element — a <c>:::comparison</c> (per option row) or a <c>:::diff</c> (per diff
-    /// line) — yield each sub-element paired with its content-derived sub-anchor and its 1-based markdown
-    /// line. A sub-anchor is <see cref="Block.StableId(string)"/> of that sub-element's OWN raw source text,
-    /// so an annotation on one survives edits to its siblings (content-derived, never positional —
-    /// invariant 2). Any other node yields nothing, so both the renderer (which stamps each comparison row's
-    /// <c>data-anchor</c>) and the <see cref="SourceMap"/> (which registers every sub-anchor → its line) can
-    /// call this uniformly over every top-level node.
+    /// The reusable sub-anchor descent — the foundation of the sub-block anchor model. For a node that is
+    /// annotatable per sub-element — a plain top-level list (per item), a <c>:::comparison</c> (per option
+    /// row) or a <c>:::diff</c> (per diff line) — yield each sub-element paired with its content-derived
+    /// sub-anchor and its 1-based markdown line. A sub-anchor is <see cref="Block.StableId(string)"/> of that
+    /// sub-element's OWN raw source text, so an annotation on one survives edits to its siblings
+    /// (content-derived, never positional — invariant 2). Any other node yields nothing, so the renderer
+    /// (which stamps each row's <c>data-anchor</c>), <see cref="AnchorAssignment"/> (which discriminates
+    /// duplicates) and the <see cref="SourceMap"/> (which registers every sub-anchor → its line) can call
+    /// this uniformly over every top-level node.
+    /// <para>
+    /// <b>Only TOP-LEVEL lists.</b> Every caller walks <see cref="MarkdownDocument"/>'s own children, so a
+    /// <see cref="ListBlock"/> reaching the branch below is by construction a top-level document node. A list
+    /// nested inside an <c>&lt;li&gt;</c> is a child of a <see cref="ListItemBlock"/> and a list inside a
+    /// <c>:::note</c>/<c>:::warn</c> is a child of that container — neither is ever passed here, and neither
+    /// gains sub-anchors. That is the boundary the reviewer sees: an item of the list the plan is written in
+    /// is addressable; an item of a list buried inside a callout is not, and its note anchors to the callout.
+    /// </para>
     /// </summary>
     internal static IEnumerable<(MarkdigBlock Row, string SubAnchor, int Line)> SubAnchors(MarkdigBlock node, string markdown)
     {
+        if (node is ListBlock topLevelList)
+        {
+            foreach (var row in ListItemAnchors(topLevelList, markdown))
+            {
+                yield return row;
+            }
+
+            yield break;
+        }
+
         if (node is not CustomContainer container)
         {
             yield break;
@@ -469,15 +509,17 @@ internal static class CharterMarkdown
         var kind = ClassifyContainer(container);
         if (kind == BlockKind.Comparison)
         {
-            foreach (var row in SubAnchorRows(container))
+            foreach (var child in container)
             {
-                var rawLine = SourceLine(markdown, row.Line);
-                if (rawLine.Length == 0)
+                if (child is not ListBlock list)
                 {
                     continue;
                 }
 
-                yield return (row, Block.StableId(rawLine), StartLine(row));
+                foreach (var row in ListItemAnchors(list, markdown))
+                {
+                    yield return row;
+                }
             }
         }
         else if (kind == BlockKind.Diff)
@@ -494,21 +536,30 @@ internal static class CharterMarkdown
     }
 
     /// <summary>
-    /// The annotatable rows of a <c>:::comparison</c> — its option list items. (A <c>:::diff</c>'s
-    /// sub-elements are per-line source lines, not child blocks, so they are handled by
-    /// <see cref="DiffLines"/> rather than this block-level descent.)
+    /// The per-item sub-anchors of one list — a plain top-level list's bullets, or a <c>:::comparison</c>'s
+    /// option rows. One descent for both, so a bullet and a comparison row are anchored by exactly the same
+    /// rule: the item's own FIRST source line, trimmed, hashed. An item spanning several lines is therefore
+    /// identified by its first line alone; two items differing only below it alias, and the shared
+    /// <see cref="AnchorAssignment"/> discriminates them — orphaning on an edit rather than misattributing.
+    /// <para>
+    /// DIRECT items only. A list nested inside an item is not descended, so an inner bullet's note anchors to
+    /// the outer item that contains it — the same containment rule the block level follows.
+    /// </para>
     /// </summary>
-    private static IEnumerable<MarkdigBlock> SubAnchorRows(CustomContainer container)
+    private static IEnumerable<(MarkdigBlock Row, string SubAnchor, int Line)> ListItemAnchors(
+        ListBlock list, string markdown)
     {
-        foreach (var child in container)
+        string[]? lines = null;
+        foreach (var item in list)
         {
-            if (child is ListBlock list)
+            lines ??= SplitLines(markdown);
+            var rawLine = SourceLine(lines, item.Line);
+            if (rawLine.Length == 0)
             {
-                foreach (var item in list)
-                {
-                    yield return item;
-                }
+                continue;
             }
+
+            yield return (item, Block.StableId(rawLine), StartLine(item));
         }
     }
 
@@ -602,22 +653,22 @@ internal static class CharterMarkdown
          : "diff-context";
 
     /// <summary>
+    /// The markdown split into lines with CRLF/CR unified, so a row's sub-anchor is unaffected by the
+    /// checkout's line endings. Split ONCE per list rather than once per item: this is O(document) each time,
+    /// and a plan is mostly lists.
+    /// </summary>
+    private static string[] SplitLines(string markdown)
+        => markdown.Replace("\r\n", "\n", StringComparison.Ordinal)
+                   .Replace('\r', '\n')
+                   .Split('\n');
+
+    /// <summary>
     /// The trimmed source text of the given 0-based markdown line, or empty when out of range. A row's
     /// sub-anchor and the line the source map hands back both derive from THIS line, so the anchor and the
     /// resolved line always describe the same text.
     /// </summary>
-    private static string SourceLine(string markdown, int zeroBasedLine)
-    {
-        if (zeroBasedLine < 0 || markdown.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        var lines = markdown.Replace("\r\n", "\n", StringComparison.Ordinal)
-                            .Replace('\r', '\n')
-                            .Split('\n');
-        return zeroBasedLine < lines.Length ? lines[zeroBasedLine].Trim() : string.Empty;
-    }
+    private static string SourceLine(string[] lines, int zeroBasedLine)
+        => zeroBasedLine >= 0 && zeroBasedLine < lines.Length ? lines[zeroBasedLine].Trim() : string.Empty;
 
     /// <summary>
     /// The exact source text a block spans. Content-derived ids need only that this is deterministic for

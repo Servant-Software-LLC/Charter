@@ -113,16 +113,24 @@ public static class CharterRenderer
             else if (kind == BlockKind.Comparison)
             {
                 attributes.AddClass("comparison");
+            }
 
-                // Sub-block anchor model: a :::comparison stamps each row with the shared assignment's id for
-                // that row's line, so the default list renderer emits <li data-anchor="…">. Distinct rows get
-                // distinct sub-anchors, each derived from that row's own content — so one row's annotation
-                // survives edits to the others (invariant 2) — and two identical rows are discriminated (-2)
-                // by the shared pass. A :::diff carries its per-line sub-anchors through its own custom
-                // renderer (CharterContainerRenderer) rather than this list-item stamping.
+            // Sub-block anchor model: a plain top-level list and a :::comparison both stamp each of their
+            // items with the shared assignment's SUB-anchor id for that item's line, so the default list
+            // renderer emits <li data-anchor="…">. Distinct items get distinct sub-anchors, each derived from
+            // that item's own content — so one item's annotation survives edits to the others (invariant 2) —
+            // and two identical items are discriminated (-2) by the shared pass. Sub-anchor ids are read from
+            // SubIdForLine, not IdForLine: a plain list starts on its first item's line, so the two slots
+            // share a key and only the namespace tells them apart. A :::diff carries its per-line sub-anchors
+            // through its own custom renderer (CharterContainerRenderer) rather than this item stamping.
+            //
+            // The <ul>/<ol> keeps its OWN block anchor: a click on the list's padding rather than on a bullet
+            // still resolves to it, and a note the reviewer means about the list as a whole still has a home.
+            if (kind is BlockKind.Comparison or BlockKind.List)
+            {
                 foreach (var (row, _, subLine) in CharterMarkdown.SubAnchors(node, markdown))
                 {
-                    row.GetAttributes().AddProperty("data-anchor", assignment.IdForLine(subLine));
+                    row.GetAttributes().AddProperty("data-anchor", assignment.SubIdForLine(subLine));
                 }
             }
         }
@@ -441,7 +449,7 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         // lines distinguishable in the markup.
         foreach (var (raw, _, line, cssClass) in CharterMarkdown.DiffLines(obj, _markdown))
         {
-            var anchor = _assignment.IdForLine(line);
+            var anchor = _assignment.SubIdForLine(line);
             if (renderer.EnableHtmlForBlock)
             {
                 renderer.Write("<div class=\"diff-line ");

@@ -768,26 +768,56 @@ public sealed partial class ReviewLoopBrowserTests
         "  toggle: box(document.querySelector('[data-charter-ui=\"panel-toggle\"]')) });";
 
     /// <summary>
-    /// The occlusion pass. Each block is scrolled into view and probed at its LEADING edge — the side a
-    /// reviewer reads from and the side the right-hand panel cannot legitimately cover — and each visible
-    /// panel control is probed at its centre. The probe point is clamped into the viewport so a block taller
-    /// than the window is still tested rather than skipped.
+    /// The occlusion pass. Each block is scrolled into view and probed at BOTH its horizontal edges, and each
+    /// visible panel control is probed at its centre. Probe points are clamped into the viewport so a block
+    /// taller than the window is still tested rather than skipped.
+    ///
+    /// <para><b>The right-edge sample is Charter #164's doing.</b> This pass used to probe only
+    /// <c>(left + 4, mid-height)</c> — the LEADING edge — which cannot see anything sitting in a block's
+    /// top-RIGHT corner. That was defensible while nothing was ever painted there; the annotation badge is, so
+    /// the pass defended nothing on the one side the SDK puts chrome. The right sample is CLAMPED clear of the
+    /// review panel, which legitimately overlays the content column at these widths (the panel is dismissable
+    /// and reserves its gutter only above 1200px — asserting against that overlay would be turning a design
+    /// decision into a regression, which this gate is forbidden from doing).</para>
+    ///
+    /// <para>A block's OWN annotation badge is not an occluder of it. A marker is meant to sit on the thing it
+    /// marks — on a zero-height <c>&lt;hr&gt;</c> it has nowhere else to be — so a hit that resolves to a badge
+    /// carrying this block's anchor id is accepted. Any OTHER badge covering it is still a failure, which is
+    /// the case that actually matters: chrome belonging to one block painted over another.</para>
     /// </summary>
     private const string OcclusionBody =
         "const bad = [];" +
+        "const ownBadge = (el, hit) => {" +
+        "  if (!hit || typeof hit.closest !== 'function') return false;" +
+        "  const badge = hit.closest('[data-charter-ui=\"badge\"]');" +
+        "  if (!badge) return false;" +
+        "  const id = badge.getAttribute('data-anchor-id');" +
+        "  if (!id) return false;" +
+        "  if (el.id === id || el.getAttribute('data-anchor') === id) return true;" +
+        "  const kids = el.querySelectorAll('[id],[data-anchor]');" +
+        "  for (let i = 0; i < kids.length; i++) {" +
+        "    if (kids[i].id === id || kids[i].getAttribute('data-anchor') === id) return true;" +
+        "  }" +
+        "  return false;" +
+        "};" +
         "const probe = (el, x, y, what) => {" +
         "  const hit = document.elementFromPoint(x, y);" +
-        "  if (hit && (hit === el || el.contains(hit))) return;" +
+        "  if (hit && (hit === el || el.contains(hit) || ownBadge(el, hit))) return;" +
         "  bad.push(what + ' at (' + Math.round(x) + ',' + Math.round(y) + ') is covered by ' +" +
         "    (hit ? path(hit) : '(nothing hittable)'));" +
         "};" +
+        "const openPanel = document.querySelector('[data-charter-ui=\"panel\"]');" +
+        "const panelRect = openPanel ? openPanel.getBoundingClientRect() : null;" +
+        "const panelLeft = (panelRect && panelRect.width > 0) ? panelRect.left : Infinity;" +
         "topLevel().forEach(el => {" +
         "  el.scrollIntoView({ block: 'center' });" +
         "  const r = el.getBoundingClientRect();" +
         "  if (r.width <= 0 || r.height <= 0) return;" +
         "  const x = Math.min(Math.max(r.left + 4, 1), window.innerWidth - 2);" +
         "  const y = Math.min(Math.max(r.top + (r.height / 2), 1), window.innerHeight - 2);" +
-        "  probe(el, x, y, path(el));" +
+        "  probe(el, x, y, path(el) + ' (leading edge)');" +
+        "  const rx = Math.min(r.right - 4, panelLeft - 4, window.innerWidth - 2);" +
+        "  if (rx > x + 1) probe(el, rx, y, path(el) + ' (trailing edge)');" +
         "});" +
         "const panel = document.querySelector('[data-charter-ui=\"panel\"]');" +
         "if (panel) {" +

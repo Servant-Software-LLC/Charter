@@ -59,12 +59,14 @@ public sealed class SourceMap
             var startLine = CharterMarkdown.StartLine(node);
             Register(assignment.IdForLine(startLine), startLine);
 
-            // Descend into per-sub-element containers (:::comparison rows, :::diff lines) and register each
-            // sub-anchor at its own line, so LineForAnchor(subId) resolves to that sub-element — not merely
-            // the block's start line.
+            // Descend into per-sub-element nodes (a plain top-level list's items, :::comparison rows, :::diff
+            // lines) and register each sub-anchor at its own line, so LineForAnchor(subId) resolves to that
+            // sub-element — not merely the block's start line. Read from SubIdForLine, the sub-anchor
+            // namespace: a plain list starts on its first item's line, so the block slot and that item's slot
+            // share a line and only the namespace distinguishes them.
             foreach (var (_, _, line) in CharterMarkdown.SubAnchors(node, markdown))
             {
-                Register(assignment.IdForLine(line), line);
+                Register(assignment.SubIdForLine(line), line);
             }
         }
 

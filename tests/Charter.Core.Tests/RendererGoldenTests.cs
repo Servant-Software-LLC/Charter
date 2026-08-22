@@ -46,8 +46,14 @@ public class RendererGoldenTests
 
         Assert.Equal(BlockKind.List, block.Kind);
         Assert.Contains($"<ul id=\"{block.Id}\">", html);
-        Assert.Contains("<li>first item</li>", html);
-        Assert.Contains("<li>second item</li>", html);
+
+        // Charter #164: each row also carries its OWN content-derived sub-anchor, the :::comparison shape.
+        // The row markup is asserted through that anchor rather than as a bare <li>…</li> literal, because a
+        // pinned literal here would have to be rewritten by whoever adds the next per-row attribute — and a
+        // literal that must be rewritten to stay green is a literal that stops asserting anything.
+        // ListItemSubAnchorTests owns the sub-anchor contract itself.
+        Assert.Contains($"<li data-anchor=\"{Block.StableId("- first item")}\">first item</li>", html);
+        Assert.Contains($"<li data-anchor=\"{Block.StableId("- second item")}\">second item</li>", html);
     }
 
     [Fact]

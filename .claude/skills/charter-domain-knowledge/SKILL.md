@@ -103,6 +103,25 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   would silently re-target every note on the block; any future one follows the same rule. The SDK's own chrome
   obeys the mirror rule: marked with the `data-charter-ui` **attribute**, **no ids at all**, so even a guard bug
   degrades to "no anchor", never "the wrong anchor".
+- **SDK chrome may be a block's SIBLING; it must never be a block's ANCESTOR** (#164) — the mirror of the rule
+  above, for chrome that sits *outside* a block rather than inside it. `closestAnchored` tests
+  `el.closest(UNANCHORABLE)` — which includes `[data-charter-ui]` — **before** it walks for an id, so a
+  chrome-marked ancestor makes every Alt+click anywhere inside that block resolve to `null`: the block silently
+  stops being annotatable at all. That is why the count badge on a `<table>`/`<ul>`/`<ol>`/`<hr>` (where a
+  `<button>` child is invalid content) rides a zero-height `.charter-badge-rail` inserted as the block's
+  **previous sibling**, and why wrapping the block in a positioned frame — at render time or at serve time — is
+  rejected. Reparenting is doubly wrong at serve time: it discards `.table-scroll`'s `scrollLeft` and any focus
+  inside it, and `render()` runs on every SSE frame, so a teammate's pulled note would blow away a scrolled,
+  focused table. A rail is placed only where the climb from the anchor reaches a direct child of `<body>`
+  without passing an ancestor that carries an anchor of its own.
+- **The reachable-anchor set is exactly: top-level document nodes, plain top-level list items,
+  `:::comparison` rows, and `:::diff` lines — nothing else.** `CharterMarkdown.SubAnchors` is the single
+  descent that defines the sub-block half, and `AnchorAssignment` walks the same union, so an id the renderer
+  emits is always one `SourceMap` registers. A nested list inside an `<li>`, a list inside `:::note`/`:::warn`,
+  a `<tr>`, and an author's own id inside `:::custom-html` are **not** anchors: the first three are never
+  stamped, and the last is accepted by `closestAnchored` (which takes any id) but never registered by
+  `SourceMap`, so a note on it reaches the agent orphaned — which is why the SDK deliberately shows no count
+  badge there rather than advertising a note that cannot round-trip.
 - **`:::diagram` is deliberately OUTSIDE all of it** (`pre:not(.mermaid)` in `assets/charter.css`): its oversize
   failure is shrink-below-legibility, not clipping, and its answer is #51's **SDK-only** pan/zoom. A
   shared-stylesheet rule reaching `pre.mermaid` would put part of that affordance into the exported artifact and
