@@ -192,6 +192,22 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   - A `:::custom-html` block therefore badges like any other block, on its own `div.custom-html`. The old
     claim that the SDK "deliberately shows no count badge there" was already false before this landed (a
     hatch whose markup carries no ids has always anchored and badged normally) and is now false in every case.
+- **"Top-level document node" means a node the AUTHOR wrote, not every child Markdig hangs off the document.**
+  Markdig also appends SYNTHETIC children that render nothing and hold no position of their own — the
+  `YamlFrontMatterBlock` and, since #171, the `LinkReferenceDefinitionGroup` that collects a plan's
+  `[foo]: http://…` declarations. Both report `Line` 0 and a `Span` starting at offset 0 wherever the real
+  text sits, so left in they claim the anchor slot at line 1 and — `AnchorAssignment` keying block slots by
+  line, last writer wins — silently overwrite the id of the block that genuinely starts there, normally the
+  plan title. `CharterMarkdown.ParseDocument` **strips both**, which is what makes the bullet above true for
+  every seam at once (render, `AnchorAssignment`/`SourceMap`, `BlockDocument` and thus the handoff/export,
+  `PlanWalk` and thus the headless record). Stripping costs nothing: Markdig resolves `[foo]` against the
+  document's link-reference dictionary during `Parse`, so the links are already materialized, and removing a
+  node never shifts another node's absolute span or line. **The invariant to keep is that no two top-level
+  blocks share a start line** (`LinkReferenceDefinitionTests.ParseDocument_NeverYieldsTwoTopLevelBlocksOnTheSameLine`)
+  — any future Markdig extension that appends a synthetic group (`FootnoteGroup` is the same shape) belongs on
+  the strip list, NOT in a new id namespace. That is the opposite call from the `ListBlock`/first
+  `ListItemBlock` collision, which needed `SubIdForLine`: there two REAL slots share one line, so both must be
+  kept and told apart; here one real slot shares a line with a phantom, so the phantom goes.
 - **`:::diagram` is deliberately OUTSIDE all of it** (`pre:not(.mermaid)` in `assets/charter.css`): its oversize
   failure is shrink-below-legibility, not clipping, and its answer is #51's **SDK-only** pan/zoom. A
   shared-stylesheet rule reaching `pre.mermaid` would put part of that affordance into the exported artifact and
