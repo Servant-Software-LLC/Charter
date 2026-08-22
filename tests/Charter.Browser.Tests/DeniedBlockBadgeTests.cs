@@ -77,6 +77,11 @@ public sealed partial class ReviewLoopBrowserTests
     ///     comparison card. They are the anti-vacuity half — a fix that railed every <c>&lt;ul&gt;</c> and
     ///     <c>&lt;table&gt;</c> in the document would satisfy every positive assertion here and quietly put SDK
     ///     chrome inside two blocks that must stay clean.</item>
+    ///   <item><b>A code block whose first line cannot wrap.</b> A <c>&lt;pre&gt;</c> CAN legally hold a
+    ///     <c>&lt;button&gt;</c>, so it was badged in place — and it is its own horizontal scroll box, so that
+    ///     badge rode away with <c>scrollLeft</c> the moment a reviewer read to the end of a long line (#165).
+    ///     It is railed for the second of the two reasons a block can be, and the sweep here covers it exactly
+    ///     as it covers the four that are railed for the first.</item>
     /// </list>
     /// </summary>
     private static readonly string BadgeGatePlan =
@@ -107,7 +112,11 @@ public sealed partial class ReviewLoopBrowserTests
         "| Aspect | Option A | Option B |\n" +
         "| --- | --- | --- |\n" +
         "| Cost | low | high |\n" +
-        ":::\n";
+        ":::\n\n" +
+        "```text\n" +
+        Unbreakable("code_line") + "\n" +
+        "a short second line\n" +
+        "```\n";
 
     /// <summary>
     /// What the fixture must have RENDERED, measured off the live DOM. Every rule in this file is of the form
@@ -125,14 +134,26 @@ public sealed partial class ReviewLoopBrowserTests
         "BODY > HR",                 // the zero-height case
         "BODY > DIV.note",           // holds the nested list that must gain nothing
         "BODY > DIV.comparison",     // holds the nested table that must gain nothing
+        "BODY > PRE",                // a code block: its own horizontal scroll box (#165)
     };
 
     /// <summary>
-    /// The blocks that cannot host an appended badge AND can be an anchor element, so each must be badged from
-    /// a sibling rail. This is the whole reachable deny-set: <c>THEAD</c>/<c>TBODY</c>/<c>TFOOT</c>/<c>TR</c>
-    /// are never stamped with an anchor (the renderer stamps top-level blocks and list-item sub-anchors only),
-    /// and <c>IMG</c>/<c>BR</c> are inline content that renders inside the paragraph which anchors it — so a
-    /// rail for any of them would assert a case that cannot arise.
+    /// The blocks that must be badged from a sibling rail, for either of the two reasons a badge cannot live
+    /// inside the block it counts.
+    ///
+    /// <para><c>UL</c>/<c>OL</c>/<c>TABLE</c>/<c>HR</c> are railed because the CONTENT MODEL forbids a
+    /// <c>&lt;button&gt;</c> child (#164). That is the whole reachable deny-set:
+    /// <c>THEAD</c>/<c>TBODY</c>/<c>TFOOT</c>/<c>TR</c> are never stamped with an anchor (the renderer stamps
+    /// top-level blocks and list-item sub-anchors only), and <c>IMG</c>/<c>BR</c> are inline content that
+    /// renders inside the paragraph which anchors it — so a rail for any of them would assert a case that
+    /// cannot arise.</para>
+    ///
+    /// <para><c>PRE</c> is railed for the OTHER reason: a non-diagram code block is its own horizontal scroll
+    /// box, so a badge appended inside it translates with <c>scrollLeft</c> and leaves the viewport (#165). It
+    /// belongs in the same sweep because everything the sweep asserts — hit-testable, correctly placed, reads
+    /// the server's number, distinctly named — is true of a railed badge whichever reason put it on a rail.
+    /// <c>pre.mermaid</c> is deliberately not here: a diagram becomes a scroll box only under #51's pan/zoom,
+    /// which already compensates its in-block badge on every scroll.</para>
     ///
     /// <para><c>Subject</c> is what the accessible name has to call the block. It is listed here rather than
     /// read back from the SDK on purpose: a test that asks the code what it calls itself cannot notice the code
@@ -149,6 +170,7 @@ public sealed partial class ReviewLoopBrowserTests
         new("OL", "body > ol", "list"),
         new("TABLE", "body > div.table-scroll > table", "table"),
         new("HR", "body > hr:nth-of-type(1)", "rule"),
+        new("PRE", "body > pre:not(.mermaid)", "code block"),
     };
 
     /// <summary>
@@ -917,8 +939,9 @@ public sealed partial class ReviewLoopBrowserTests
 
             Assert.True(
                 probe.RailPresent,
-                "Charter #164 — " + block + " must be badged from a SIBLING rail, because a <button> is not a " +
-                    "legal child of it: " + probe);
+                "Charter #164/#165 — " + block + " must be badged from a SIBLING rail: either a <button> is " +
+                    "not a legal child of it, or the block is its own horizontal scroll box and an in-block " +
+                    "badge rides away with scrollLeft: " + probe);
             Assert.True(
                 probe.RailIsPreviousSibling,
                 "Charter #164 — " + block + "'s rail is not the previous sibling of the element it names. For " +
@@ -1123,7 +1146,7 @@ public sealed partial class ReviewLoopBrowserTests
 
         // Exact, for the same reason LayoutRegressionGateTests pins its own count: a block appearing twice
         // where one was expected changes what every rule above is measured over.
-        Assert.Equal(11, rendered.Length);
+        Assert.Equal(12, rendered.Length);
     }
 
     // ---- the in-page probe ---------------------------------------------------------------------------------
