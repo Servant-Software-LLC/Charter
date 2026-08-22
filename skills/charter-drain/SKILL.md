@@ -63,7 +63,14 @@ Each cycle emits one JSON envelope on stdout. Read them as they arrive.
 the work must not drift back toward the option they rejected.
 
 **Annotations** are yours to act on. Each carries the anchor it was written against, the quoted text for a
-text-range note, and the reviewer's comment. For each one, either:
+text-range note, and the reviewer's comment.
+
+**Read `anchorStatus` before you use `sourceLine`.** `resolved` means the line is live, right now. `orphaned`
+means `sourceLine` is `null` — the block moved, or the reviewer commented on something Charter cannot map to
+a line at all. Do not guess a line: use `quote` (and `nodeId` for a diagram node) to find what they meant. An
+orphan is ordinary in a living document and it is **not** proof the note was addressed.
+
+For each one, either:
 
 - **revise the plan** — edit the `.charter.md` and let the reviewer see the new version (the served page
   offers them a reload); or

@@ -53,8 +53,17 @@ public sealed partial class ReviewLoopBrowserTests
         NoBreak("unknown_directive_body") + "\n" +
         ":::\n\n" +
         ":::custom-html\n" +
-        "<table><tr><td>" + NoBreak("custom_html_cell") + "</td></tr></table>\n" +
+        "<table id=\"" + ClipCustomHtmlAuthorId + "\"><tr><td>" + NoBreak("custom_html_cell") +
+            "</td></tr></table>\n" +
         ":::\n";
+
+    /// <summary>
+    /// An id the AUTHOR wrote, inside the escape hatch, surviving verbatim into the render — which is what an
+    /// escape hatch is for, and what Charter #166 turns on. <c>AnchorAssignment</c> never produced it, so
+    /// <c>SourceMap</c> cannot map it to a markdown line; the fixture carries it so a note taken in this block
+    /// has something to be wrongly captured BY.
+    /// </summary>
+    private const string ClipCustomHtmlAuthorId = "raw-t";
 
     /// <summary>
     /// The four regions, by the selector a reviewer's browser resolves them with, each paired with the
@@ -294,6 +303,96 @@ public sealed partial class ReviewLoopBrowserTests
                 File.Delete(planPath);
             }
         }
+    }
+
+    /// <summary>
+    /// Charter #166, the same stake one block over. A <c>:::custom-html</c> body is emitted VERBATIM, so an
+    /// author's own <c>id</c> survives into the render — and the SDK's anchor walk used to accept it, because
+    /// it accepted any <c>id</c> at all. <c>AnchorAssignment</c> never produced that id, so <c>SourceMap</c>
+    /// cannot map it: the note reached the agent with <c>sourceLine: null</c>, orphaned, with nothing anywhere
+    /// saying so.
+    ///
+    /// <para>The escape hatch is exactly where this is likeliest — its whole purpose is markup Charter did not
+    /// write — so the block that most needs the walk to be right is the one it was wrong for.</para>
+    ///
+    /// <para>Same shape as the diff test above: annotate for real, then assert what reached BOTH the panel's
+    /// list and the agent's drain.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task An_author_id_inside_custom_html_does_not_capture_the_anchor_from_its_block()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-custom-html-anchor-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, ClipAffordancePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var blockId = BlockDocument.Parse(ClipAffordancePlan).Blocks
+                .First(b => b.Kind == BlockKind.CustomHtml).Id;
+
+            // The author's id really is in the render — otherwise this test asserts nothing.
+            Assert.Equal(
+                1, await page.Locator(".custom-html #" + ClipCustomHtmlAuthorId).CountAsync());
+
+            // The reviewer clicks the cell, which is what they can see. The walk out of it passes the author's
+            // <table id="raw-t"> on its way to the block.
+            await page.Locator("#" + ClipCustomHtmlAuthorId + " td")
+                .ClickAsync(new LocatorClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
+            await page.WaitForSelectorAsync(Ui("composer"));
+            await page.FillAsync(Ui("composer-input"), "This table is doing too much work.");
+            await SaveComposerAsync(page);
+
+            var listed = await ListAnnotationsAsync(server.Address, session.Key.Value);
+            Assert.Equal(1, listed.GetArrayLength());
+            AssertBoundToTheCustomHtmlBlock(listed[0], blockId);
+            AssertBoundToTheCustomHtmlBlock(await DrainOneAsync(server.Address, session.Key.Value), blockId);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The note is bound to the <c>:::custom-html</c> BLOCK — never to the author id inside it — and resolves
+    /// to the block's own markdown line, which is the whole point: that id round-trips and the author's does
+    /// not.
+    /// </summary>
+    private static void AssertBoundToTheCustomHtmlBlock(JsonElement annotation, string blockId)
+    {
+        var anchorId = annotation.GetProperty("anchorId").GetString();
+        Assert.NotEqual(ClipCustomHtmlAuthorId, anchorId);
+        Assert.Equal(blockId, anchorId);
+
+        var line = annotation.GetProperty("sourceLine");
+        Assert.True(
+            line.ValueKind == JsonValueKind.Number,
+            "the :::custom-html annotation reached the agent with no sourceLine (anchorId '" + anchorId + "')");
+        Assert.Equal("resolved", annotation.GetProperty("anchorStatus").GetString());
+
+        Assert.Equal(
+            ":::custom-html",
+            ClipAffordancePlan.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')[line.GetInt32() - 1]);
     }
 
     /// <summary>

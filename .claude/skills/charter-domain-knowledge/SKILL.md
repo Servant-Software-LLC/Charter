@@ -147,10 +147,51 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   `:::comparison` rows, and `:::diff` lines — nothing else.** `CharterMarkdown.SubAnchors` is the single
   descent that defines the sub-block half, and `AnchorAssignment` walks the same union, so an id the renderer
   emits is always one `SourceMap` registers. A nested list inside an `<li>`, a list inside `:::note`/`:::warn`,
-  a `<tr>`, and an author's own id inside `:::custom-html` are **not** anchors: the first three are never
-  stamped, and the last is accepted by `closestAnchored` (which takes any id) but never registered by
-  `SourceMap`, so a note on it reaches the agent orphaned — which is why the SDK deliberately shows no count
-  badge there rather than advertising a note that cannot round-trip.
+  and a `<tr>` are **not** anchors: none of the three is ever stamped.
+  **One carve-out, and it is the SDK's, not the renderer's: a `:::question` is not annotatable at all.**
+  `form.question` is in the SDK's `UNANCHORABLE` list — a rendered question is native controls, and a note
+  competing with the answer the block exists to collect would be worse than no note — so `closestAnchored`
+  refuses everything inside one and Alt+click there does nothing. The renderer still stamps the block's id and
+  `SourceMap` still registers it, so nothing is inconsistent; just do not read "top-level document nodes" as
+  "every top-level block can take a note", and do not "fix" the question block to match the sentence. (That
+  the refusal is a silent no-op rather than an explained one is filed as #178.)
+- **TWO REGIONS ARE OPAQUE TO THE ANCHOR WALK, and an id inside one is not an anchor** (#166).
+  `div.custom-html-scroll` holds an author's verbatim markup and `pre.mermaid` holds Mermaid's generated
+  markup. Neither kind of id was produced by `AnchorAssignment`, so `SourceMap` cannot map one to a line. The
+  rule is a **containment predicate**, in `sdk/charter-annotate.js`: an element is an anchor **iff** it carries
+  `id` / `data-anchor` / `data-charter-anchor` **and no ancestor of it is an opaque region**. All three
+  attributes are gated uniformly, because `:::custom-html` passes all three through verbatim.
+  - **Where the predicate fails the walk CONTINUES OUTWARD** — it does not return the region and it does not
+    return null. That distinction is the design. An early return of the region would be a *new* bug:
+    `RenderBody`'s anchor pass iterates top-level nodes only, so a `:::custom-html` or `:::diagram` nested in a
+    `::::note` or a list item renders with **no id**, and returning it yields `anchorId: null`, which
+    `textRangeAnchor` does not guard. Continuing outward lands on `div.note` / the `<li>`'s sub-anchor: a real
+    anchor with a real `sourceLine`.
+  - **It REPLACED the explicit `pre.mermaid` short-circuit and repaired what that got wrong.** The
+    short-circuit returned the diagram block unconditionally, so a **nested** `:::diagram` — id-less, per
+    above — hit `onClick`'s `!anchorIdOf(block)` guard and was **un-annotatable, silently**: no composer, no
+    error. #48's guarantee is unchanged (every Mermaid id now fails the predicate on the same rule), and
+    `textRangeAnchor` asks the SELECTION as well as the resolved block whether it is inside a diagram, since
+    those stopped being the same question once the walk climbs out of one.
+  - **The READ path is gated identically, and it is the more serious half.** `anchorElement` resolved by
+    `document.getElementById`, which answers with the first element in document order — so two escape hatches
+    that both contain `<table id="raw-t">` (a copy-paste, which is what an escape hatch is for) made a note
+    taken in the *second* jump to, mark and quote the *first*. That is **misattribution, not orphaning**, and
+    it is exactly what `AnchorAssignment`'s duplicate discriminator exists to prevent. A rejected match keeps
+    looking rather than giving up, so a forged id cannot shadow a real anchor further down. Fixing only the
+    write path would have left this standing for every already-committed note.
+  - **Forgery cannot defeat it, because the predicate is MONOTONE.** An author may write
+    `class="custom-html-scroll"` inside their own body, but the real region is an ancestor of everything in
+    that body, so a forged inner region only ever *adds* an ancestor match: forgery makes more things
+    unanchorable, never fewer, and "unanchorable" degrades outward to the enclosing block, never to null. No
+    "outermost region" computation is needed.
+  - **Accepted residue: markup that breaks out of both wrappers** (`</div></div><div id="pwn">`) is hoisted
+    clear of the region by the HTML parser, and the predicate cannot see it. Balancing an author's body means
+    parsing it. That case is covered from the other side — see the panel's orphan diagnostic under
+    *Review-loop semantics*.
+  - A `:::custom-html` block therefore badges like any other block, on its own `div.custom-html`. The old
+    claim that the SDK "deliberately shows no count badge there" was already false before this landed (a
+    hatch whose markup carries no ids has always anchored and badged normally) and is now false in every case.
 - **`:::diagram` is deliberately OUTSIDE all of it** (`pre:not(.mermaid)` in `assets/charter.css`): its oversize
   failure is shrink-below-legibility, not clipping, and its answer is #51's **SDK-only** pan/zoom. A
   shared-stylesheet rule reaching `pre.mermaid` would put part of that affordance into the exported artifact and
@@ -189,6 +230,23 @@ moment against a replaced plan it read `sourceLine: 1, "resolved"` while the dra
 confidently. There is deliberately **no submit-time twin field**: the reviewer reads the rendered page, not
 line numbers, so a second field meaning "the line when you wrote this" would only rebuild the ambiguity under
 another name. Binding test: `PanelDrainParityTests`.
+
+**And the PANEL reads what those two routes agree on** (#166). `PanelDrainParityTests` binds the wire; it
+cannot see whether the SDK looks at the field. It did not: `pendingRecord` threw `anchorStatus` away and
+hardcoded it null, so the panel fell back to *"is the element on the page?"* — which says nothing about
+whether Charter can map the anchor to a markdown line. A note on an id the assignment pass never produced sat
+there drawn as healthy while the agent was handed `sourceLine: null`. Two rules now:
+
+- **The orphan test is a DISJUNCTION** — `record.anchorStatus === 'orphaned' || !entry.el`. The two sources
+  answer different questions and either alone is blind: the server knows whether the anchor maps to a line,
+  the DOM knows whether the block is on this render. "Server wins outright" would draw a note whose element is
+  absent as healthy.
+- **Three orphan sentences, each earned by its own evidence.** `baseStatus: 'different'` ⇒ *"the plan has
+  changed since this comment was written"* (§4.3.1, review-log only, so a pending orphan never reaches it);
+  otherwise, element still present ⇒ *"this is still on the page, but Charter cannot trace it back to a line
+  of the plan"*; otherwise ⇒ *"the block this comment was written on is not in the plan"*. The middle one
+  exists because the last one is a plain falsehood when the reviewer is looking straight at the thing it
+  claims is gone — which is the whole #166 residue.
 
 Two field-level traps that have each cost a debugging session:
 
@@ -252,9 +310,13 @@ cannot map one, and they change on every render.
 - A diagram is **never** text-range annotatable: it carries no prose, and Chromium's word-select fallback on
   its background used to fabricate a text-range note over unrelated text elsewhere on the page (#61).
 
-`closestAnchored` resolves the enclosing `pre.mermaid` at the **anchoring layer**, not per handler, so by
-construction no path can escape carrying a Mermaid id. Both granularities share one anchor id, so the
-composer's context line is all that distinguishes them for the reviewer — it names which one explicitly.
+Every Mermaid id is refused at the **anchoring layer**, not per handler, so by construction no path can escape
+carrying one. Since #166 that is the opaque-region predicate above — `pre.mermaid` is one of the two regions,
+so every id inside it fails the same rule that refuses an author's id inside `:::custom-html`, and the walk
+stops on the block. It used to be an explicit short-circuit returning `pre.mermaid` *unconditionally*, which
+had the side effect of leaving a NESTED (id-less) diagram un-annotatable; the predicate covers #48 and repairs
+that in one rule. Both granularities share one anchor id, so the composer's context line is all that
+distinguishes them for the reviewer — it names which one explicitly.
 
 **An oversized `:::diagram` PANS and ZOOMS at review time, and only at review time** (#51). Mermaid renders
 with `useMaxWidth`, so a diagram wider than the review column never overflows — it *shrinks*, until the

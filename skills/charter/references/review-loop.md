@@ -135,10 +135,12 @@ poll again. Each element:
   that line in `plan.charter.md` and revise.
 - `anchorStatus` — `resolved` or `orphaned`. **Check this before acting on `sourceLine`.**
   - `resolved` — the anchor still exists; `sourceLine` is a live, current line number.
-  - `orphaned` — the annotated block has since **changed or been removed**, so its content-derived anchor
-    no longer resolves and `sourceLine` is `null`. Do **not** guess a line. Use the annotation's `quote`
-    (and `nodeId` for a diagram node) to find what the reviewer was looking at, and treat the note as
-    feedback on content that has already moved on — often it was your own earlier edit that addressed it.
+  - `orphaned` — the anchor does not resolve, so `sourceLine` is `null`. Almost always this means the
+    annotated block has since **changed or been removed** — often by your own earlier edit. Rarely it means
+    the anchor was **never one Charter assigned**: an author's `id` that escaped a `:::custom-html` body
+    through malformed markup is a real element on the page with no line behind it. Either way, do **not**
+    guess a line. Use the annotation's `quote` (and `nodeId` for a diagram node) to find what the reviewer was
+    looking at. The reviewer's panel says the same thing in their own words, so they are not surprised by it.
 
 An orphan is normal and expected in a living document: the reviewer comments, you edit the block, and
 that block's anchor changes by construction. It is information, not an error.
