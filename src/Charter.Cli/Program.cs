@@ -59,6 +59,14 @@ AnsiConsole.MarkupLine("[grey]Visual, reviewable plans your agent drafts — and
 AnsiConsole.WriteLine();
 AnsiConsole.MarkupLine(CharterCommands.BannerCommandsLine);
 AnsiConsole.MarkupLine("Try:    [green]charter review <plan.charter.md>[/]  or  [green]charter --version[/]");
+
+// A POINTER, never a table (Charter #173). Charter's verbs do not share one exit-code vocabulary — the
+// unattended path's 2 and the review drain's 2 mean different things — so a banner table would have to be
+// either wrong or long enough to bury the command list. Each verb's own --help carries its codes and the
+// warning; this line only makes sure a pipeline author knows to go and look.
+AnsiConsole.MarkupLine(
+    "[grey]Exit codes differ per verb and are documented in each one's [/][green]--help[/][grey]; "
+        + "Charter's 2 is not one meaning.[/]");
 return 0;
 
 // Emit a NON-FATAL warning to STDERR when an installed `charter` / `charter-format` skill's stamped

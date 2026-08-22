@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -35,10 +34,28 @@ namespace Charter.Core;
 public sealed class HeadlessRecord
 {
     /// <summary>
-    /// The record's schema version, bumped when the on-disk shape changes incompatibly. A consumer that does
-    /// not recognise it should refuse to interpret the file rather than guess.
+    /// The record's schema version, bumped when the on-disk shape changes INCOMPATIBLY — a field removed,
+    /// retyped, or given a new meaning. A consumer that does not recognise it should refuse to interpret the
+    /// file rather than guess.
     /// </summary>
-    public const int Schema = 1;
+    /// <remarks>
+    /// <para>
+    /// <b>Adding a field, or a new <c>notes[].kind</c> token, is NOT a bump</b> — it is the compatible change
+    /// the contract is written to absorb, which is why a consumer is told to ignore an unrecognised key and an
+    /// unrecognised note kind rather than reject the file.
+    /// </para>
+    /// <para>
+    /// <b>Why 2.</b> Schema 1 shipped with the prose promise above and the promise failed twice: <c>recommended</c>
+    /// was added in Charter #142 with the number left at 1, and — the one that actually breaks a harness —
+    /// <c>notes: []</c> did not mean "Charter noticed nothing", because <c>handoff</c> printed two lints
+    /// (missing <c>recommended</c>, untracked deferrals) the record had no kind for. Fixing that changes what an
+    /// EXISTING field means, which is a bump by this constant's own rule. It is also the version from which the
+    /// shape is bound by a test rather than by a sentence: <c>HeadlessRecordContractTests</c> holds the emitted
+    /// field set against <c>skills/charter/references/unattended.md</c>, so an undocumented addition now fails
+    /// the build. That is the mechanism a prose promise could not be (Charter #173).
+    /// </para>
+    /// </remarks>
+    public const int Schema = 2;
 
     private readonly JsonObject _json;
 
@@ -97,106 +114,16 @@ public sealed class HeadlessRecord
         RequireBareFileName(artifactFileName, nameof(artifactFileName));
         ArgumentException.ThrowIfNullOrEmpty(charterVersion);
 
-        var questions = new List<HeadlessQuestion>();
-        var notes = new List<HeadlessNote>();
-
-        // The version-marker lint every other verb already runs, recorded instead of merely printed.
-        var marker = CharterFormat.ValidateVersionMarker(markdown);
-        if (marker.Status == VersionMarkerStatus.Missing)
-        {
-            notes.Add(new HeadlessNote(HeadlessNoteKind.MissingVersionMarker, marker.Message, null));
-        }
-        else if (marker.Status == VersionMarkerStatus.Unsupported)
-        {
-            notes.Add(new HeadlessNote(HeadlessNoteKind.UnsupportedVersionMarker, marker.Message, null));
-        }
-
-        // The duplicate-id lint, from its one kernel — never re-implemented here.
-        var duplicates = QuestionResolution.FindDuplicateQuestionIds(markdown);
-        foreach (var duplicateId in duplicates)
-        {
-            notes.Add(new HeadlessNote(
-                HeadlessNoteKind.DuplicateQuestionId,
-                $"Two or more :::question blocks share the id '{duplicateId}'. An answer would resolve into "
-                    + "every block sharing it, and `charter poll --apply` / `charter resolve` refuse the write.",
-                null));
-        }
-
-        // One walk of the document, reading its blocks, their start lines and their ASSIGNED anchor ids from
-        // the same kernels the renderer and the SourceMap read — so a question's anchorId here is byte-identical
-        // to the id the artifact carries and to the key of this record's own sourceMap.
-        var malformedQuestions = 0;
-        foreach (var (kind, rawContent, startLine, anchorId) in PlanWalk.Blocks(markdown))
-        {
-            if (kind == BlockKind.Unknown)
-            {
-                notes.Add(new HeadlessNote(
-                    HeadlessNoteKind.UnknownDirective,
-                    "An unrecognized ::: directive was rendered as a visible unknown-directive block; its body "
-                        + "is preserved but nothing interprets it.",
-                    startLine));
-                continue;
-            }
-
-            if (kind != BlockKind.Question)
-            {
-                continue;
-            }
-
-            // A body Charter cannot even locate (a malformed container) and a body that fails the schema are
-            // the same fact to a consumer: the question's target is unknown, so it escalates either way.
-            var (spec, reason) = ReadQuestion(rawContent);
-            if (spec is null)
-            {
-                malformedQuestions++;
-                notes.Add(new HeadlessNote(
-                    HeadlessNoteKind.MalformedQuestion,
-                    "A :::question body could not be parsed, so its target is unknown: "
-                        + (reason ?? "the body is not a valid question."),
-                    startLine));
-                continue;
-            }
-
-            questions.Add(new HeadlessQuestion(
-                spec.Id,
-                spec.Title,
-                QuestionSpec.Token(spec.Mode),
-                QuestionSpec.Token(spec.Target),
-                spec.Options,
-                spec.Answer,
-                anchorId,
-                startLine,
-                spec.Recommended));
-        }
-
-        var needsHuman =
-            questions.Any(q => q is { Answered: false, Target: "human" })
-            || malformedQuestions > 0
-            || duplicates.Count > 0;
+        // ONE walk, shared with the strict-handoff gate (Charter #172) so the two can never disagree about
+        // which questions a plan has. The escalation predicate stays this record's own — see
+        // PlanInventory.NeedsHuman and HandoffGate for why they are deliberately not the same boolean.
+        var inventory = PlanInventory.Build(markdown);
 
         return new HeadlessRecord(
-            Serialize(markdown, planFileName, artifactFileName, charterVersion, needsHuman, questions, notes),
-            needsHuman,
-            questions,
-            notes);
-    }
-
-    /// <summary>
-    /// Parse one <c>:::question</c> container: its <see cref="QuestionSpec"/>, or a null spec plus the reason
-    /// it could not be read. Both failure modes — an unlocatable body and a schema-invalid one — collapse here
-    /// because they mean the same thing downstream: the question's <c>target</c> is unknown.
-    /// </summary>
-    private static (QuestionSpec? Spec, string? Reason) ReadQuestion(string rawContent)
-    {
-        var body = QuestionResolution.QuestionBody(rawContent);
-        if (body is null)
-        {
-            return (null, "the container is not a well-formed :::question.");
-        }
-
-        return QuestionSpec.TryParse(body, out var spec, out var error) && spec is not null
-            ? (spec, null)
-            : (null, error);
+            Serialize(markdown, planFileName, artifactFileName, charterVersion, inventory),
+            inventory.NeedsHuman,
+            inventory.Questions,
+            inventory.Notes);
     }
 
     /// <summary>
@@ -225,12 +152,10 @@ public sealed class HeadlessRecord
         string planFileName,
         string artifactFileName,
         string charterVersion,
-        bool needsHuman,
-        IReadOnlyList<HeadlessQuestion> questions,
-        IReadOnlyList<HeadlessNote> notes)
+        PlanInventory inventory)
     {
         var questionArray = new JsonArray();
-        foreach (var question in questions)
+        foreach (var question in inventory.Questions)
         {
             questionArray.Add(new JsonObject
             {
@@ -253,7 +178,7 @@ public sealed class HeadlessRecord
         }
 
         var noteArray = new JsonArray();
-        foreach (var note in notes)
+        foreach (var note in inventory.Notes)
         {
             noteArray.Add(new JsonObject
             {
@@ -281,14 +206,36 @@ public sealed class HeadlessRecord
             ["schema"] = Schema,
             ["charterVersion"] = charterVersion,
             ["plan"] = planFileName,
-            ["planSha256"] = Sha256Hex(markdown),
+            ["planSha256"] = PlanHash.Sha256Hex(markdown),
             ["artifact"] = artifactFileName,
-            ["needsHuman"] = needsHuman,
+
+            // The plan's own format marker, as a PAIR (Charter #173). A bare integer could not carry the
+            // distinction a consumer needs: CharterFormat reports no version for a MISSING marker and for a
+            // present-but-non-integer one alike, so `charter-format-version: 1.0` would read identically to an
+            // unstamped plan. The status token says which case it is; `marker` is the raw declared value,
+            // verbatim, or null when there is no marker at all.
+            ["planFormatVersion"] = new JsonObject
+            {
+                ["status"] = VersionMarkerToken(inventory.VersionMarker.Status),
+                ["marker"] = inventory.VersionMarker.RawValue is { } raw ? JsonValue.Create(raw) : null,
+                ["version"] = inventory.VersionMarker.Version is { } parsed ? JsonValue.Create(parsed) : null,
+            },
+            ["needsHuman"] = inventory.NeedsHuman,
             ["questions"] = questionArray,
             ["notes"] = noteArray,
             ["sourceMap"] = sourceMap,
         };
     }
+
+    /// <summary>The wire token for a version-marker status. Hyphen-free single words, matching the token style
+    /// the rest of the record uses.</summary>
+    private static string VersionMarkerToken(VersionMarkerStatus status) => status switch
+    {
+        VersionMarkerStatus.Ok => "ok",
+        VersionMarkerStatus.Missing => "missing",
+        VersionMarkerStatus.Unsupported => "unsupported",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown version-marker status."),
+    };
 
     private static JsonArray ToJsonArray(IReadOnlyList<string> values)
     {
@@ -300,14 +247,6 @@ public sealed class HeadlessRecord
 
         return array;
     }
-
-    /// <summary>
-    /// The SHA-256 of the plan's UTF-8 text as Charter read it, lower-case hex. This is what lets a human in
-    /// hindsight prove WHICH revision of the plan the artifact beside it was rendered from — the artifact
-    /// alone cannot say.
-    /// </summary>
-    private static string Sha256Hex(string text)
-        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     /// <summary>
     /// Why a path is refused where a name is required: the record's contract is that it carries no local
@@ -385,6 +324,19 @@ public enum HeadlessNoteKind
 
     /// <summary>An unrecognized <c>:::foo</c> directive: rendered visibly, but nothing interprets it.</summary>
     UnknownDirective,
+
+    /// <summary>
+    /// An open, human-targeted, select-mode <c>:::question</c> carries no <c>recommended</c> key at all
+    /// (Charter #142) — so an escalation on it can say a human must decide while offering nothing to decide
+    /// with. A warning: it never raises <see cref="HeadlessRecord.NeedsHuman"/>.
+    /// </summary>
+    MissingRecommendation,
+
+    /// <summary>
+    /// A paragraph defers work without naming anything that tracks it (Charter #156). A warning: it never
+    /// raises <see cref="HeadlessRecord.NeedsHuman"/>.
+    /// </summary>
+    UntrackedDeferral,
 }
 
 /// <summary>One recorded diagnostic.</summary>
@@ -404,6 +356,8 @@ public sealed record HeadlessNote(HeadlessNoteKind Kind, string Message, int? So
         HeadlessNoteKind.DuplicateQuestionId => "duplicate-question-id",
         HeadlessNoteKind.MalformedQuestion => "malformed-question",
         HeadlessNoteKind.UnknownDirective => "unknown-directive",
+        HeadlessNoteKind.MissingRecommendation => "missing-recommendation",
+        HeadlessNoteKind.UntrackedDeferral => "untracked-deferral",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown headless note kind."),
     };
 }

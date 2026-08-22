@@ -21,10 +21,19 @@ public enum VersionMarkerStatus
 
 /// <summary>
 /// The outcome of validating a <c>.charter.md</c>'s <c>charter-format-version</c> marker: the
-/// <see cref="Status"/>, the parsed <see cref="Version"/> (null when absent or unparseable), and a
-/// human-readable <see cref="Message"/> suitable for a CLI warning line.
+/// <see cref="Status"/>, the parsed <see cref="Version"/> (null when absent or unparseable), a
+/// human-readable <see cref="Message"/> suitable for a CLI warning line, and the marker's
+/// <see cref="RawValue"/> exactly as declared.
 /// </summary>
-public sealed record VersionMarkerResult(VersionMarkerStatus Status, int? Version, string Message);
+/// <param name="RawValue">
+/// The marker's declared value verbatim (<c>"1"</c>, <c>"1.0"</c>, <c>"draft"</c>), or <c>null</c> when the
+/// plan carries no marker at all. <see cref="Version"/> alone cannot tell those apart — it is null for a
+/// MISSING marker and for a present-but-non-integer one alike, so <c>charter-format-version: 1.0</c> reads
+/// identically to an unstamped plan (Charter #173). A consumer that must distinguish them reads this beside
+/// <see cref="Status"/>.
+/// </param>
+public sealed record VersionMarkerResult(
+    VersionMarkerStatus Status, int? Version, string Message, string? RawValue = null);
 
 /// <summary>
 /// The single source of truth for the Charter <c>.charter.md</c> FORMAT version — the current version and the
@@ -81,7 +90,8 @@ public static class CharterFormat
             return new VersionMarkerResult(
                 VersionMarkerStatus.Unsupported,
                 null,
-                $"'{MarkerKey}: {rawValue}' is not a valid integer format version (supported: {MinVersion}..{Version}).");
+                $"'{MarkerKey}: {rawValue}' is not a valid integer format version (supported: {MinVersion}..{Version}).",
+                rawValue);
         }
 
         if (version < MinVersion || version > Version)
@@ -90,10 +100,11 @@ public static class CharterFormat
                 VersionMarkerStatus.Unsupported,
                 version,
                 $"'{MarkerKey}: {version}' is outside the supported format range {MinVersion}..{Version}; " +
-                "update the charter-format skill or re-author the plan against a current format.");
+                "update the charter-format skill or re-author the plan against a current format.",
+                rawValue);
         }
 
-        return new VersionMarkerResult(VersionMarkerStatus.Ok, version, $"{MarkerKey}: {version}");
+        return new VersionMarkerResult(VersionMarkerStatus.Ok, version, $"{MarkerKey}: {version}", rawValue);
     }
 
     /// <summary>

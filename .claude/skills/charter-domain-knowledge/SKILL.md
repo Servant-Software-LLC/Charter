@@ -457,13 +457,23 @@ back to its markdown, and nothing recorded which decisions were never made.
   itself is **refused** (exit 1) rather than rendered over the source.
 - **The record is a pure function of the plan text + the tool version** — no clock, no local path (the plan and
   artifact appear as bare names + a `planSha256`), so two runs diff clean and the file is as safe to hand on as
-  the artifact. Shape: `schema` · `charterVersion` · `plan` · `planSha256` · `artifact` · `needsHuman` ·
-  `questions[]` (id/title/mode/target/options/answered/answer + **`anchorId` and `sourceLine`**) · `notes[]` ·
-  `sourceMap` (anchor → 1-based line, ascending).
+  the artifact. Shape (**`schema` 2**): `schema` · `charterVersion` · `plan` · `planSha256` · `artifact` ·
+  `planFormatVersion` · `needsHuman` · `questions[]` (id/title/mode/target/options/answered/answer/recommended
+  + **`anchorId` and `sourceLine`**) · `notes[]` · `sourceMap` (anchor → 1-based line, ascending).
+- **It is a DECLARED contract, and the declaration is a TEST, not prose** (#173). The stable core is
+  `schema` · `charterVersion` · `plan` · `planSha256` · `needsHuman` · `questions[].{id,target,answered}`;
+  `message` strings, `sourceMap` **values** and `notes[]` ordering are explicitly non-contract; an
+  unrecognised `notes[].kind` must be **ignored, never rejected**. `HeadlessRecordContractTests` binds the
+  emitted field set and every note-kind token to `skills/charter/references/unattended.md`, which is where the
+  absence semantics and the `sourceMap`-value instability live. A prose promise was tried and failed —
+  `recommended` shipped in #142 with `schema` left at 1.
 - **Exit codes are `0`/`2`, and `2` is NOT a failure.** `0` = nothing outstanding. `2` = everything is on disk
   **and** a human must decide or fix something. `1` stays the generic verb error. Normative in
-  `src/Charter.Cli/HeadlessExitCodes.cs` — deliberately a **separate** class from `ReviewExitCodes`, whose `2`
-  means "a queue was found and it was empty". Do not read one vocabulary as the other.
+  `src/Charter.Cli/HeadlessExitCodes.cs`, now **shared with `charter handoff --fail-if-needs-human`** — both
+  verbs mean the same thing by a 2, and **so does Guardrails** (`BreakdownCommand.NotCleanExitCode` "a 2 means
+  READ THE FOLDER", `ExitCodes.TaskFailed` "at least one task needs a human"). **The outlier is Charter's own
+  `ReviewExitCodes`**, whose `2` means "a queue was found and it was empty". #173 asked for the opposite
+  warning; reading Guardrails' source settled it this way.
 - **`needsHuman` is the single escalation fact**, serialized into the record *and* returned as the exit code,
   so the file and `$?` can never disagree. Exactly three things raise it: an **open `:::question` with
   `target: human`**; a **`:::question` whose body will not parse** (target unknown ⇒ assume the worst, never
@@ -473,7 +483,46 @@ back to its markdown, and nothing recorded which decisions were never made.
   the rule would make the flag almost always true and therefore worthless.
 - **Out of scope, deliberately:** auto-generating human-style review comments (#7 says so — that is an agent's
   job). `notes[]` is Charter's OWN diagnostics, the stderr warnings an agent-launched run may never show a
-  human, made durable — not synthesized review prose.
+  human, made durable — not synthesized review prose. **All of them**, since `schema` 2: `notes: []` did not
+  used to mean "Charter noticed nothing", because `handoff` printed the missing-`recommended` (#142) and
+  untracked-deferral (#156) lints with no matching note kind. Both now exist and neither escalates.
+
+## The unattended PIPELINE (`charter handoff --fail-if-needs-human`)
+
+**`headless` is not the verb that feeds Guardrails — `handoff` is.** They share a word and nothing else, and
+reaching for the wrong one is a *silent* failure: `charter headless` writes no `plan.md` and exits 0 on a
+clean plan, so the run reports success while Guardrails gets nothing or a stale file. Design of record:
+`docs/plans/04-machine-consumer-contract.md`.
+
+- **It WRITES its output and exits 2.** Not fail-closed, for two reasons: every 2 in this pipeline means
+  *the output exists, go read it*; and a refusal would leave the PREVIOUS run's `plan.md` on disk — a stale
+  flatten carrying no open-question markers at all, internally consistent, passing any lint, and
+  indistinguishable to a `BreakdownCommand` that only checks the file extension.
+- **The predicate runs AFTER `--answers` is merged**, which is why it could not reuse `NeedsHuman` (a pure
+  function of the plan text, by contract). The two share a `PlanInventory` — one walk — but deliberately
+  **not** a verdict.
+- **It is STRICTER than the record in two places.** An open `target: agent` question blocks unless it is
+  *decidable* (carries `options` or a `recommended`) — because nothing downstream actually branches on
+  `target`, so delegating is prose asking the next agent to decide, and a bare free-text one asks it to
+  invent. And an **unknown `:::foo` blocks**, because a misspelled `:::questoin` classifies as one and would
+  otherwise exit 0 from both verbs on a hidden `target: human` decision.
+- **stderr names each blocker's id/title/target**, and separately reports `--answers` ids matching no
+  question — reported, never a veto.
+- **The flatten gained two things** (#172): an open `target: agent` question leads with *"Delegated decision
+  — you must settle this before building:"* plus a mode-specific `_Decide: …_` instruction, because on that
+  path prose IS the interface; and every flattened plan ends with `<!-- charter: plan-sha256=<hex> -->`,
+  byte-identical to the record's `planSha256`. That stamp is the only provenance mechanism that **survives a
+  consumer ignoring exit codes and side files** — out-of-band signalling cannot fix a failure of out-of-band
+  signalling.
+- **ONE question-body parse, pinned.** `QuestionResolution.QuestionBody` is the single definition (any fence
+  length, any line ending, an unterminated container at EOF — the three shapes the renderer already accepts);
+  `TryLocateJsonBody` is only its span-based write twin. They forked once and it went **both ways**:
+  `::::question` read fine in the record while the flatten deleted its id/title/target, and an unterminated
+  container flattened perfectly while the record escalated it. `QuestionBodyParityTests` asserts the two
+  verbs reach the same verdict, not that they call the same method.
+- **Known-open, deliberately split:** #186 (`--answers` overrides/erases an inline answer with no
+  validation), #187 (the chain-of-custody manifest; `headless` still has no `--answers`), #188 (`answered`
+  counts array elements, so `[""]` certifies as a decision).
 
 ## Git-mediated team review (the durable half)
 
@@ -549,8 +598,20 @@ verification. Exact emitted shape: `skills/charter/references/handoff.md`. The r
 - **Every `:::question` emits a status line PLUS a metadata line**, identical in shape whether answered or
   open: `` _Question — id: `x`; mode: `single`; target: `human`; options: `A`, `B`_ ``. `options` are the
   rationale a resolved answer is folded in with (the *rejected* option is what a guardrail can be written
-  against); `target` lets the headless path honour `target: agent` instead of halting for a human. Both used
-  to be dropped, and dropping `target` gave the flattened DAG 2 needs-human roots against the direct DAG's 1.
+  against); `target` is there so a consumer **can** branch on `human` vs `agent`, and without it a delegated
+  decision is indistinguishable from one needing a person. Both used to be dropped, and dropping `target`
+  gave the flattened DAG 2 needs-human roots against the direct DAG's 1. **No consumer is known to branch on
+  it**: neither literal Charter emits (`Open question (unresolved)`, `_Question — id`) appears anywhere in
+  Guardrails' source, docs or skills (#172; filed reciprocally as Guardrails #500). The old claim that "the
+  headless breakdown branches on `human` vs `agent`" was false and was the sole justification for exempting
+  agent questions from strict handoff's gate — which is why that exemption is now narrowed.
+- **An OPEN `target: agent` question flattens as a DELEGATED DECISION, not an open question** (#172):
+  *"Delegated decision — you must settle this before building:"* plus the metadata line plus a mode-specific
+  `_Decide: …_` instruction naming the author's lean. An answered one gains no instruction.
+- **Every flattened plan ends with `<!-- charter: plan-sha256=<hex> -->`**, the same hash the headless record
+  calls `planSha256`. Before it, the flatten self-identified as nothing (front matter is stripped, with a
+  test pinning it), so "did the plan Charter recorded match the plan Guardrails consumed" was unanswerable in
+  principle. Charter's own renderer ESCAPES it (`DisableHtml`); that is the security posture, not a defect.
 - **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms are accepted (raw, or already
   wrapped in ` ```mermaid ` / ` ```diff `); an already-fenced body is unwrapped before emitting, never
   double-fenced (a double fence makes the inner fence literal, so the diagram does not render on GitHub).
@@ -607,6 +668,8 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 | Living-document / dual-handoff design (Architecture B) | `docs/plans/02-architecture-b-living-document.md` |
 | Team review: log layout, record schema, the 8 fold rules, `prev`/contested, §5.0 solo primacy | `docs/plans/03-git-mediated-team-review.md` |
 | Unattended run: exit codes; forensic-record shape and what raises `needsHuman` | `src/Charter.Cli/HeadlessExitCodes.cs`, `src/Charter.Core/HeadlessRecord.cs` |
+| **The `.headless.json` CONTRACT** a machine may assert on (stable core, absence semantics, note kinds) | `skills/charter/references/unattended.md`, bound by `HeadlessRecordContractTests` |
+| **Strict handoff, the delegated flatten, the provenance stamp, the one question-body parse** | `docs/plans/04-machine-consumer-contract.md`; predicate in `src/Charter.Core/HandoffGate.cs` |
 | Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
 
 ## Status (update as milestones complete)

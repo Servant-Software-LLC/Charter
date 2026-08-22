@@ -123,7 +123,10 @@ public class LinkReferenceDefinitionTests
         // CommonMark Guardrails breaks down.
         var handoff = HandoffMarkdown.Emit(UnusedDefinition);
 
-        Assert.Equal(HandoffMarkdown.Emit(NoDefinition), handoff);
+        // Compared WITHOUT the trailing provenance stamp (Charter #172/#187), which hashes the SOURCE plan —
+        // and these two sources genuinely differ by the link definition. The claim being pinned is that the
+        // flattened CONTENT is identical, which is exactly what the stamp is not.
+        Assert.Equal(HandoffOutput.WithoutStamp(HandoffMarkdown.Emit(NoDefinition)), HandoffOutput.WithoutStamp(handoff));
         Assert.Equal(1, Occurrences(handoff, "# Title"));
 
         // NOTE (#175): the definitions themselves are now absent from the handoff, so a plan whose prose uses

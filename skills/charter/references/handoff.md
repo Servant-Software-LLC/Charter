@@ -35,6 +35,18 @@ charter handoff plan.charter.md -o plan.md --answers answers.json
 `/plan-breakdown` doesn't need it — it reads the `.charter.md` directly, interpreting the `:::` blocks via
 the `charter-format` skill. Reach for `handoff` when you're feeding the headless path.
 
+> **"Headless" here does NOT mean the `charter headless` verb.** Two unrelated senses of the word live in
+> this repo, and the one on this page is *which ingestion path Guardrails uses*. `charter headless` is *how
+> Charter runs with no human present*: it writes an HTML artifact and a JSON forensic record, and **no
+> CommonMark at all**. They meet nowhere in code — `headless` emits no handoff markdown, and `handoff`
+> writes no record.
+>
+> Reaching for `charter headless` here is a silent pipeline failure, not an error: it writes no `plan.md`,
+> exits `0` on a clean plan, and the run reports success while Guardrails gets nothing — or, worse, a
+> **stale** `plan.md` from an earlier run. **The verb that feeds Guardrails is always `charter handoff`.**
+> For an unattended run, that is `charter handoff --fail-if-needs-human` (below); `references/unattended.md`
+> covers `charter headless`.
+
 > **Guardrails compatibility.** Direct `.charter.md` ingestion (the interactive path) requires
 > **Guardrails ≥ `1.0.0-preview.47`** — the release that implements it (Guardrails #390–393); current
 > Guardrails is well past it. Against **any earlier Guardrails**, run `charter handoff` and feed the
@@ -88,8 +100,23 @@ The **status** line is one of:
 
 - **Answered** (a matching `id` in `--answers`, or an `answer` already filled in inline) → an
   **"Answered:"** line carrying the chosen value(s).
-- **Open** (no inline `answer` and no matching `--answers` id) → an **"Open question (unresolved)"** line.
-  Guardrails sees an unresolved decision it can surface for a human.
+- **Open, `target: human`** (no inline `answer` and no matching `--answers` id) → an
+  **"Open question (unresolved)"** line. Guardrails sees an unresolved decision it can surface for a human.
+- **Open, `target: agent`** → a **"Delegated decision — you must settle this before building:"** line, the
+  metadata line, and a `_Decide: …_` instruction naming the mode's actual action and the author's lean:
+
+  ```
+  > **Delegated decision — you must settle this before building:** Which cache should front it?
+  > _Question — id: `cache`; mode: `single`; target: `agent`; options: `Redis`, `in-memory`; recommended: `Redis`_
+  > _Decide: choose exactly one of the options above, state the choice and your reason in the work you
+  > generate from this plan, and build against it. Do not carry it forward as an open question. The plan's
+  > author leans `Redis`; depart from it only with a stated reason._
+  ```
+
+  **Why the wording differs.** On this path there is no parser and no routing table — the flattened plan is
+  prose, and prose is the whole interface. "Open question (unresolved)" reads as something *someone else*
+  will settle, which is exactly backwards for a block whose `target` says the reader settles it. An
+  **answered** agent question gains no instruction: the decision is already made.
 
 The **metadata** line is the same shape in both cases — `id`, `mode`, `target`, and (when the mode declares
 them) `options`, as emphasis + inline code:
@@ -116,9 +143,15 @@ _Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgr
   the `options` as rationale"* — the **rejected** option is what lets the breakdown author a guardrail that
   FAILS if the implementation reaches for it. Dropping options once a question was answered destroyed exactly
   that, and made answered/open asymmetric.
-- **`target` is the routing signal.** The headless breakdown branches on `human` vs `agent`; without it the
-  flattened path structurally cannot honour `target: agent` and halts for a human on a decision the plan
-  author had explicitly delegated to the agent.
+- **`target` is the routing signal, so that a consumer *can* branch** on `human` vs `agent`; without it the
+  flattened path structurally cannot honour `target: agent`, and a decision the plan author explicitly
+  delegated is indistinguishable from one that needs a person.
+
+  **No claim is made that any consumer does branch on it.** This line used to say the headless breakdown
+  branches on `human` vs `agent`. It does not: neither literal Charter emits (`Open question (unresolved)`,
+  `_Question — id`) appears anywhere in Guardrails' source, docs or skills. That false claim was the sole
+  justification for exempting `target: agent` from `--fail-if-needs-human`, which is why the exemption is
+  now narrowed (below). Filed reciprocally as Guardrails #500.
 - **`id` correlates** the flattened question back to its `:::question` block (and to `--answers`).
 
 It stays **plain CommonMark** — emphasis and inline code, nothing that reopens a `:::` directive — so the
@@ -137,6 +170,101 @@ silently dropped:
 >   Charter.Core/
 ```
 
+## `--fail-if-needs-human` — the unattended gate
+
+```
+charter handoff plan.charter.md -o plan.md --answers answers.json --fail-if-needs-human
+```
+
+Without it, an **unanswered** `:::question` hands off as prose and the command exits `0`. That is right for
+the attended flow — a human reads the rendered plan and sees the open fork. Unattended it is a
+silent-degradation hazard: the pipeline proceeds, `plan-breakdown` reads *"Open question: …"* as ordinary
+prose, and a decision nobody made gets resolved by whatever the breakdown agent infers. Nothing fails,
+nothing warns, and the run goes green having quietly picked an option the human never chose.
+
+**It writes the handoff and exits `2`.** It does **not** refuse to write, for two reasons:
+
+- Every `2` in this pipeline shares one post-condition — *the output exists, go read it* — and inverting it
+  at this seam is the exact class of surprise the flag exists to prevent.
+- Refusing would not work anyway. A refusal leaves the **previous** run's `plan.md` on disk, and a stale
+  flattened plan carries no open-question markers at all: internally consistent, passes any lint, and
+  `plan-breakdown` only checks the file extension. Failing "closed" would hand a downstream something it
+  cannot tell is wrong.
+
+**The predicate runs AFTER `--answers` is merged** — the whole point is that a pipeline supplies an answers
+file and wants to know it was complete.
+
+### What blocks
+
+| Blocker | Why |
+|---|---|
+| `unanswered-human-question` | An open question routed to a human, with nobody there to answer it. |
+| `undecidable-agent-question` | An open `target: agent` question carrying **neither `options` nor `recommended`** — there is nothing to decide it with. |
+| `malformed-question` | A `:::question` body that will not parse. Its `target` is unknown, **and** the flatten collapses the whole block to `> **Malformed question …**`, deleting its id, title and target from the handed-off document. |
+| `unknown-directive` | An unrecognized `:::foo`. Charter cannot tell a misspelled `:::questoin` from a container the catalog genuinely does not define, so the strict gate resolves toward the human. |
+| `duplicate-question-id` | An answer resolves into every block sharing the id, and `poll --apply` / `resolve` refuse the write. |
+
+**The `target: agent` carve-out is narrowed, not absent.** #172 as filed assumed agent questions never
+count, on the grounds that the flattened path branches on `target` — it does not (see the metadata-line note
+above). Delegating is not a routing decision some downstream honours; it is prose asking the next agent to
+decide. An agent question with `options` (or a `recommended` naming one) gives it something to decide
+**with**, and passes. A bare `free-text` / `bool` / `number` agent question with no options gives it
+nothing, is invisible to both of Charter's other gates, and would have Charter certify "no human needed"
+while the downstream invents an answer. Three honest remedies: give the question options, answer it inline,
+or accept that a person should see it.
+
+### What stderr says
+
+Each blocker is named with its `id`, `title`, `target` and line. Separately — and **without** changing the
+exit code — any `--answers` id that matched **no** `:::question` in the plan is reported:
+
+```
+charter handoff: warning: 2 --answers id(s) matched no :::question in the plan and were discarded: gone, also-gone.
+charter handoff: 1 item(s) need a human -- exit 2. The handoff WAS written to plan.md; this is an escalation, not a failure. Settle these in the .charter.md (or in --answers) and re-run.
+  unanswered-human-question 'db' (line 7) [target: human]: Which database? -- an open question routed to a human, with nobody there to answer it
+```
+
+*"Your answers file had three ids and none of them matched"* is a signal the pipeline needs — a stale id, a
+renamed question, or a generator written against a different plan all looked identical before, because
+Charter discarded them in silence. It is reported rather than vetoed: the questions those ids failed to
+answer already block on their own account.
+
+## Exit codes
+
+| Code | Meaning | What you do |
+|---|---|---|
+| **0** | The handoff was written and nothing is outstanding. | Proceed. |
+| **2** | *(only with `--fail-if-needs-human`)* The handoff **was still written** AND something needs a human. An **escalation, not a failure**. | Read stderr, then the file. Settle the items and re-run. |
+| **1** | Verb error — plan not found, unreadable `--answers`. **Nothing was written.** | Fix the invocation. |
+
+> **NOTE ON `2`.** A `2` here means the same thing it means in `charter headless` and in **Guardrails** —
+> *the output exists, go read it*. Guardrails' `BreakdownCommand` comments its own `2` as "a 2 means READ
+> THE FOLDER", and its `ExitCodes.TaskFailed` as "the run completed but at least one task needs a human".
+> A harness treating every `2` in this pipeline alike is doing the right thing.
+>
+> **The outlier is Charter's own drain.** `charter poll` / `charter resolve` return `2` for *"a queue was
+> found and it was empty"* — close to the opposite. Do not read one vocabulary as the other.
+
+## The provenance stamp
+
+Every flattened plan ends with one line:
+
+```
+<!-- charter: plan-sha256=870aed2f70841b927516f442ff4febd6d6002f13ad5a931db02a5bb69cfa78c6 -->
+```
+
+It is the SHA-256 of the `.charter.md` **exactly as Charter read it** — and it is byte-identical to
+`planSha256` in the same plan's `charter headless` record. That pairing is what answers *"did the plan
+Charter recorded match the plan Guardrails consumed"*, which the flattened file could not answer even in
+principle before: front matter is stripped, so the output self-identified as nothing.
+
+An HTML comment was chosen because it is CommonMark-safe, **invisible** in a rendered diff, deterministic,
+and — the property that decides it — it **survives a consumer that ignores exit codes and side files**.
+Out-of-band signalling cannot fix a failure of out-of-band signalling.
+
+(Charter's *own* renderer escapes it, because the pipeline sets `DisableHtml` so bare prose HTML can never
+run. That is the security posture working; the flattened `.md` is Guardrails' input, not a `.charter.md`.)
+
 ### The end-to-end shape
 
 1. Author `plan.charter.md` (`references/authoring-from-source.md`, `references/authoring-plans.md`).
@@ -147,4 +275,5 @@ silently dropped:
 4. Optionally `charter export plan.charter.md -o plan.html` for a shareable offline snapshot.
 5. `charter handoff plan.charter.md -o plan.md [--answers answers.json]` → hand `plan.md` to the headless
    Guardrails `plan-breakdown` path. (The interactive `/plan-breakdown` skips this and reads the
-   `.charter.md` directly.)
+   `.charter.md` directly.) **With no human in the loop, add `--fail-if-needs-human` and branch on the exit
+   code** — `0` proceed, `2` stop and read stderr, `1` fix the invocation.

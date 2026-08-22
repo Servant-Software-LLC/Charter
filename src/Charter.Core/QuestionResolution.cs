@@ -350,15 +350,85 @@ public static class QuestionResolution
     }
 
     /// <summary>
-    /// The JSON body of a <c>:::question</c> block's <see cref="Block.RawContent"/> — everything between the
-    /// opening and closing fence lines — or <c>null</c> when the content is not a well-formed container. Exposed
-    /// so a reader that needs the question's DECLARED SHAPE (<see cref="QuestionIdentity"/>) shares this kernel's
-    /// fence handling instead of re-deriving it, which is how two "the same block" answers drift apart.
+    /// <b>The ONE definition of a <c>:::question</c>'s body</b>: the lines of a container's
+    /// <see cref="Block.RawContent"/> between its opening fence line and its closing fence line, with line
+    /// endings normalized to <c>\n</c> — or <c>null</c> when the content is not a container at all (no opening
+    /// fence line to strip). An empty body is <c>""</c>, not <c>null</c>: the container exists, it simply
+    /// declares nothing, and the schema parse is the right place to say so.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every reader of a question body goes through here — <see cref="HandoffMarkdown"/>'s flatten,
+    /// <see cref="HeadlessRecord"/>'s forensic record, <see cref="QuestionIdentity"/>'s declared-shape
+    /// fingerprint, and the two lints below. That is not tidiness: the <b>definition</b> of the block was
+    /// single-sourced in <c>charter-format</c> while the <b>parse</b> was forked, and the fork was load-bearing
+    /// (Charter #172). <c>HandoffMarkdown</c> carried its own line-splitting that normalized line endings and
+    /// tolerated a missing closing fence but recognised an opening fence only as <c>^:::\w+</c>; this kernel
+    /// required a closing fence and looked only for <c>\n</c>. The result was a container that one verb read
+    /// perfectly and the other called malformed — in BOTH directions, depending on the shape.
+    /// </para>
+    /// <para>
+    /// Three tolerances, each earned by a shape the renderer already accepts — so this function agrees with
+    /// what a reviewer sees on the page:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description><b>Any fence length.</b> The opening line is whatever the container opened with
+    ///     (<c>:::question</c>, <c>::::question</c>, …). CommonMark directive containers nest by fence length,
+    ///     so a <c>::::</c> opener is ordinary authoring, not a defect.</description></item>
+    ///   <item><description><b>A missing closing fence.</b> Markdig closes an unterminated container at EOF
+    ///     and the renderer draws the form, so calling it unreadable escalates a question a human can plainly
+    ///     answer on the page.</description></item>
+    ///   <item><description><b>Any line ending.</b> <c>\r\n</c> and a bare <c>\r</c> terminate a line exactly
+    ///     as <c>\n</c> does.</description></item>
+    /// </list>
+    /// </remarks>
     public static string? QuestionBody(string rawContent)
-        => TryLocateJsonBody(rawContent ?? string.Empty, out var bodyStart, out var bodyEnd)
-            ? rawContent!.Substring(bodyStart, bodyEnd - bodyStart)
-            : null;
+    {
+        var normalized = (rawContent ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+        var lines = new List<string>(normalized.Split('\n'));
+
+        while (lines.Count > 0 && lines[^1].Trim().Length == 0)
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        while (lines.Count > 0 && lines[0].Trim().Length == 0)
+        {
+            lines.RemoveAt(0);
+        }
+
+        // No opening fence line means this is not a container span at all, so there is no body to name.
+        if (lines.Count == 0 || !IsOpenFence(lines[0]))
+        {
+            return null;
+        }
+
+        lines.RemoveAt(0);
+
+        if (lines.Count > 0 && IsCloseFence(lines[^1]))
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>True when <paramref name="line"/> opens a directive container — three or more colons followed
+    /// by a directive name.</summary>
+    private static bool IsOpenFence(string line)
+    {
+        var trimmed = line.AsSpan().TrimStart();
+        var colons = 0;
+        while (colons < trimmed.Length && trimmed[colons] == ':')
+        {
+            colons++;
+        }
+
+        return colons >= 3 && trimmed[colons..].Trim().Length > 0;
+    }
 
     /// <summary>
     /// The rewritten raw content of one <c>:::question</c> block with its answer spliced in, or <c>null</c> when
@@ -487,13 +557,29 @@ public static class QuestionResolution
         => obj is not null && obj["id"] is JsonValue value && value.TryGetValue<string>(out var id) ? id : null;
 
     /// <summary>
-    /// Locate the JSON body span of a <c>:::question</c> container's raw content: <paramref name="bodyStart"/> is
-    /// the index just after the opening fence line, and <paramref name="bodyEnd"/> is the start of the closing
-    /// fence line. Returns <c>false</c> when the content is not a well-formed fenced container (so the caller
-    /// leaves it untouched). Keeping the fence lines out of the span lets the caller rewrite ONLY the body while
-    /// preserving the exact fences.
+    /// The WRITE-side twin of <see cref="QuestionBody"/>: the same body, located as a SPAN of
+    /// <paramref name="rawContent"/> rather than returned as text, so <see cref="ResolveBlock"/> can splice an
+    /// answer in while preserving the authored bytes on either side.
+    /// <paramref name="bodyStart"/> is the index just after the opening fence line and
+    /// <paramref name="bodyEnd"/> is the start of the closing fence line (or the end of the content when the
+    /// container was never closed). Returns <c>false</c> when there is no opening fence line to skip — the one
+    /// case <see cref="QuestionBody"/> also answers <c>null</c> for.
     /// </summary>
-    private static bool TryLocateJsonBody(string rawContent, out int bodyStart, out int bodyEnd)
+    /// <remarks>
+    /// It exists as a second function only because indices cannot survive line-ending normalization, and the
+    /// splice needs indices. It must therefore agree with <see cref="QuestionBody"/> on the two questions that
+    /// matter — is there a body, and where does it end — or a plan whose question the record can READ becomes
+    /// one whose answer <c>resolve</c> silently declines to WRITE. Both accept any fence length, any line
+    /// ending, and an unterminated container at EOF.
+    /// <para>
+    /// Exposed <c>internal</c> so that agreement can be PROVEN rather than reasoned about
+    /// (<c>QuestionBodyParityTests</c>). It is worth the exposure: the one time the two were written
+    /// independently they disagreed in three container shapes and nothing caught it, and a disagreement here
+    /// is invisible from outside — the write path simply declines to splice a body it mis-located, which
+    /// looks exactly like a question that had no answer to write.
+    /// </para>
+    /// </remarks>
+    internal static bool TryLocateJsonBody(string rawContent, out int bodyStart, out int bodyEnd)
     {
         bodyStart = 0;
         bodyEnd = 0;
@@ -503,28 +589,39 @@ public static class QuestionResolution
             return false;
         }
 
-        var firstNewline = rawContent.IndexOf('\n');
-        if (firstNewline < 0)
+        // The opening fence line ends at the first line break of ANY flavour; a \r\n pair counts once.
+        var firstBreak = rawContent.IndexOfAny(['\n', '\r']);
+        if (firstBreak < 0)
         {
             return false;
         }
 
-        bodyStart = firstNewline + 1;
+        bodyStart = firstBreak + 1;
+        if (rawContent[firstBreak] == '\r'
+            && bodyStart < rawContent.Length
+            && rawContent[bodyStart] == '\n')
+        {
+            bodyStart++;
+        }
 
-        // The closing fence is the last non-blank line of the container span. Trimming trailing whitespace/
-        // newlines first makes the last '\n' point at the start of that closing line regardless of a trailing
-        // newline in the raw slice; the trimmed prefix shares indices with the original, so the offset is valid.
+        // The closing fence, when there is one, is the last non-blank line of the container span. Trimming
+        // trailing whitespace first makes the last line break point at the start of that closing line
+        // regardless of a trailing newline in the raw slice; the trimmed prefix shares indices with the
+        // original, so the offset stays valid.
         var trimmedEnd = rawContent.TrimEnd();
-        var closeLineStart = trimmedEnd.LastIndexOf('\n');
-        if (closeLineStart < 0)
-        {
-            return false;
-        }
+        var closeLineStart = trimmedEnd.LastIndexOfAny(['\n', '\r']) + 1;
 
-        closeLineStart += 1;
+        // An UNTERMINATED container is not malformed — Markdig closes it at EOF and the renderer draws the
+        // form — so its body simply runs to the end of the span rather than stopping at a fence.
+        //
+        // `<` and not `<=`: a container whose body is EMPTY (`:::question` then `:::`) puts the closing fence
+        // line at exactly bodyStart, and that is a closed container with a zero-length body — the shape
+        // QuestionBody returns "" for. Rejecting it here would make the two disagree on the one case they most
+        // obviously must not, and would hand the splice a "body" of ":::".
         if (closeLineStart < bodyStart || !IsCloseFence(trimmedEnd.AsSpan(closeLineStart)))
         {
-            return false;
+            bodyEnd = rawContent.Length;
+            return true;
         }
 
         bodyEnd = closeLineStart;
