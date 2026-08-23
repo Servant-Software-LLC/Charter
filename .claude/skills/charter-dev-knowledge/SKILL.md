@@ -26,7 +26,8 @@ src/
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
     HeadlessRecord.cs / PlanWalk.cs  # the `headless` forensic record (source map + questions + notes); one joined walk
     QuestionIdentity.cs         # the :::question DECLARED-SHAPE fingerprint (an answer's "anchor", #75/3)
-    AnswerRules.cs              # the ONE answer semantics: IsDecision (#188) + Merge/Check for --answers (#186)
+    AnswerRules.cs              # the ONE answer semantics: IsDecision (#188), Merge/Check for --answers (#186),
+                                #   IsForbidden/Malformation — the character rule all 3 entry gates read (#202)
     HandoffManifest.cs          # `handoff --manifest`'s chain-of-custody file (schema 1) — its OWN artifact (#187)
     HandoffAnswers.cs           # a --answers file's values AND the hash of the text they came from (one parse)
     BareFileName.cs             # the ONE no-local-path rule, shared by the record and the manifest
@@ -435,7 +436,13 @@ update run `charter skills install --force` too.
   Charter has two normalisations that look interchangeable and are not. `HandoffMarkdown.Emit` folds CR and
   CRLF in the SOURCE, so a raw CR in plan prose never survives — but a `:::question`'s answer arrives
   **JSON-escaped** (`"answer": ["alpha\rbeta"]`), so `Emit` never sees it as a character and the flatten
-  really does carry `Answered: alpha␍beta`. Anything that then reads the flatten LINE BY LINE with the
+  really does carry `Answered: alpha␍beta`. **#202 closed the three channels an answer ENTERS through** (the hand-authored residue is #212) —
+  `AnswerRules.IsForbidden`/`Malformation` is the one predicate, read by the server's answer route (400),
+  `AnswerRules.Check` (`handoff` exits 1) and `QuestionResolution.ApplyToFile` (`MalformedAnswerException` ⇒
+  exit 5, answers preserved) — but **the trap below is unchanged and permanent**: a HAND-AUTHORED inline
+  `answer`, a `title` and an option label are all still un-normalised JSON strings, `U+000A` is a LEGAL answer
+  character (the review page draws `free-text` as a `<textarea>`), and every reader of the flatten must
+  therefore still keep CRLF-only folding. Anything that reads the flatten LINE BY LINE with the
   `ReviewBaseStatus`-style `.Replace("\r\n","\n").Replace('\r','\n')` tears that answer in two. It cost a live
   false alarm: `charter verify`'s question scan reported an **untouched, honest** handoff/manifest pair as
   `questions MISMATCH`, because the torn line left the `_Question — id:` metadata line with `beta` above it

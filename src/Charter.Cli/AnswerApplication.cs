@@ -197,9 +197,10 @@ internal static class AnswerApplication
 
     /// <summary>
     /// Write <paramref name="answers"/> inline into the plan at <paramref name="planPath"/>. A refusal
-    /// (<see cref="DuplicateQuestionIdException"/>, a concurrent-edit <see cref="IOException"/>, or an access
-    /// error) is caught and returned as a NON-applied result — the caller preserves the answers and signals
-    /// apply-failure rather than losing them. Any other exception propagates (an unexpected fault).
+    /// (<see cref="MalformedAnswerException"/>, <see cref="DuplicateQuestionIdException"/>, a concurrent-edit
+    /// <see cref="IOException"/>, or an access error) is caught and returned as a NON-applied result — the
+    /// caller preserves the answers and signals apply-failure rather than losing them. Any other exception
+    /// propagates (an unexpected fault).
     /// </summary>
     public static ApplyResult ApplyToPlan(string planPath, IReadOnlyList<Answer> answers)
     {
@@ -207,6 +208,12 @@ internal static class AnswerApplication
         {
             QuestionResolution.ApplyToFile(planPath, ById(answers));
             return new ApplyResult(Applied: true, Committed: false, Error: null);
+        }
+        catch (MalformedAnswerException ex)
+        {
+            // Charter #202. The answer cannot be written as text, so it is preserved rather than cleaned:
+            // sanitising would make the plan and the reviewer's decision disagree with nothing recording it.
+            return new ApplyResult(Applied: false, Committed: false, Error: ex.Message);
         }
         catch (DuplicateQuestionIdException ex)
         {

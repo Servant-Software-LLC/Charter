@@ -1418,6 +1418,28 @@ public sealed class ReviewServer : IReviewServer
             return;
         }
 
+        // Gate — the value must be carryable as TEXT (Charter #202). An answer with a control character in it
+        // reaches the plan file through `poll --apply` and then every flatten of that plan, as a bare CR in
+        // line-oriented CommonMark; refusing it here is where the living document stays clean, and sanitising
+        // it would make the plan disagree with the decision the reviewer submitted.
+        //
+        // THIS IS NOT A BREACH OF #186's ASYMMETRY. That rule says validation is a function of WHO supplied
+        // the value: a human at the page holds authority to exceed the declared `options` (the "Something
+        // else" write-in), an --answers invocation does not. A control character is nobody's decision -- it is
+        // a malformation of the carrier -- so no authority is being overruled. The route still does no
+        // membership or mode checking, deliberately.
+        //
+        // No reviewer can reach this from the shipped page: a free-text question renders a <textarea>, whose
+        // API value the browser normalizes CRLF -> LF, and the write-in is an <input type="text">, whose value
+        // sanitization strips CR and LF outright. It fires only for a non-browser client -- which is a real
+        // channel, because whatever it queues is what gets written into the .charter.md.
+        if (AnswerRules.Malformation(submission.Values) is { } malformation)
+        {
+            response.StatusCode = (int)HttpStatusCode.BadRequest;
+            WriteReason(response, $"charter: this answer cannot be recorded -- {malformation}");
+            return;
+        }
+
         // Unlike an annotation there is no anchor to resolve: an answer's identity is its client-chosen
         // questionId, so this is very nearly a pure echo. Preserve the target (human/agent) verbatim for the
         // downstream handoff, and default the values to empty so the drain always serializes a values array.
@@ -1733,6 +1755,24 @@ public sealed class ReviewServer : IReviewServer
             JsonSerializer.Serialize(new { error = message }, AnnotationApi.JsonOptions));
         response.StatusCode = (int)status;
         response.ContentType = "application/json; charset=utf-8";
+        response.ContentLength64 = payload.Length;
+        response.OutputStream.Write(payload, 0, payload.Length);
+    }
+
+    /// <summary>
+    /// Write a plain-text explanation as the body, leaving <see cref="HttpListenerResponse.StatusCode"/> as the
+    /// caller set it.
+    /// </summary>
+    /// <remarks>
+    /// A 4xx with an EMPTY body leaves whoever is on the other end unable to tell a rule from a bug — the
+    /// Charter #170/#178 principle, one layer below the page. The other refusals on these routes predate that
+    /// and stay as they are; this one says why, because the value it refuses looks perfectly ordinary in a
+    /// JSON payload (its offending character is invisible) and a client author has nothing else to go on.
+    /// </remarks>
+    private static void WriteReason(HttpListenerResponse response, string reason)
+    {
+        var payload = Encoding.UTF8.GetBytes(reason);
+        response.ContentType = "text/plain; charset=utf-8";
         response.ContentLength64 = payload.Length;
         response.OutputStream.Write(payload, 0, payload.Length);
     }
