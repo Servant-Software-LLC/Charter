@@ -111,11 +111,24 @@ public class AnswerStalenessTests
         Assert.Contains("\"answer\": [\"Postgres\"]", File.ReadAllText(planPath), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Charter #203 step 1, the <c>resolve</c> half — and a REWRITE, not an extension.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This test used to be <c>Resolve_WhenTheQuestionIsGoneEntirely_StillAppliesAndIsANoOp</c>, and it asserted
+    /// exit <c>0</c> on the reasoning that <i>"an absent question cannot be mis-answered — QuestionResolution
+    /// leaves ids it does not find untouched — so refusing there would be a false alarm with no failure behind
+    /// it."</i> The premise is true and the conclusion does not follow. The apply is a no-op in the PLAN; it is
+    /// not a no-op in the QUEUE. A byte-identical write scores as a successful apply, so this verb went on to
+    /// clear the sidecar and print <c>Resolved 1 answer(s)</c> — the reviewer's decision destroyed, with the
+    /// failure invisible from every side. The old name asserted leniency around a degraded value, which is
+    /// exactly where this repo has learned to go looking for a defect.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public void Resolve_WhenTheQuestionIsGoneEntirely_StillAppliesAndIsANoOp()
+    public void Resolve_WhenTheQuestionIsGoneEntirely_RefusesRatherThanDestroyingTheAnswer()
     {
-        // An absent question cannot be mis-answered — QuestionResolution leaves ids it does not find untouched
-        // — so refusing there would be a false alarm with no failure behind it.
         using var work = new Workspace();
         var planPath = work.SeedPlan(Plan(OriginalQuestion, OriginalProse));
         work.SeedAnswer(planPath, "db-choice", "Postgres");
@@ -123,8 +136,53 @@ public class AnswerStalenessTests
 
         var run = work.Resolve(planPath);
 
-        Assert.Equal(ReviewExitCodes.Drained, run.ExitCode);
+        Assert.Equal(ReviewExitCodes.ApplyFailed, run.ExitCode);
+        Assert.Contains("does not carry as a block", run.StdErr, StringComparison.Ordinal);
+        Assert.Contains("db-choice", run.StdErr, StringComparison.Ordinal);
+
         Assert.DoesNotContain("\"answer\"", File.ReadAllText(planPath), StringComparison.Ordinal);
+        Assert.Single(work.QueuedAnswers(planPath));
+    }
+
+    /// <summary>
+    /// The nesting case #203 was filed for, through <c>charter resolve</c>: the question is right there in the
+    /// plan and renders as a live form, but a <c>::::note</c> holds it, so it is not a block.
+    /// </summary>
+    [Fact]
+    public void Resolve_WhenTheQuestionIsNestedInsideACallout_RefusesRatherThanDestroyingTheAnswer()
+    {
+        using var work = new Workspace();
+        var planPath = work.SeedPlan(Plan(OriginalQuestion, OriginalProse));
+        work.SeedAnswer(planPath, "db-choice", "Postgres");
+
+        // The same question, moved inside a callout — a live, answerable form the block model cannot see.
+        File.WriteAllText(planPath, "# A plan\n\n::::note\nA callout that asks something.\n\n" + OriginalQuestion + "::::\n");
+
+        var run = work.Resolve(planPath);
+
+        Assert.Equal(ReviewExitCodes.ApplyFailed, run.ExitCode);
+        Assert.Contains("db-choice", run.StdErr, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"answer\"", File.ReadAllText(planPath), StringComparison.Ordinal);
+        Assert.Single(work.QueuedAnswers(planPath));
+    }
+
+    /// <summary>
+    /// <c>--apply-stale-answers</c> does NOT bypass the #203 refusal. The flag means "the question changed shape,
+    /// apply it anyway"; there is nothing to apply anyway to when the question is not a block, and letting it
+    /// through would re-open the destruction under a flag that reads like consent to something else entirely.
+    /// </summary>
+    [Fact]
+    public void Resolve_ApplyStaleAnswers_DoesNotBypassTheUnmatchedRefusal()
+    {
+        using var work = new Workspace();
+        var planPath = work.SeedPlan(Plan(OriginalQuestion, OriginalProse));
+        work.SeedAnswer(planPath, "db-choice", "Postgres");
+        File.WriteAllText(planPath, "# A plan with no questions at all\n\nJust prose.\n");
+
+        var run = work.Resolve(planPath, "--apply-stale-answers");
+
+        Assert.Equal(ReviewExitCodes.ApplyFailed, run.ExitCode);
+        Assert.Single(work.QueuedAnswers(planPath));
     }
 
     // ---- Plumbing ----------------------------------------------------------------------------------------

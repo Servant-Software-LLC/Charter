@@ -33,8 +33,16 @@ internal static class AnswerApplication
     /// <see cref="QuestionIdentity.FingerprintOf"/> finds a question with the same id in the plan as it is now,
     /// and the two fingerprints differ. Three deliberate exemptions, each meaning "no evidence, proceed": an
     /// answer with no fingerprint (a queue from before this existed), a plan the answer's question is ABSENT
-    /// from (the apply is a documented no-op there, so it cannot corrupt anything), and a plan that cannot be
-    /// read (handled by the caller, which lets the ordinary apply path report the I/O failure).
+    /// from, and a plan that cannot be read (handled by the caller, which lets the ordinary apply path report
+    /// the I/O failure).
+    /// </para>
+    /// <para>
+    /// <b>The absent-question exemption used to be justified as "the apply is a no-op there, so it cannot corrupt
+    /// anything". That was false</b> (Charter #203): the apply really is a no-op in the PLAN, but both callers
+    /// then treat the run as successful and COMMIT the answer away — out of the store, out of the sidecar — so
+    /// the reviewer's decision is destroyed while <c>$?</c> reads 0. The exemption stands here because staleness
+    /// genuinely has no evidence to weigh; the case is now caught one step earlier, by
+    /// <see cref="FindUnmatched"/>, which refuses instead.
     /// </para>
     /// <para>
     /// <b>False positive:</b> the drafting agent legitimately edits the question — retitles it, adds or removes
@@ -85,6 +93,73 @@ internal static class AnswerApplication
         }
 
         return stale;
+    }
+
+    /// <summary>
+    /// The queued answers whose <c>:::question</c> <b>is not in the plan's block model at all</b>, so
+    /// <see cref="QuestionResolution.Apply"/> would match nothing and return the markdown unchanged
+    /// (Charter #203). Empty means "every answer has somewhere to land", which is what an ordinary plan returns.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this is a refusal and not a shrug.</b> The apply's own behaviour is benign — an id it cannot find is
+    /// left untouched, by design. What is not benign is what the CALLERS do next: a byte-identical write counts as
+    /// a successful apply, so <c>poll --apply</c> commits the batch (<c>CommitAnswersAsync</c> removes it from the
+    /// store AND the sidecar) and <c>charter resolve</c> clears the sidecar, both reporting success. The reviewer's
+    /// decision is therefore drained, reported applied, and destroyed. Exit 5 already means exactly the right
+    /// thing here — <i>the inline apply did not happen; the answers are preserved, never committed</i> — so this
+    /// is the treatment Charter #172 gave an <c>--answers</c> FILE's unmatched ids
+    /// (<c>HandoffGate.UnmatchedAnswerIds</c>) finally reaching the interactive verbs.
+    /// </para>
+    /// <para>
+    /// <b>It is broader than the nesting bug that found it.</b> Any id the model cannot see qualifies: a
+    /// <c>:::question</c> nested inside a <c>::::note</c> (rendered as a live form, invisible to
+    /// <see cref="BlockDocument"/>), a question the drafting agent deleted between submit and drain, a question
+    /// whose body stopped parsing, or an id a client simply invented.
+    /// </para>
+    /// <para>
+    /// <b>There is no override, deliberately.</b> <c>--apply-stale-answers</c> says "the question changed shape,
+    /// apply it anyway" — a decision a human can weigh, because the write still lands. Here the write cannot
+    /// land at all, so forcing it would only re-open the destruction. The remedies are real ones: un-nest the
+    /// block, restore the question, or re-answer against the plan as it now is.
+    /// </para>
+    /// <para>
+    /// A plan that cannot be READ yields nothing, exactly as <see cref="FindStale"/> does — no evidence, and the
+    /// ordinary apply path reports the real I/O failure in its own words.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<Answer> FindUnmatched(string planPath, IReadOnlyList<Answer> answers)
+    {
+        ArgumentNullException.ThrowIfNull(answers);
+
+        string markdown;
+        try
+        {
+            markdown = File.ReadAllText(planPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return Array.Empty<Answer>();
+        }
+
+        var known = new HashSet<string>(QuestionResolution.QuestionIds(markdown), StringComparer.Ordinal);
+        return answers.Where(answer => !known.Contains(answer.QuestionId ?? string.Empty)).ToList();
+    }
+
+    /// <summary>
+    /// The one sentence both <c>poll --apply</c> and <c>resolve</c> say when they refuse a batch carrying an
+    /// answer with nowhere to land. <paramref name="unmatched"/> must be non-empty.
+    /// </summary>
+    public static string UnmatchedAnswerReason(IReadOnlyList<Answer> unmatched)
+    {
+        ArgumentNullException.ThrowIfNull(unmatched);
+
+        var ids = string.Join(", ", unmatched.Select(answer => answer.QuestionId).Distinct(StringComparer.Ordinal));
+        return $"{unmatched.Count} queued answer(s) name a :::question this plan does not carry as a block "
+            + $"({ids}): the inline write would match nothing, so reporting them applied would destroy them. "
+            + "Nothing was applied and nothing was discarded. A :::question nested inside another container "
+            + "renders as an answerable form but is not a block — move it to the top level, or restore the "
+            + "question the answer was given to.";
     }
 
     /// <summary>
