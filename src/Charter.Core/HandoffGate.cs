@@ -11,12 +11,62 @@ namespace Charter.Core;
 /// "your answers file had three ids and none of them matched" — a stale id, a renamed question, or a
 /// generator writing against the wrong plan all look like a clean run.
 /// </param>
+/// <param name="Questions">
+/// Every READABLE <c>:::question</c> with the answer this run actually resolved it to, in document order — the
+/// gate's own resolution pass, carried out rather than thrown away (Charter #187). It is what
+/// <see cref="HandoffManifest"/> serializes, which is what keeps "one resolution pass, two artifacts" true:
+/// the manifest never re-merges, so it cannot describe a different document from the one the gate judged.
+/// </param>
+/// <param name="MalformedQuestions">
+/// How many <c>:::question</c> bodies would not parse. A separate count rather than something a consumer
+/// derives from <paramref name="Blockers"/>, because a malformed question is absent from
+/// <paramref name="Questions"/> entirely — Charter has no id to list it under — so without this a plan with a
+/// broken question looks complete and entirely answered.
+/// </param>
 public sealed record HandoffGateResult(
     IReadOnlyList<HandoffBlocker> Blockers,
-    IReadOnlyList<string> UnmatchedAnswerIds)
+    IReadOnlyList<string> UnmatchedAnswerIds,
+    IReadOnlyList<HandoffQuestionResolution> Questions,
+    int MalformedQuestions)
 {
     /// <summary>True when something in the plan needs a human before an unattended crew should proceed.</summary>
     public bool NeedsHuman => Blockers.Count > 0;
+}
+
+/// <summary>
+/// One <c>:::question</c> as THIS run resolved it — the answer the flatten will print, and which input it came
+/// from (Charter #187).
+/// </summary>
+/// <param name="Id">The question's declared id.</param>
+/// <param name="Title">The question put to the reviewer. Presentational; not part of the manifest's contract.</param>
+/// <param name="Target">The question's <c>target</c> token.</param>
+/// <param name="SourceLine">The 1-based line the block starts at IN THE PLAN — never in the flattened output.</param>
+/// <param name="Answer">The merged answer: the accepted <c>--answers</c> entry, else the plan's inline one.</param>
+/// <param name="Source">
+/// <see cref="HandoffGate.InlineAnswerSource"/> or <see cref="HandoffGate.AnswersFileAnswerSource"/>, or null
+/// when <paramref name="Answer"/> records no decision — no value means no source, and a third token would be a
+/// state a consumer has to learn.
+/// </param>
+public sealed record HandoffQuestionResolution(
+    string Id,
+    string Title,
+    string Target,
+    int SourceLine,
+    IReadOnlyList<string> Answer,
+    string? Source)
+{
+    /// <summary>
+    /// True when <see cref="Answer"/> records a DECISION — <see cref="AnswerRules.IsDecision"/>, the one
+    /// predicate the record, the flatten, the renderer and the missing-lean lint all read (Charter #188).
+    /// </summary>
+    /// <remarks>
+    /// <b>This is NARROWER than the headless record's <c>answered</c>, and the difference is the point.</b> The
+    /// record's is "the plan's own inline answer records a decision" — a pure function of the plan text, by
+    /// contract. This is "the MERGED answer records a decision", so it sees the <c>--answers</c> file. One field
+    /// name over two artifacts with two scopes is exactly the shape of defect Charter #188 was, so the manifest's
+    /// contract test asserts it rather than leaving a reader to assume they match.
+    /// </remarks>
+    public bool Answered => AnswerRules.IsDecision(Answer);
 }
 
 /// <summary>One thing standing between the flattened plan and an unattended run.</summary>
@@ -99,6 +149,18 @@ public static class HandoffGate
     public const string DuplicateQuestionId = "duplicate-question-id";
 
     /// <summary>
+    /// Wire token: the resolved answer came from the <c>answer</c> recorded INLINE in the plan, so
+    /// <c>planSha256</c> alone reproduces the decision.
+    /// </summary>
+    public const string InlineAnswerSource = "inline";
+
+    /// <summary>
+    /// Wire token: the resolved answer came from the <c>--answers</c> file, so reproducing the decision also
+    /// needs <c>answersSha256</c>.
+    /// </summary>
+    public const string AnswersFileAnswerSource = "answers-file";
+
+    /// <summary>
     /// Evaluate <paramref name="markdown"/> against the answers that will be merged into its flatten.
     /// Deterministic and pure — the same inputs always give the same verdict, and nothing is read from disk.
     /// </summary>
@@ -134,9 +196,22 @@ public static class HandoffGate
                     + "`charter poll --apply` / `charter resolve` refuse the write"));
         }
 
+        var resolutions = new List<HandoffQuestionResolution>(inventory.Questions.Count);
         foreach (var question in inventory.Questions)
         {
-            if (AnswerRules.IsDecision(AnswerRules.Merge(question, answers)))
+            // ONE merge per question per run, and its result is KEPT (Charter #187). The gate used to merge,
+            // read the boolean and discard the value; the manifest then needed the same values and would have
+            // merged a second time, which is a second chance to describe a document other than the one written.
+            var resolved = AnswerRules.Merge(question, answers);
+            resolutions.Add(new HandoffQuestionResolution(
+                question.Id,
+                question.Title,
+                question.Target,
+                question.SourceLine,
+                resolved,
+                ClassifyAnswerSource(question.Id, answers, resolved)));
+
+            if (AnswerRules.IsDecision(resolved))
             {
                 continue;
             }
@@ -158,7 +233,49 @@ public static class HandoffGate
             }
         }
 
-        return new HandoffGateResult(blockers, UnmatchedAnswerIds(inventory, answers));
+        return new HandoffGateResult(
+            blockers, UnmatchedAnswerIds(inventory, answers), resolutions, inventory.MalformedQuestions);
+    }
+
+    /// <summary>
+    /// Which input <see cref="AnswerRules.Merge"/> just took <paramref name="resolved"/> from, or null when it
+    /// records no decision.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>It does not re-decide anything — it asks the merge what it did</b>, by identity against the merge's
+    /// own return value. That is why it sits on the line after the merge call rather than in a helper somewhere
+    /// else: a second implementation of "did the file win?" is a second implementation of the #186 rules, and
+    /// the two would eventually disagree — at which point the manifest would name a source the flatten did not
+    /// use, on a field whose entire job is saying which hash reproduces the decision.
+    /// </para>
+    /// <para>
+    /// <b>A REJECTED entry therefore reads <c>inline</c>, which is the invariant that matters:</b> Merge falls
+    /// back to the inline answer when the supplied value fails the rules, so <c>answers-file</c> can never mean
+    /// "the file overrode the plan" (Charter #186 refuses that outright — the verb exits 1 before this is
+    /// reached — and this is the in-library guarantee that no other caller can produce one either).
+    /// </para>
+    /// <para>
+    /// A value RE-STATED verbatim by the file reads <c>answers-file</c>, because that is mechanically where the
+    /// merge took it from, even though <c>planSha256</c> would reproduce it too. The field is defined by the
+    /// mechanism precisely so it cannot drift from the emitter.
+    /// </para>
+    /// </remarks>
+    private static string? ClassifyAnswerSource(
+        string questionId,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers,
+        IReadOnlyList<string> resolved)
+    {
+        if (!AnswerRules.IsDecision(resolved))
+        {
+            return null;
+        }
+
+        return answers is not null
+            && answers.TryGetValue(questionId, out var supplied)
+            && ReferenceEquals(supplied, resolved)
+                ? AnswersFileAnswerSource
+                : InlineAnswerSource;
     }
 
     /// <summary>

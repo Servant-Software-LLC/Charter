@@ -112,7 +112,7 @@ that is a plotting task, not a Charter deliverable).
 | `charter resolve <plan.charter.md> [--apply-stale-answers]` | Solo-reviewer companion to `poll --apply`: fold a human reviewer's queued answers **inline** into the plan when no agent is looping `poll`. An answer whose `:::question` has **changed shape** since it was given (title/mode/target/options) is reported and left queued (exit `5`), never written — `--apply-stale-answers` is the human's explicit "apply it anyway". |
 | `charter headless <plan.charter.md> [--out-dir <dir>]` | The **unattended** sibling of `charter review` — for a crewmate or any run with no human present. Serves nothing and waits for nothing: writes `export`'s artifact (**same exporter, byte-identical**) plus a **forensic JSON record**, at names **derived** from the plan (`storage.charter.md` → `storage.charter.html` + `storage.charter.headless.json`), then exits. **Its exit codes are their own vocabulary, not the drain's**: `0` nothing outstanding · `2` both files are on disk **and** a human must decide or fix something (an **escalation**, not a failure) · `1` verb error. |
 | `charter export <plan.charter.md> -o <out.html>` | Write a **self-contained, offline** HTML artifact (local assets inlined, local paths scrubbed, SDK-free). |
-| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>] [--fail-if-needs-human]` | Convert the plan's `:::` directives to **plain CommonMark** for the **autonomous** Guardrails `plan-breakdown` path. (That path is also called "headless" — an unrelated sense of the word from the `charter headless` verb above. `handoff` writes no record; `headless` writes no CommonMark. **This is the verb that feeds Guardrails**; reaching for `charter headless` produces no `plan.md` and exits 0, so the run reports success while Guardrails gets nothing.) `--fail-if-needs-human` still writes the output and exits **2** when a decision nobody made survives `--answers`. |
+| `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>] [--fail-if-needs-human] [--manifest]` | Convert the plan's `:::` directives to **plain CommonMark** for the **autonomous** Guardrails `plan-breakdown` path. (That path is also called "headless" — an unrelated sense of the word from the `charter headless` verb above. `handoff` writes no forensic record; `headless` writes no CommonMark. **This is the verb that feeds Guardrails**; reaching for `charter headless` produces no `plan.md` and exits 0, so the run reports success while Guardrails gets nothing.) `--fail-if-needs-human` still writes the output and exits **2** when a decision nobody made survives `--answers`. `--manifest` also writes `<out-stem>.manifest.json` — a **chain-of-custody** record of which inputs produced this exact output, from the same resolution pass. Neither flag implies the other. |
 | `charter reply <plan.charter.md> --to <comment-id> --body <text>` | **Answer a review comment in its thread** — your voice back to the reviewer. Accept it, **push back on it**, or ask what was meant. Writes one `reply` record to your own author log: it does **not** touch the plan (single-writer), does not contact the review server, and does **not** settle the comment (that stays a deliberate `resolve`). A reviewer with the page open sees it arrive over the review-log watch. Attributed to `actor: agent` by default; `--as-human` only if you are writing on the human's behalf. |
 | `charter skills install [--project] [--force]` | Install the bundled `charter`, `charter-format` + `charter-drain` skills so Guardrails `plan-breakdown` can discover them. |
 | `charter sessions [--prune] [--stop-all]` | List the review servers running on this machine. A **human** verb — surface it when they ask what is running or cannot update the tool; do not run it to hunt for a session yourself (`poll` discovers its own). |
@@ -328,6 +328,19 @@ human question, an agent question with nothing to decide it with, an unparseable
 code**: `0` proceed · `2` stop and read stderr, the file is on disk · `1` fix the invocation. That `2` means
 what Guardrails' `2` means; Charter's own `poll`/`resolve` `2` ("a queue was found and it was empty") is the
 outlier. Full rules: `references/handoff.md`.
+
+**If the run has to be auditable afterwards, add `--manifest`:**
+
+```
+charter handoff plan.charter.md -o plan.md --answers answers.json --fail-if-needs-human --manifest
+```
+
+It writes `plan.manifest.json` beside `plan.md` — the sha256 of the plan, the answers and the handoff, every
+question's resolved answer with whether it came from the plan (`inline`) or the file (`answers-file`), and the
+gate's verdict — all from the **same resolution pass** that wrote the CommonMark, so the two can never
+disagree. It is opt-in and changes no exit code. The flattened plan also carries both hashes in-band, as two
+trailing HTML comments, so a stale manifest is detectable from the two files alone. Contract:
+`references/handoff.md`.
 
 ## Block catalog
 
