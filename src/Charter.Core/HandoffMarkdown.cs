@@ -61,9 +61,28 @@ public static class HandoffMarkdown
 
         // Parse once via the single source of truth for blocks (invariant 3), then convert each block in
         // source order — the block order the parser returns IS the handoff order.
-        var blocks = BlockDocument.Parse(source).Blocks;
+        var document = BlockDocument.Parse(source);
+        var blocks = document.Blocks;
 
-        var parts = new List<string>(blocks.Count);
+        var parts = new List<string>(blocks.Count + 3);
+
+        // The plan's link reference definitions LEAD the flattened file (Charter #175). The flatten is a NEW
+        // CommonMark document, so `See [foo].` resolves against the definitions THIS file carries — and after
+        // #171 stripped the LinkReferenceDefinitionGroup it carried none, handing Guardrails a dangling
+        // reference where the reviewer saw a link.
+        //
+        // TOP PLACEMENT IS FORCED, NOT AESTHETIC. Appending them at the end re-opens the same redirection
+        // bug one level down: a LOSER definition that survives verbatim EARLIER — a :::note whose body starts
+        // with prose keeps its inner lines as blockquoted text, but a :::custom-html or an unknown directive
+        // can carry one that still parses — would then win over the appended winner, and the flatten would
+        // resolve a reference DIFFERENTLY from the page the human approved. With the winners first,
+        // CommonMark's first-definition-wins does all the work and every nested copy below is inert.
+        var linkDefinitions = LinkDefinitionsBlock(document.LinkDefinitions);
+        if (linkDefinitions is not null)
+        {
+            parts.Add(linkDefinitions);
+        }
+
         foreach (var block in blocks)
         {
             // TrimEnd drops a block's trailing newline(s) so the join below yields exactly one blank line
@@ -149,6 +168,207 @@ public static class HandoffMarkdown
     /// be able to read — an absent line would be indistinguishable from a producer too old to write one.
     /// </summary>
     public const string NoAnswersFile = "none";
+
+    /// <summary>
+    /// The two in-band provenance stamps read back off a flattened plan (Charter #192).
+    /// </summary>
+    /// <param name="PlanSha256">The <c>plan-sha256</c> hex.</param>
+    /// <param name="AnswersStamp">
+    /// The <c>answers-sha256</c> stamp's RAW token — a hex, or <see cref="NoAnswersFile"/> — or null when the
+    /// line is absent entirely. Three states, not two: an absent line means a producer that predates
+    /// Charter #187, which is not the same claim as <c>none</c> ("this run merged no answers file").
+    /// </param>
+    public sealed record HandoffStamps(string PlanSha256, string? AnswersStamp);
+
+    /// <summary>
+    /// Read the provenance stamps back off <paramref name="handoff"/>, or null when the plan stamp is not
+    /// there — which means this is not a flattened plan Charter wrote, or is one from before Charter #172.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Anchored to the TAIL, and via the producer's own constants.</b> <c>references/handoff.md</c> promises
+    /// the plan stamp is the LAST line, so that is where this looks — a document-wide search would happily find
+    /// a stamp quoted in a plan's own prose (this repo's documentation flattens exactly that way) and vouch for
+    /// the wrong hash.
+    /// </para>
+    /// <para>
+    /// <b>The answers stamp is the previous NON-EMPTY line, not the previous line.</b> <see cref="Emit"/> joins
+    /// its parts with a blank line between them, so the two stamps are separated by one — reading
+    /// "immediately above" finds nothing and reports a #187-era handoff as pre-#187.
+    /// </para>
+    /// </remarks>
+    public static HandoffStamps? ReadStamps(string handoff)
+    {
+        var lines = (handoff ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+
+        var last = LastNonEmpty(lines, lines.Length - 1);
+        if (last < 0 || StampValue(lines[last], StampPrefix) is not { } planSha256)
+        {
+            return null;
+        }
+
+        var previous = LastNonEmpty(lines, last - 1);
+        var answersStamp = previous < 0 ? null : StampValue(lines[previous], AnswersStampPrefix);
+
+        return new HandoffStamps(planSha256, answersStamp);
+    }
+
+    /// <summary>The index of the last non-blank line at or before <paramref name="from"/>, or -1.</summary>
+    private static int LastNonEmpty(string[] lines, int from)
+    {
+        for (var i = from; i >= 0; i--)
+        {
+            if (lines[i].Trim().Length > 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The value carried by <c>&lt;!-- {prefix}{value} --&gt;</c>, or null when the line is not that
+    /// stamp.</summary>
+    private static string? StampValue(string line, string prefix)
+    {
+        var trimmed = line.Trim();
+        var opening = "<!-- " + prefix;
+        return trimmed.StartsWith(opening, StringComparison.Ordinal)
+            && trimmed.EndsWith(" -->", StringComparison.Ordinal)
+                ? trimmed[opening.Length..^" -->".Length]
+                : null;
+    }
+
+    /// <summary>
+    /// The opening of the metadata line every emitted <c>:::question</c> carries, up to and including the
+    /// backtick that opens the id. A reader locates a question's id by scanning for this and taking the text to
+    /// the next backtick.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so <c>charter verify</c> cross-checks the manifest against the handoff using the PRODUCER's own
+    /// literal rather than a re-typed one (Charter #192). It deliberately does NOT re-run <see cref="Emit"/>:
+    /// a verifier that re-derives the flatten agrees with itself, not with the file on disk.
+    /// </remarks>
+    public const string QuestionIdMarker = "_Question — id: `";
+
+    /// <summary>The literal that marks an emitted question as ANSWERED, on the line above its metadata line.</summary>
+    public const string AnsweredMarker = "** — Answered: ";
+
+    /// <summary>The literal that marks an emitted question as OPEN and needing a person.</summary>
+    public const string OpenQuestionMarker = "**Open question (unresolved):**";
+
+    /// <summary>The literal that marks an emitted question as OPEN and delegated to the reading agent.</summary>
+    public const string DelegatedDecisionMarker = "**Delegated decision — you must settle this before building:**";
+
+    /// <summary>
+    /// The leading block of link reference definitions — one line per definition, in source order — or null
+    /// when the plan declares none (Charter #175).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>RE-SERIALISED from the resolved values, never sliced from the source.</b> That is not a preference,
+    /// it is the only correct emission: <c>LinkReferenceDefinition.Span.End</c> is SHORT BY TWO when the title
+    /// sits on a continuation line, and the resulting slice defines NOTHING when re-parsed — the unterminated
+    /// title invalidates the whole construct, so the corrupt text lands in the plan an LLM breaks down AND the
+    /// reference still dangles. Re-serialising is also what this seam already does for
+    /// <c>:::question</c>, <c>:::note</c>/<c>:::warn</c> and <c>:::diagram</c>/<c>:::diff</c>; verbatim
+    /// passthrough is the rule for <c>Prose|Heading|List|Table|Code</c> only, and a link reference definition
+    /// is a NON-CONTENT node, not prose.
+    /// </para>
+    /// <para>
+    /// <b>Two residues, both accepted and both visible here.</b> (1) SPELLING IS NORMALISED — an
+    /// <c>&lt;url&gt;</c> loses its brackets unless it needs them, a title is re-quoted with <c>"</c>, and a
+    /// title spread over two lines is joined onto one. Forced by the span truncation above. (2) A definition
+    /// nested inside a container APPEARS TWICE — once here and once verbatim inside the container's own
+    /// flatten. It is INERT (first-wins, and this block is first); suppressing it would need either the
+    /// unsound containment filter or surgery on container bodies, and Charter's standing trade is a visible
+    /// inert duplicate over a silent wrong resolution.
+    /// </para>
+    /// <para>
+    /// <b>Unreferenced definitions are emitted too.</b> "Nothing is dropped" beats tidiness: reachability is a
+    /// whole-document analysis whose failure mode is deleting a definition the next edit needs, and a spare
+    /// definition costs a reader one line.
+    /// </para>
+    /// </remarks>
+    private static string? LinkDefinitionsBlock(IReadOnlyList<LinkDefinition> definitions)
+    {
+        if (definitions.Count == 0)
+        {
+            return null;
+        }
+
+        var builder = new StringBuilder();
+        for (var i = 0; i < definitions.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append('\n');
+            }
+
+            var definition = definitions[i];
+            builder.Append('[').Append(EscapeLabel(definition.Label)).Append("]: ")
+                   .Append(EmitUrl(definition.Url));
+
+            if (definition.Title is { } title)
+            {
+                builder.Append(" \"").Append(EscapeTitle(title)).Append('"');
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// A link label, escaped so it re-parses to the same text: <c>\</c> first (or it would double-escape the
+    /// brackets), then the <c>[</c> and <c>]</c> that would otherwise end the label early.
+    /// </summary>
+    private static string EscapeLabel(string label)
+        => label.Replace("\\", "\\\\", StringComparison.Ordinal)
+                .Replace("[", "\\[", StringComparison.Ordinal)
+                .Replace("]", "\\]", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A link destination in whichever of CommonMark's two forms round-trips it.
+    /// </summary>
+    /// <remarks>
+    /// The bare form cannot express an EMPTY destination, cannot contain whitespace or control characters, and
+    /// admits parentheses only in balanced pairs — so any of those forces the <c>&lt;…&gt;</c> form, where the
+    /// delimiters themselves must then be escaped. Parentheses force it whether or not they happen to balance:
+    /// checking balance would be a second parser, and the angle form is correct either way.
+    /// </remarks>
+    private static string EmitUrl(string url)
+    {
+        var needsAngleBrackets = url.Length == 0
+            || url.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || c == '(' || c == ')');
+
+        var escaped = url.Replace("\\", "\\\\", StringComparison.Ordinal);
+        return needsAngleBrackets
+            ? "<" + escaped.Replace("<", "\\<", StringComparison.Ordinal)
+                           .Replace(">", "\\>", StringComparison.Ordinal) + ">"
+            : escaped;
+    }
+
+    /// <summary>
+    /// A link title for the double-quoted form: <c>\</c> then <c>"</c> escaped, and every line break collapsed
+    /// to a space.
+    /// </summary>
+    /// <remarks>
+    /// The collapse keeps each emitted definition on exactly ONE line. A CommonMark title may span lines, but
+    /// it may not contain a BLANK one — a title that did would silently truncate the definitions block at that
+    /// point — and one-line-per-definition is also what makes the leading block readable. It is part of the
+    /// same normalisation residue the title re-quoting is, and the same discipline <see cref="Inline"/> keeps
+    /// for a question's rationale — except that this one does NOT trim, because a title's leading and
+    /// trailing spaces are its own content rather than incidental layout.
+    /// </remarks>
+    private static string EscapeTitle(string title)
+        => title.Replace("\\", "\\\\", StringComparison.Ordinal)
+                .Replace("\"", "\\\"", StringComparison.Ordinal)
+                .Replace("\r\n", " ", StringComparison.Ordinal)
+                .Replace('\r', ' ')
+                .Replace('\n', ' ');
 
     /// <summary>Convert one parsed block to its plain-CommonMark handoff text, dispatching on its kind.</summary>
     private static string EmitBlock(Block block, string source, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
@@ -557,7 +777,7 @@ public static class HandoffMarkdown
         // (Charter #188). Same predicate as the record's `answered` and the rendered page's status.
         if (AnswerRules.IsDecision(resolved))
         {
-            var answered = $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}";
+            var answered = $"**Q: {spec.Title}{AnsweredMarker}{string.Join(", ", resolved)}\n{metadata}";
             return why is null ? answered : answered + "\n" + why;
         }
 
@@ -567,9 +787,9 @@ public static class HandoffMarkdown
         // settle, which is exactly wrong for a block whose `target` says the reader settles it.
         var delegated = string.Equals(QuestionSpec.Token(spec.Target), "agent", StringComparison.Ordinal);
         var lead = delegated
-            ? $"> **Delegated decision — you must settle this before building:** {spec.Title}\n> {metadata}"
+            ? $"> {DelegatedDecisionMarker} {spec.Title}\n> {metadata}"
                 + $"\n> _{DecisionInstruction(spec)}_"
-            : $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+            : $"> {OpenQuestionMarker} {spec.Title}\n> {metadata}";
 
         return why is null ? lead : lead + "\n> " + why;
     }
@@ -641,7 +861,7 @@ public static class HandoffMarkdown
     private static string QuestionMetadataLine(QuestionSpec spec)
     {
         var builder = new StringBuilder()
-            .Append("_Question — id: `").Append(spec.Id).Append('`')
+            .Append(QuestionIdMarker).Append(spec.Id).Append('`')
             .Append("; mode: `").Append(QuestionSpec.Token(spec.Mode)).Append('`')
             .Append("; target: `").Append(QuestionSpec.Token(spec.Target)).Append('`');
 

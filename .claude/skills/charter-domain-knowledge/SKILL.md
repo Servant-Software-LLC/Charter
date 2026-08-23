@@ -679,6 +679,43 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
     pure function of the plan text (its artifact is pinned byte-identical to `export`'s), and its needs-human
     is a strictly WEAKER predicate than the gate's — so the record still describes *the plan on disk* while
     the handoff describes *the plan plus a file*, and that is the correct split.
+- **`charter verify <handoff.md>` recomputes the custody joins** (#192) so every consumer does not reimplement
+  them — the same argument that put the strict gate in Charter rather than in each caller. **Read-only**: no
+  writing, no network, no clock. It finds the manifest from the handoff by the SAME derivation `--manifest`
+  uses, which **promotes that derivation from convention to CONTRACT**.
+  - **Three exit states.** `0` every join holds AND no escalation is recorded · `2` a join disagreed **or the
+    manifest records `gate.needsHuman: true`** · `1` verify could not answer (unreadable handoff, no manifest
+    beside it, unparseable manifest, unknown `schema`, no stamp) — a `1` is not a verdict. The `needsHuman`
+    clause closes a **vacuous pass**: every join can hold over a plan Charter itself said needs a person.
+    §10.0.2 forbids the PRODUCER changing an exit code as a side effect of writing a file; a READER
+    re-reporting Charter's own recorded verdict is not that.
+  - **The payload cross-check is what earns the name.** Manifest `questions[].id` set == the ids the handoff
+    emits, and each `answered` agrees with Answered vs `Open question (unresolved)`. Without it, #187's own
+    opening reproduction (`"answered": true` beside an open question) PASSES. A containment check against the
+    producer's own constants, **never a second `Emit`** — a verifier that re-derives the flatten agrees with
+    itself, not with the file. **Answer VALUES are deliberately not checked** (prose-parsing arbitrary text),
+    and the report says so.
+  - **IT CAN NEVER DETECT INCORRECTNESS, and the help says so at length.** Both files sit in one directory,
+    writable by the same party: edit an answer, recompute `handoffSha256`, and every join passes. The
+    negative suite — the list of inputs it exits `0` on — was written FIRST, because it decides what the verb
+    may claim. The disclaimer prints on **success** too; a green `verify` will otherwise be quoted in a #496
+    post-mortem as proof a run was proper.
+  - **Two false alarms are named, never excused.** A CRLF rewrite **fails** (the field's question is
+    byte-for-byte identity) with the cause labelled; a **lone `\r` is never normalised**, because it can be
+    plan CONTENT (#202 — a question answer carrying one flattens as `Answered: line1␍line2`), so
+    `ReviewBaseStatus`'s collapsing form must not be copied here. An **added trailing newline** gets its own
+    diagnosis — `Emit` writes none while the manifest JSON does, so it is the MOST likely benign mutation.
+  - **`HandoffAnswers.EncodingWarning` is NOT reused.** A BOM on the handoff is EVIDENCE (Charter wrote that
+    file); on an answers file it is a human's choice. Same detection (`PlanHash.ByteOrderMarkName`), opposite
+    conclusion, so only the detection is shared.
+  - **Deliberately absent:** `gate.exitCode` (derived inside one `Serialize` call — a third copy of that
+    derivation in the binary), the record join (not locatable, adds nothing), `--json`, `--plan`/`--answers`,
+    `--strict`, exit codes 3/4/5. **Known limit:** discovery is co-location + co-naming, so a handoff moved
+    without its manifest returns `1` forever — honest, and stated as such.
+  - **Name collision, decided:** `charter verify` keeps the custody meaning; plan-03 §5.1's unbuilt
+    stale-plan/uncommitted-comments verb is **`charter review verify`**. Acceptable where `headless`/`handoff`
+    was not, because that failure is *silent* and this one is *loud* — a `.charter.md` argument is refused by
+    name, with a pointer.
 
 ## Git-mediated team review (the durable half)
 
@@ -773,6 +810,32 @@ verification. Exact emitted shape: `skills/charter/references/handoff.md`. The r
 - **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms are accepted (raw, or already
   wrapped in ` ```mermaid ` / ` ```diff `); an already-fenced body is unwrapped before emitting, never
   double-fenced (a double fence makes the inner fence literal, so the diagram does not render on GitHub).
+- **A plan's LINK REFERENCE DEFINITIONS lead the flattened file** (#175). The flatten is a NEW CommonMark
+  document, so `See [foo].` resolves against the definitions *that file* carries — and after #171 stripped the
+  `LinkReferenceDefinitionGroup` it carried none, handing Guardrails literal `[foo]` text where the reviewer
+  saw a link. One normalised block, above the plan's title; **a plan using no reference links is byte-identical
+  to before**. Three rules and two dead designs:
+  - **RE-SERIALISED from Markdig's resolved `Label`/`Url`/`Title`, never sliced from the source.**
+    `LinkReferenceDefinition.Span.End` is **short by two** when the title sits on a continuation line, and the
+    resulting slice defines **nothing at all** when re-parsed — so the corrupt text lands in the plan *and*
+    the reference still dangles. That is #171 repeating one level down: trusting the same node family's spans.
+  - **Distinctness and the winner are MARKDIG'S OWN** — the emitter keeps the children present in
+    `LinkReferenceDefinitionGroup.Links`, the very dictionary the parse resolved every `[foo]` against. So the
+    flatten resolves a reference exactly as the RENDER does, by construction rather than by agreement.
+  - **TOP placement is forced, not aesthetic.** Appending at the end re-opens the redirection bug: a LOSER
+    definition surviving verbatim earlier would win over an appended winner. Winners first ⇒ CommonMark's
+    first-definition-wins does the work and every nested copy is inert.
+  - **The containment filter ("span-contained ⇒ already carried") is DEAD, unsound twice.** Markdig hoists
+    every definition — list item, blockquote, `:::` container — into ONE document-level group, but a
+    container's flatten RESHAPES its body: a `:::note` turns one into `> **Note:** [inner]: …` (a paragraph)
+    and a `:::diagram` buries it inside a ` ```mermaid ` fence. Both render as links and dangle in the handoff.
+  - **`BlockKind` did NOT grow a member.** The definitions ride a second, non-block channel
+    (`BlockDocument.LinkDefinitions`, read only by `HandoffMarkdown.Emit`) with **no source offset exposed**,
+    so they still occupy no anchor slot and add no `sourceMap` entry.
+  - Accepted residues: a nested definition appears **twice** (inert); spelling is **normalised**; unreferenced
+    definitions are **still emitted**; and `[^1]: body` — an ordinary definition to Charter, which enables no
+    footnotes — is carried, because the governing rule is *the flatten resolves references the way the render
+    does*.
 - **Nothing is silently dropped.** An unknown `:::foo` keeps its body (blockquoted prose on flatten, an escaped
   `<pre>` on render); a **resolved** question renders as resolved (`class="question answered"` +
   `data-answered="true"`, values pre-selected, an "Answered" chip) so a second round does not re-ask a settled
@@ -829,6 +892,7 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 | **The `.headless.json` CONTRACT** a machine may assert on (stable core, absence semantics, note kinds) | `skills/charter/references/unattended.md`, bound by `HeadlessRecordContractTests` |
 | **Strict handoff, the delegated flatten, the provenance stamps, the one question-body parse, the manifest** | `docs/plans/04-machine-consumer-contract.md`; predicate in `src/Charter.Core/HandoffGate.cs` |
 | **The `.manifest.json` CONTRACT** a machine may assert on (stable core, absence semantics, the hash recipe) | `skills/charter/references/handoff.md`, bound by `HandoffManifestContractTests` |
+| **What `charter verify` checks — and the list of things a GREEN verify does not prove** | `src/Charter.Cli/VerifyCommand.cs` (`NotProvenNote`), bound by `VerifyNegativeSuiteTests` |
 | Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
 | **Release state, what shipped when, the test count** | `git describe --tags` · `git log` · GitHub releases · the run itself — **never a document.** See the rule under *Status* (#191) |
 

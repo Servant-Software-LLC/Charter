@@ -41,4 +41,51 @@ public static class PlanHash
     public static string Sha256Hex(string text)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text ?? string.Empty)))
             .ToLowerInvariant();
+
+    /// <summary>
+    /// The name of the byte order mark <paramref name="bytes"/> begins with (<c>UTF-8</c>, <c>UTF-16LE</c>,
+    /// <c>UTF-16BE</c>, <c>UTF-32LE</c>, <c>UTF-32BE</c>), or null when there is none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It lives here rather than beside either caller because a byte order mark is exactly what makes the
+    /// recipe above diverge from <c>sha256sum</c> — detecting one is part of explaining this hash, not part of
+    /// reading any particular file. Two callers ask, and they draw OPPOSITE conclusions from the same answer,
+    /// which is why only the DETECTION is shared and neither message is:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description><c>--answers</c> (<see cref="HandoffAnswers.EncodingWarning"/>): a human chose that
+    ///     encoding, the file decodes correctly and the run is honest — only the hash's relationship to
+    ///     <c>sha256sum</c> is surprising. A <b>warning</b>, with "write it as BOM-less UTF-8" as the
+    ///     remedy.</description></item>
+    ///   <item><description>the <b>handoff</b> (<c>charter verify</c>): Charter WROTE that file, as BOM-less
+    ///     UTF-8. A mark on it means somebody rewrote it, which is <b>evidence</b>, not an excuse — and telling
+    ///     the user to rewrite the artifact would be exactly the wrong remedy.</description></item>
+    /// </list>
+    /// </remarks>
+    public static string? ByteOrderMarkName(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            return "UTF-8";
+        }
+
+        // UTF-32 is tested BEFORE UTF-16: a UTF-32LE mark starts with the same two bytes as a UTF-16LE one.
+        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00)
+        {
+            return "UTF-32LE";
+        }
+
+        if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF)
+        {
+            return "UTF-32BE";
+        }
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            return "UTF-16LE";
+        }
+
+        return bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF ? "UTF-16BE" : null;
+    }
 }

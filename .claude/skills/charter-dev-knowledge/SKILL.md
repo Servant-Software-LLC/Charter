@@ -31,10 +31,12 @@ src/
     HandoffAnswers.cs           # a --answers file's values AND the hash of the text they came from (one parse)
     BareFileName.cs             # the ONE no-local-path rule, shared by the record and the manifest
     PlanHash.cs                 # the ONE hash recipe: sha256 of the DECODED text re-encoded UTF-8 (NOT sha256sum)
+                                #   + ByteOrderMarkName: the ONE BOM detection, two callers, OPPOSITE conclusions
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
     HeadlessExitCodes.cs        # the SEPARATE 0/2 contract for `headless` — NOT the drain vocabulary
     HeadlessCommand.cs          # `headless` = ArtifactExporter + HeadlessRecord + the derived-path convention
+    VerifyCommand.cs            # `verify` = the READ-ONLY custody joins + the "what a green verify does not prove" note
     CharterVersion.cs           # the version SSOT (informational version, +build stripped)
   Charter.Server/               # loopback review server + annotation API; embeds ../../sdk/charter-annotate.js
     AnchorResolution.cs         # the ONE drain-time anchor→line kernel
@@ -408,6 +410,18 @@ update run `charter skills install --force` too.
   three hashes in `handoff --manifest` equal `sha256sum` only for a BOM-less UTF-8 file. A test comparing one
   to `SHA256.HashData(File.ReadAllBytes(...))` must therefore control the file's encoding, and a test asserting
   the DIVERGENCE (`HandoffManifestTests.OnAUtf16AnswersFile_…`) is what stops someone "fixing" the recipe.
+- **A LONE `\r` IS NOT A LINE BREAK IN A FLATTENED PLAN, and `.Replace('\r', '\n')` is the trap** (#192/#202).
+  Charter has two normalisations that look interchangeable and are not. `HandoffMarkdown.Emit` folds CR and
+  CRLF in the SOURCE, so a raw CR in plan prose never survives — but a `:::question`'s answer arrives
+  **JSON-escaped** (`"answer": ["alpha\rbeta"]`), so `Emit` never sees it as a character and the flatten
+  really does carry `Answered: alpha␍beta`. Anything that then reads the flatten LINE BY LINE with the
+  `ReviewBaseStatus`-style `.Replace("\r\n","\n").Replace('\r','\n')` tears that answer in two. It cost a live
+  false alarm: `charter verify`'s question scan reported an **untouched, honest** handoff/manifest pair as
+  `questions MISMATCH`, because the torn line left the `_Question — id:` metadata line with `beta` above it
+  instead of its `Answered:` lead. Fold `\r\n` only; leave a lone `\r` alone, in a line split **and** in any
+  hash comparison (there, collapsing it would report a real content change as a harmless line-ending rewrite).
+  `ReviewBaseStatus` collapses deliberately and correctly — its question is *"did a human edit this?"* across a
+  mixed Win/Linux team; every other seam's is not that question.
 - **`.review/` is created lazily, on the first append** — not in `ReviewLogWriter`'s constructor. A `charter
   review` that writes no comment must leave no trace beside the plan (plan-03 §5.0). Do not reintroduce an
   eager `EnsureDirectory`; `SoloReviewFootprintTests` and `SoloReviewPathTests` guard it.

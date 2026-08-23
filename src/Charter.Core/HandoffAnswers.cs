@@ -97,7 +97,7 @@ public sealed record HandoffAnswers(
     {
         ArgumentNullException.ThrowIfNull(fileBytes);
 
-        var bom = DetectByteOrderMark(fileBytes);
+        var bom = PlanHash.ByteOrderMarkName(fileBytes);
         if (bom is not null)
         {
             return $"the answers file begins with a {bom} byte order mark. Charter decodes it correctly, but "
@@ -119,32 +119,5 @@ public sealed record HandoffAnswers(
         }
 
         return null;
-    }
-
-    /// <summary>The name of the byte order mark <paramref name="bytes"/> begins with, or null for none.</summary>
-    private static string? DetectByteOrderMark(byte[] bytes)
-    {
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-        {
-            return "UTF-8";
-        }
-
-        // UTF-32 is tested BEFORE UTF-16: a UTF-32LE mark starts with the same two bytes as a UTF-16LE one.
-        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00)
-        {
-            return "UTF-32LE";
-        }
-
-        if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF)
-        {
-            return "UTF-32BE";
-        }
-
-        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-        {
-            return "UTF-16LE";
-        }
-
-        return bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF ? "UTF-16BE" : null;
     }
 }

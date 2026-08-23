@@ -577,6 +577,17 @@ So Charter **reads** `HEAD`, the upstream ref, and the plan blob's sha, and:
 It still never runs them. This is the difference between a loop that closes and one that depends on human
 memory.
 
+> **Naming, settled by Charter #192.** The verb this section calls for is **`charter review verify`** — a
+> subcommand — and every mention of it in this document already spells it that way. **`charter verify`, with no
+> `review`, is a DIFFERENT verb and it is built**: it recomputes the chain-of-custody joins between a flattened
+> `plan.md` and the manifest beside it (plan-04 §12). The two share a word and nothing else — this one is about
+> a *review* being safe to start and safe to leave; that one is about two *handoff artifacts* agreeing.
+>
+> That collision was accepted where `headless`/`handoff`'s was not (plan-04 §7, §10.0), and the difference is
+> the whole reason: reaching for the wrong one THERE fails **silently** (exit `0`, no `plan.md`, the pipeline
+> reports success), whereas `charter verify <plan>.charter.md` is refused **loudly**, by name, with a pointer
+> to this verb. When this step is built, keep the `review` prefix.
+
 ---
 
 ## 6. Deliberately unaffected

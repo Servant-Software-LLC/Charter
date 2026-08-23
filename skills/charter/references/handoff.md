@@ -205,6 +205,38 @@ silently dropped:
 >   Charter.Core/
 ```
 
+### Link reference definitions lead the file
+
+A plan's `[foo]: http://example.com "Title"` declarations are **carried across**, as one block at the **very
+top** of the flattened file — above the plan's own title. The flatten is a *new* CommonMark document, so
+`See [foo].` resolves against the definitions **that file** carries; without them `[foo]` would be literal
+text, and the plan an LLM breaks down would have lost a piece of its meaning (Charter #175).
+
+```
+[foo]: http://example.com "The design note"
+[bar]: ./docs/adr-014.md
+
+# Plan title
+```
+
+Four things worth knowing before you assert on it:
+
+- **They are RE-SERIALISED, not copied.** Spelling is normalised: `<url>` keeps its angle brackets only when
+  it needs them (empty, whitespace, control characters or parentheses), a title is re-quoted with `"`, and a
+  title spread over two lines is joined onto one. The values themselves — label, destination, title — are
+  exactly what the renderer resolved.
+- **One line per distinct label, the FIRST definition.** `[Foo]` and `[foo]` are one label (CommonMark folds
+  case and whitespace), and the first wins, so the flatten resolves a reference **exactly as the rendered
+  page did**.
+- **A definition nested inside a `:::` container appears twice** — once at the top, once inside that
+  container's own flatten. The nested copy is **inert**: the leading block is first, and first wins. It is
+  left visible rather than surgically removed because the alternative filter is unsound — a `:::note`
+  flattens its first inner line to `> **Note:** [inner]: …`, which defines nothing.
+- **A plan that uses no reference links is UNCHANGED** — no block, no blank line, and the file still opens
+  with `# Title` exactly as before.
+
+The **end** of the file is unaffected: the provenance stamps are still the last two lines (below).
+
 ## `--fail-if-needs-human` — the unattended gate
 
 ```
@@ -508,6 +540,56 @@ in-band stamps matter: they survive a CRLF rewrite and this does not.
 - **Whether a human ever reviewed the plan.** `charter handoff` does not read the review log at all.
 - **Whether the caller honoured the exit code.** `gate.flagPassed` records the **argv**, not obedience — which
   is why it is named `flagPassed` and not `enforced`.
+
+## `charter verify` — recompute the joins instead of hand-checking them
+
+```
+charter verify plan.md
+```
+
+Read-only: writes nothing, opens no network connection, reads no clock. It finds the manifest **from the
+handoff** (same derivation as `--manifest`: replace the final extension with `.manifest.json`) and recomputes
+every join — `planSha256` against the in-band plan stamp, `answersSha256` against the answers stamp,
+`handoffSha256` against the file as it now stands, and the manifest's `questions[]` against the ids and
+Answered/Open states the **document actually carries**.
+
+| Exit | Means |
+|---|---|
+| `0` | every join holds **and** the manifest records no outstanding escalation |
+| `2` | a join disagreed, **or** the manifest records `gate.needsHuman: true` — read stderr |
+| `1` | verify **could not answer**: unreadable handoff, no manifest beside it, unparseable manifest, a `schema` this build does not know, or no in-band stamp. A `1` is not a verdict. |
+
+> ### READ THIS BEFORE QUOTING A GREEN `verify`
+>
+> The handoff and its manifest sit in **one directory, writable by the same party**. So `verify` detects
+> **inconsistency between two mutually-writable files; it can never detect incorrectness.** Edit an answer in
+> the handoff, recompute `handoffSha256` in the manifest — it is plain JSON — and every join passes.
+>
+> It also does **not** check answer **values** (that would mean prose-parsing arbitrary text), does not prove
+> the handoff reached Guardrails unmodified, does not prove a human reviewed anything, and does not prove the
+> caller honoured an exit code. The verb prints all of this on **success** as well as on failure, deliberately.
+
+Two mismatches get a named cause rather than a bare "tampering":
+
+- **A line-ending rewrite** (`core.autocrlf`, `.gitattributes text=auto`, an editor). It still **fails** — the
+  field's question is *"are these two files byte-for-byte the same revision?"* and a verifier must not answer a
+  weaker one — but the cause is named. A **lone `\r`** is never normalised away, because it can be plan
+  *content* (a question answer carrying one flattens as `Answered: line1␍line2`); where the file has one,
+  `verify` says it cannot tell rather than blessing a content change.
+- **An added trailing newline.** `charter handoff` writes no final newline while the manifest JSON does, so any
+  editor set to *insert final newline* produces exactly this — the most likely benign mutation, and it gets its
+  own diagnosis rather than the alarming one.
+
+A **byte order mark** on the handoff is reported as a **finding**, not a warning: Charter wrote that file as
+BOM-less UTF-8, so a mark means somebody rewrote it. (For an `--answers` file the same detection produces a
+*warning* instead — there a human chose the encoding.)
+
+**Known limit:** the manifest is found by co-location plus co-naming. The artifacts are designed to travel
+(bare names, no local paths), so a handoff copied into a task folder **without** its manifest returns `1`
+forever. That is a fact about where the file is, not evidence about the run, and `verify` says so.
+
+**Not this verb:** the review-side checks — a stale plan, uncommitted comments — are `charter review verify`,
+a different verb that is not built yet. Passing a `.charter.md` here is refused loudly, by name.
 
 ### The shape is bound by a test, not by this prose
 

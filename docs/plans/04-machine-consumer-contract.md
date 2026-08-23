@@ -1,7 +1,9 @@
 # The machine consumer — strict handoff and the record contract
 
-**Status:** design of record · **Rev 5**, 2026-08-23 (§11 added: a directive the renderer draws and the block
-model cannot see — and the answer-destruction it was hiding) · Rev 3, 2026-08-23 (§10 added: the
+**Status:** design of record · **Rev 6**, 2026-08-23 (§12: the flatten carries the plan's link reference
+definitions; §13: `charter verify` recomputes the custody joins) · Rev 5, 2026-08-23 (§11 added: a directive
+the renderer draws and the block model cannot see — and the answer-destruction it was hiding) · Rev 3,
+2026-08-23 (§10 added: the
 chain-of-custody manifest, and the in-band stamp gains a second line) · Rev 2, 2026-08-23 (§9 added: the
 answers file is no longer trusted, and `answered` no longer counts elements) · Rev 1, 2026-08-22 (adversarial
 pass applied — three of the first four decisions were reversed)
@@ -10,6 +12,9 @@ naming collisions) · **#186** (an `--answers` file overwrites or erases a recor
 · **#188** (`answered` counts array elements, not content) · **#187** (no verb produces the handoff CommonMark
 and a record of what was decided from one resolution pass) · **#203** (a nested `:::question` renders as an
 answerable form but is invisible to the block model)
+· **#175** (link reference definitions are dropped from the handoff, leaving dangling `[foo]` references)
+· **#192** (`charter verify` — recompute the custody joins instead of leaving each consumer to reimplement
+them)
 **Filed in support of:** Guardrails #496 — an epic to drive a complete Charter → Guardrails pipeline with
 no human in the loop, and prove afterwards that the run was proper rather than merely green.
 **Filed reciprocally:** Guardrails #500 (nothing branches on `target`) · Guardrails #505 (nothing downstream
@@ -913,3 +918,265 @@ the already-settled rule that a nested block carries no anchor (#166), rather th
 It is stated rather than fixed because the scope of this revision is *report, do not descend*, and because a
 crash is a loud failure rather than a silent one — the nested-directive warning now fires **before** the
 render aborts, so the author is told the real cause. It needs its own issue.
+
+# Rev 6 — the flatten carries its references, and the joins have a checker
+
+## 12. Link reference definitions cross the handoff (#175)
+
+Rev 3 made the flatten **testify**. It still did not make it **complete**: a plan that writes
+`[foo]: http://example.com` once and `See [foo].` three times handed Guardrails a document where `[foo]` is
+literal text. The reviewer approved a page with three links; the plan an LLM breaks down has none.
+
+This is a **gap, not a regression**. Before #171 the definitions sometimes survived, but only by accident and
+never correctly — the group's span-derived raw content is a *prefix slice of the document*, so the pre-#171
+handoff duplicated the plan title or truncated mid-token. There was never a state in which the handoff carried
+them faithfully.
+
+### 12.0 What the adversarial pass killed — both are what a future reader will re-propose
+
+**"Emit the source slice, never re-serialise" — DEAD.** `LinkReferenceDefinition.Span.End` is **short by two**
+when the title sits on a continuation line. Verified on Markdig 0.37: `[a]: http://a.example\n  "A title"`
+slices to `[a]: http://a.example\n  "A titl`. The design predicted that would re-parse as a title-less
+definition plus a garbage paragraph. **It is worse than that** — measured, it defines **nothing at all**: the
+unterminated title invalidates the whole construct, Markdig backtracks the definition into a paragraph, and
+`[a]` dangles anyway. So the corrupt text lands in the plan an LLM breaks down **and** the reference still does
+not resolve. That is #171 repeating one level down: trusting the same node family's spans.
+
+**The containment filter ("span-contained by a block ⇒ that block already carries it") — DEAD, unsound twice.**
+Markdig hoists *every* definition — including ones nested in a list item, a blockquote or a `:::` container —
+into ONE document-level group, so span-containment is common and the filter looks like a clean de-duplication.
+It is not, because a container's flatten **reshapes its body**:
+
+| Nested where | What the flatten produces | Does it define anything? |
+|---|---|---|
+| `:::note` (first inner line) | `> **Note:** [inner]: http://…` | No — a blockquoted paragraph |
+| `:::diagram` (after a blank line) | the line inside a ` ```mermaid ` fence | No — literal code |
+
+Both render as working links on the page and dangle in the handoff. Both are pinned as tests that assert **the
+hole and the carry together**, so the filter cannot be reintroduced without going red.
+
+### 12.1 The decision
+
+`HandoffMarkdown.Emit` **prepends one normalised link-reference-definition block**: for each distinct label,
+the **first** definition in source order, **re-serialised from Markdig's resolved `Label` / `Url` / `Title`**.
+No span slicing, no containment filter, no interleaving.
+
+Re-serialisation is not a preference, it is the only correct emission — and this seam already re-serialises
+`:::question`, `:::note`/`:::warn` and `:::diagram`/`:::diff`. Verbatim passthrough is the rule for
+`Prose|Heading|List|Table|Code` **only**, and a link reference definition is a **non-content** node, not prose.
+
+**Distinctness and the winner are Markdig's own, never re-derived.** The emitter reads
+`LinkReferenceDefinitionGroup.Links` — the very dictionary the parse resolved every `[foo]` against — and keeps
+the children that are *in* it. Label identity is therefore case-insensitive and whitespace-folded (`[Foo]`,
+`[foo]` and `[FOO]` are one label; `[a   b]` is `a b`) because CommonMark says so, not because Charter
+reimplemented it. **The flatten resolves a reference exactly as the rendered page does, by construction rather
+than by agreement** — which is the governing rule this whole section is decided by.
+
+### 12.2 Two structural decisions
+
+**Top placement is FORCED, not aesthetic.** End placement re-opens the redirection bug one level down: a
+*loser* definition surviving verbatim **earlier** would win over an appended winner, and the flatten would
+resolve a reference differently from the page the human approved. With the winners first, CommonMark's
+first-definition-wins does all the work and every nested copy below is inert. The blank line between the block
+and the first real block is load-bearing for a second reason: without it, CommonMark can swallow the following
+line as a **title continuation** — the very truncation this section is built around.
+
+**`BlockKind` does not grow a member.** Nothing enters the block stream: the definitions never become
+`Block`s, never occupy an anchor slot, never perturb `AnchorAssignment`'s duplicate discriminator, never add a
+`sourceMap` entry. `LinkReferenceDefinitionTests.Parse_ALinkDefinition_IsNotAContentBlock_AndDoesNotShiftTheBlockSet`
+stays green, and #171's strip is untouched.
+
+**The carrier is a second, non-block channel.** `CharterMarkdown.ParseDocument` gains an overload returning the
+stripped group's children as resolved `(Label, Url, Title)` triples in source order;
+`BlockDocument.LinkDefinitions` exposes them; `HandoffMarkdown.Emit` is the only reader. **No source offset is
+exposed on that channel**, deliberately — a definition renders as nothing so it must never carry an anchor, and
+an offset would also let §10.7's LF-normalised-vs-raw parse divergence leak through a public channel.
+
+### 12.3 Accepted residues — each is written down here AND at the code
+
+1. **A nested definition appears twice** — once at the top, once verbatim in its container. **Inert**
+   (first-wins, and the block is first), and asserted as inert rather than merely present. Suppressing it needs
+   the unsound filter or surgery on container bodies. Charter's standing trade: **a visible inert duplicate
+   over a silent wrong resolution.**
+2. **Spelling is normalised.** `<url>` loses its brackets unless it needs them (empty, whitespace, control
+   chars or parentheses force the angle form), a title is re-quoted with `"`, and a title spread over two lines
+   is joined onto one — a CommonMark title may span lines but may not contain a blank one, and
+   one-line-per-definition is what keeps the block readable. Forced by the span truncation. A title's leading
+   and trailing spaces are **not** trimmed: those are content, not layout.
+3. **Unreferenced definitions are emitted.** *Nothing is dropped* beats tidiness — reachability is a
+   whole-document analysis whose failure mode is deleting a definition the next edit needs.
+4. **`[^1]: body` parses as a definition with label `^1`** (Charter enables no footnote extension), so the
+   render makes `[^1]` a link to `body` and the flatten carries `[^1]: body` — which a GFM reader then treats
+   as a footnote the render never had. **Emitted anyway**: the governing rule is *the flatten resolves
+   references the way the render does*, and carving out `^` would break that principle for an exotic case. The
+   trade is asserted, not assumed, so it is visible if it is ever revisited.
+
+### 12.4 The one gate, and its result
+
+A leading definitions block changes the flatten's **first line**, which until now was always the plan's
+`# Title`. Gate: **does anything downstream key on `# ` at line 1?**
+
+**Verdict: no.** Swept across the `plan-breakdown` skill (SKILL.md + every reference + `stacks/`), the
+Guardrails repo (`src`, `docs`, `.claude/skills`, tests), `guardrails-review`, and Charter's own
+`references/handoff.md`:
+
+- **Every name is derived from the FILE NAME, never the heading.** `BreakdownCommand` and `FolderArgument` both
+  use `Path.GetFileNameWithoutExtension`; the skill states it outright (*"Folder = plan filename minus `.md`"*).
+- **"Is this a Charter plan" is a filename-suffix test** (`EndsWith(".charter.md")`), not a line-1 sniff. The
+  `^:::name` column-zero soft-hint cannot match a line beginning `[`, and the flatten carries no `:::` line at
+  all (invariant 5).
+- **The one regex over the plan's markdown** — `WaveBreakdownInvoker.BriefWorkItemLine`, used only to size a
+  turn budget — matches `-`/`*`/`\d+[.)]`/`#{2,}` and **deliberately excludes the level-1 title**. A line
+  beginning `[` matches none of it, and the estimate never reduces the base.
+- **Step 0c's frontmatter gate is never reached by a flatten** — front matter is stripped, with a test pinning
+  that it is.
+
+So the block stays at the top, and no residue entry is needed. **The adjacent hazard, recorded because it is
+one line away:** `CharterFormat` recognises frontmatter only with `---` on the **first line**, so anything that
+ever prepended definitions to a **`.charter.md` source** (rather than to the flatten) would silently break the
+version marker and Guardrails' Step 0c gate downstream of it. #175 touches `HandoffMarkdown.Emit` only.
+
+`references/handoff.md` promises nothing about the flatten's opening — its one positional promise is about the
+**end** (*"it is still the last line"*, the plan stamp). It was **incomplete** rather than contradicted, and
+gains an additive paragraph.
+
+---
+
+## 13. `charter verify <handoff.md>` (#192)
+
+#187 gives Charter three hashes, per-question provenance and a gate verdict; #172/#187 put two of those hashes
+in-band. That is a set of joins **every consumer is expected to check by hand**, which is the same argument
+that put the strict gate in Charter rather than in each caller. Read-only: no writing, no network, no clock.
+
+### 13.0 Milestone zero was the NEGATIVE suite, and it is what the help text is for
+
+Not a join — **the list of inputs `verify` exits `0` on that a reader would expect it to catch.** It was
+written first because it decides what the verb may claim, and the answer is uncomfortable:
+
+| Input | verify says | Why |
+|---|---|---|
+| A handoff whose `Answered: Postgres` was edited to `Cassandra`, with `handoffSha256` recomputed in the manifest | **0** | Both files are writable by the same party; the joins are self-consistent |
+| A plan edited after the run, with `planSha256` and both stamps updated to match | **0** | Same |
+| A manifest whose `questions[].answer` values are pure invention, matching ids and `answered` flags | **0** | Answer VALUES are deliberately not checked (§13.2) |
+| A handoff never delivered to Guardrails, or delivered and altered in transit | **0** | Nothing downstream records the source plan's hash (Guardrails #505) |
+| A plan no human ever reviewed | **0** | `handoff` does not read the review log at all |
+| A caller that ignored a `2` and shipped anyway | **0** | `gate.flagPassed` records the argv, not obedience |
+
+**There is no independent witness, and the help must say so loudly.** Handoff and manifest sit in one
+directory, writable by the same party. **`verify` detects inconsistency between two mutually-writable files; it
+can never detect incorrectness.** After this ships a green `verify` *will* be quoted in a #496 post-mortem as
+proof the run was proper — the help text is the only thing between that and a false claim.
+
+### 13.1 Exit codes — three states
+
+- **`0`** — every reachable join holds **and** the manifest records no outstanding escalation.
+- **`1`** — verify could not answer: handoff unreadable, no manifest beside it, unparseable manifest, unknown
+  `schema`, no stamps. Charter's `1` *"promises nothing"*, which is exactly right, and `RunVerb`'s catch-all
+  already lands here.
+- **`2`** — verify answered and a human must act: a join disagreed, **or the manifest records
+  `gate.needsHuman: true`**.
+
+That last clause fixes a vacuous pass: a verifier that reads `needsHuman: true` and exits `0` is lying by
+omission. §10.0.2 forbids the **producer** changing an exit code as a side effect of writing a file; it says
+nothing about a **reader** re-reporting Charter's own recorded verdict. And it keeps the `2` vocabulary (§2.2)
+intact — *the output exists, go read it*.
+
+### 13.2 The checks
+
+**Cross-artifact joins:** manifest `planSha256` == in-band `plan-sha256`; manifest `answersSha256` == in-band
+`answers-sha256` (`null` ⟷ `none`); manifest `handoffSha256` == recomputed over the handoff.
+
+**Payload cross-check — this is what earns the name.** The manifest's `questions[].id` **set equals** the ids
+the handoff actually emits, and each `answered` boolean **agrees** with whether the handoff shows it *Answered*
+or `> **Open question (unresolved):**`. Without it a manifest saying `"answered": true, "answer": ["Postgres"]`
+beside a handoff saying *Open question* **passes** — #187's own opening reproduction surviving verification.
+Implemented as a **containment check against producer constants** (`HandoffMarkdown`'s metadata-line and status
+literals), never a second `Emit`: re-deriving the flatten would make `verify` agree with itself rather than
+with the file.
+
+**Answer VALUES are deliberately NOT checked** — it would mean prose-parsing arbitrary user text — **and the
+report says so**, so nobody over-reads a green.
+
+**A metadata line with no lead above it is a NOTE, never a finding**, and this was added during implementation
+rather than designed. A question is recognised by the metadata line **opening a line** *and* carrying one of
+the three lead markers (Answered / Open / Delegated) above it. Both halves are needed, because **no literal in
+a rendered plan is proof of anything** — a plan documenting Charter spells these literals, and
+`:::custom-html` passes anything through verbatim. Requiring the lead keeps the phantom out of the id set;
+requiring line-start means a mid-sentence mention produces no output at all. And it is reported as a note
+because Charter's standing rule is that **a lint which cannot tell a defect from legitimate content never
+touches an exit code** (`WarnOnVersionMarker`, `WarnOnDuplicateQuestionIds`, `WarnOnMissingRecommendation`).
+Excluding it is safe in the other direction too: real tampering that strips a question's lead line **also**
+removes that id from the handoff's set, which *is* a finding.
+
+**`gate.exitCode` is deliberately NOT checked**, despite being on the issue's list. `HandoffManifest.Serialize`
+derives it from `flagPassed`/`needsHuman` inside the same call with no I/O between, so it cannot fail on any
+manifest Charter wrote — it fires only on hand-edited files, whose editor would fix it. Implementing it would
+put a **third copy** of that derivation and the literal `2` in the binary.
+
+**The record join stays rejected.** `<plan>.headless.json` is not locatable from the handoff (the manifest's
+`plan` field is a bare name, declared non-contract), and it adds nothing beyond `charterVersion` over what
+manifest↔stamp already proves.
+
+### 13.3 The two false alarms — diagnosed precisely, never passed
+
+**A CRLF rewrite FAILS, and is explained.** `PlanHash`'s remarks define the question as *"are these two files
+byte-for-byte the same revision?"*, and a verifier must not answer a different one. So a `handoffSha256`
+mismatch **fails**; the recompute is a **labelled diagnostic naming the likely cause**, never a redefinition of
+the field.
+
+- **Normalise `\r\n` ↔ `\n` only — never collapse a lone `\r`.** `ReviewBaseStatus`'s form does collapse it,
+  and a lone `\r` can be **plan content** (a question answer containing one flattens as `Answered: line1␍line2`
+  — filed as #202). Copying that form would bless a content change as a line-ending rewrite. For a
+  CR-carrying file the branch **declines to diagnose** rather than falsely reassure.
+  - **#202's premise was confirmed, and the rule turned out to be broader than the hash.** The answer arrives
+    **JSON-escaped** in the `:::question` body, so `Emit`'s source normalisation never sees it as a character
+    and the flatten genuinely carries `Answered: alpha␍beta`. The first cut of the **question scan** split
+    lines with the `ReviewBaseStatus` form and therefore tore that Answered line in two, leaving the metadata
+    line with `beta` above it — which reported an **untouched, honest pair** as `questions MISMATCH`.
+    Reproduced against the real binary before it shipped. *So the rule is not "do not collapse a lone `\r`
+    when hashing"; it is "a lone `\r` is not a line break in a flattened plan", and it binds every reader.*
+- **Bound the claim.** `File.ReadAllText` strips a BOM and decodes UTF-16, so a match under normalisation also
+  covers re-encoding. Report what was computed and no more.
+- **The trailing-newline case is diagnosed separately.** `Emit` output has no trailing newline while
+  `HandoffManifest.ToJson()` appends one — so any editor with *insert final newline* adds one. That is neither
+  tampering nor a line-ending rewrite, and it is **more likely than a wholesale CRLF rewrite**; without its own
+  branch the most common benign mutation would get the most alarming message.
+
+**`HandoffAnswers.EncodingWarning` is NOT reused.** For the answers file a human chose the encoding, so a
+warning is right. **Charter writes the handoff itself** — so a handoff that is not BOM-less UTF-8 means someone
+rewrote it, which is **evidence**, not an excuse. Reusing that text would invert evidence into reassurance, and
+its remedy sentence would tell the user to rewrite the artifact. The detected encoding is reported as a
+**finding**, in handoff-appropriate words.
+
+### 13.4 What it must not do
+
+**No** `--json`, no `--plan`/`--record`/`--answers`, no re-deriving the flatten, no joining on the manifest's
+file-**name** fields (declared non-contract in §10.1), no `--strict`/`--allow-crlf`, no exit codes 3/4/5.
+
+**Known limit, documented rather than fixed:** discovery is co-location plus co-naming via
+`DeriveManifestPath`, but the artifacts are designed to be **moved** (bare names, no local paths, §10.4). Copy
+`plan.md` into a task folder without its manifest and `verify` returns `1` forever. Honest, not alarming, under
+the mapping above.
+
+**Cannot attest, and says so:** that the handoff reached Guardrails unmodified (Guardrails #505); that a human
+reviewed anything (`handoff` never reads the review log — §10.8); that the caller honoured an exit code.
+
+### 13.5 Contract changes this makes
+
+- **`DeriveManifestPath` becomes shared**, which **promotes the manifest-name derivation from convention to
+  contract**. It was an implementation detail of `handoff --manifest`; it is now the rule by which a second
+  verb *finds* the file, so changing it breaks discovery.
+- **`HandoffManifest` grows a READER**, sharing key-name constants with its writer — so a renamed key cannot
+  make the writer and the reader disagree in silence.
+- **The stamp scan uses `StampPrefix` / `AnswersStampPrefix` / `NoAnswersFile`**, anchored to the **tail**.
+  Note the stamps are separated by a **blank line**, so *"immediately above"* is wrong: the answers stamp is the
+  previous **non-empty** line.
+- **Loud guards for `*.charter.md` and `*.manifest.json` arguments** — the two wrong files a caller will hand
+  it, and the ones whose failure would otherwise read as "the custody chain is broken".
+
+### 13.6 The name collision, decided
+
+`charter verify` keeps the **custody** meaning. Plan-03 §5.1's unbuilt verb — *"warn me before I review a stale
+plan"* — becomes **`charter review verify`**, a subcommand. That is acceptable where `headless`/`handoff` was
+not (§7, §10.0), and the difference is the whole reason: **reaching for the wrong one there fails SILENTLY**
+(exit `0`, no `plan.md`), whereas `charter verify <plan.charter.md>` is a **loud** guard naming the other verb.

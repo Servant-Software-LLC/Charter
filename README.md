@@ -82,6 +82,14 @@ review it in the browser.
   every decision nobody made — an escalation, not a refusal. `--manifest` additionally writes
   `<out-stem>.manifest.json`, a chain-of-custody record of **which inputs produced this exact output** —
   the hashes of the plan, the answers and the handoff, and where every answer came from.
+- `charter verify <handoff.md>` — **read-only**: recomputes the chain-of-custody joins between a flattened
+  plan and the manifest beside it (found from the handoff, not named), and cross-checks the manifest's
+  questions against the ids and Answered/Open states the document actually carries. Exits **0** when every
+  join holds and nothing is outstanding, **2** when a join disagreed or the manifest records
+  `gate.needsHuman`, **1** when it could not answer. A CRLF rewrite and an added trailing newline are named as
+  such rather than reported as tampering. **It cannot detect incorrectness** — both files are writable by the
+  same party — and it says so on success as well as on failure, because a green `verify` is not evidence that
+  a run was proper.
 - `charter skills install [--project] [--force] [--overwrite-tracked]` — installs the bundled agent skills so
   your agent (and Guardrails) can discover them. `--force` overwrites an existing copy; it refuses to clobber
   git-tracked skill source that has uncommitted changes unless you add `--overwrite-tracked`. If the target
