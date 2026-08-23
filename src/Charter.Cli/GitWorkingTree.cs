@@ -4,8 +4,9 @@ using System.Text;
 namespace Charter.Cli;
 
 /// <summary>
-/// Two cheap, best-effort questions about a directory's relationship to git (Charter #154): does the
-/// repository TRACK anything under it, and does anything under it have UNCOMMITTED changes.
+/// Three cheap, best-effort questions about a directory's relationship to git: does the repository TRACK
+/// anything under it, does anything under it have UNCOMMITTED changes (both Charter #154), and is it inside a
+/// working tree AT ALL (Charter #194).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -15,6 +16,13 @@ namespace Charter.Cli;
 /// SOURCE — which is what this repository does, and what anyone authoring skills alongside their code will
 /// do. There, <c>--force</c> destroys authored work, and uncommitted work is the part no <c>git checkout</c>
 /// can bring back.
+/// </para>
+/// <para>
+/// The third question is the complement of the first two, not a refinement of them. #154 keys on skills a
+/// repository ALREADY TRACKS; #194 is the case where brand-new, untracked skills land in somebody's work tree
+/// because the destination turned out to be inside one — <c>~/.claude/skills</c> being a symlink into a
+/// dotfiles repo, say. Both conjuncts of the #154 guard are false there, so it stays quiet, and until #194
+/// nothing else spoke either.
 /// </para>
 /// <para>
 /// The path to that command is not obscure: <c>charter --version</c> PRINTS it as the remedy for stale
@@ -56,6 +64,53 @@ internal static class GitWorkingTree
     /// </remarks>
     public static bool HasLocalChangesUnder(string path)
         => !string.IsNullOrWhiteSpace(Run(path, "status", "--porcelain", "--", "."));
+
+    /// <summary>
+    /// Where <paramref name="path"/> sits inside a git working tree, or <see langword="null"/> when it sits
+    /// in none — which, per this class's contract, is also the answer whenever git cannot say.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both halves come from ONE <c>git rev-parse --show-toplevel --show-prefix</c>, run with
+    /// <paramref name="path"/> as the working directory. That matters more than it looks: git resolves its
+    /// own working directory to a PHYSICAL path, so a target reached through a symlink or a junction reports
+    /// the repository it really lands in rather than the path the caller typed. Reasoning about the path
+    /// string instead would be a no-op in precisely the case #194 was filed for.
+    /// </para>
+    /// <para>
+    /// <c>--show-prefix</c> is what makes the advisory's ignore rules correct without assuming a layout: git
+    /// states the target's own position under the root (forward slashes, trailing slash, empty at the root),
+    /// so the rules can be anchored at the root the reader would actually paste them into.
+    /// </para>
+    /// </remarks>
+    public static WorkTreeLocation? LocateWorkTree(string path)
+    {
+        string? output = Run(path, "rev-parse", "--show-toplevel", "--show-prefix");
+        if (output is null)
+        {
+            return null;
+        }
+
+        string[] lines = output.Split('\n');
+        if (lines.Length < 2)
+        {
+            // git answered in a shape this does not understand. Under the fail-to-"no" contract that is
+            // silence, never a guess — a guessed prefix would print ignore rules pointing at nothing.
+            return null;
+        }
+
+        string root = lines[0].TrimEnd('\r');
+        string prefix = lines[1].TrimEnd('\r');
+
+        return string.IsNullOrEmpty(root) ? null : new WorkTreeLocation(root, prefix);
+    }
+
+    /// <summary>
+    /// A directory's position inside a working tree: the repository <paramref name="Root"/> as git spells it,
+    /// and <paramref name="PrefixWithinRoot"/>, the slash-terminated path from that root down to the
+    /// directory (empty when it IS the root).
+    /// </summary>
+    public sealed record WorkTreeLocation(string Root, string PrefixWithinRoot);
 
     /// <summary>
     /// Run <c>git</c> with <paramref name="workingDirectory"/> as its cwd and return stdout, or

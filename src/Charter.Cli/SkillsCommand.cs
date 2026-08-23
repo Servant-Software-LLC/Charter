@@ -129,6 +129,65 @@ internal static class SkillsCommand
         return false;
     }
 
+    /// <summary>
+    /// Say so when the resolved target landed INSIDE a git working tree (Charter #194), naming the repository
+    /// and the exact rules to paste. Prints nothing otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The install itself is not wrong — it did what it was told. What was wrong was the SILENCE: skills
+    /// written through a symlinked <c>~/.claude/skills</c> sat as untracked folders in a personal repository
+    /// until they surfaced in <c>git status</c> much later with no memory of where they came from. Committing
+    /// them is the outcome to avoid, because <see cref="SkillFrontmatterStamper"/> stamps
+    /// <c>metadata.charter-version</c> into each <c>SKILL.md</c> and <c>SkillDriftCheck</c> diffs against it:
+    /// a committed copy is a vendored snapshot that goes stale, diffs on every reinstall, and draws drift
+    /// warnings. So the advisory carries the REASON, not just the observation.
+    /// </para>
+    /// <para>
+    /// Silent under <c>--project</c>, whose entire meaning is "put this in the repository so teammates get
+    /// it". There, landing in a work tree is the intent, and explaining how to ignore it would be noise.
+    /// </para>
+    /// <para>
+    /// Advisory ONLY: nothing here writes an ignore rule anywhere. Two reasons, and they are independent.
+    /// A tool that silently edits ignore rules in a repository the user never named — reached only through a
+    /// symlink from a home directory — is worse than one that says nothing; and the obvious shortcut of
+    /// dropping a self-ignoring <c>.gitignore</c> (<c>*</c>) into each skill folder would silently break
+    /// <c>--project</c>, because a <c>.gitignore</c> in a subdirectory overrides a negation in the repository
+    /// root. Against the common <c>.claude/*</c> + <c>!.claude/skills/</c> convention that stops the skill
+    /// being delivered at all, and the symptom of an over-broad ignore rule is that nothing appears.
+    /// (<c>SkillsInstallGitAdvisoryTests</c> pins that experiment.) Whether to commit these stays the
+    /// operator's decision; this only makes sure it is a decision rather than an accident.
+    /// </para>
+    /// </remarks>
+    private static void ReportInstallIntoAWorkingTree(
+        string targetDir, bool project, IReadOnlyList<SkillsInstaller.SkillResult> results, string toolVersion)
+    {
+        if (project)
+        {
+            return;
+        }
+
+        // Asked AFTER the install, so the directory exists to be asked about and the answer describes where
+        // the skills really are rather than where they were nominally headed.
+        GitWorkingTree.WorkTreeLocation? location = GitWorkingTree.LocateWorkTree(targetDir);
+        if (location is null)
+        {
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"Note: {results.Count} Charter skill(s) now sit inside a git working tree ({location.Root}).");
+        Console.WriteLine(
+            $"  They are tool-managed and version-stamped (v{toolVersion}); 'charter skills install --force' "
+                + "re-creates them, so a copy committed here goes stale and draws drift warnings.");
+        Console.WriteLine("  To keep them out of source control, add to that repository's .gitignore:");
+        foreach (SkillsInstaller.SkillResult result in results)
+        {
+            Console.WriteLine($"    /{location.PrefixWithinRoot}{result.Name}/");
+        }
+    }
+
     private static int RunInstall(string? target, bool project, bool force, bool overwriteTracked)
     {
         if (project && !string.IsNullOrWhiteSpace(target))
@@ -167,6 +226,8 @@ internal static class SkillsCommand
             Console.WriteLine();
             Console.WriteLine($"{installed} skill(s) installed (v{toolVersion}), {skipped} skipped -> {targetDir}");
             Console.WriteLine("Restart Claude Code to pick up the installed skills.");
+
+            ReportInstallIntoAWorkingTree(targetDir, project, results, toolVersion);
             return 0;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException
