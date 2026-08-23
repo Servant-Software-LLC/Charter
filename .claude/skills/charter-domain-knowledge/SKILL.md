@@ -515,6 +515,14 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   byte-identical to the record's `planSha256`. That stamp is the only provenance mechanism that **survives a
   consumer ignoring exit codes and side files** — out-of-band signalling cannot fix a failure of out-of-band
   signalling.
+  - **There are TWO stamp lines since #187**, `<!-- charter: answers-sha256=<hex|none> -->` immediately above
+    the plan one (which stays LAST, so a consumer matching the tail keeps working). **One stamp identifies the
+    plan; the pair identifies the RESOLUTION INPUTS**, and only the pair closes the stale-manifest hazard: run
+    once with `--answers … --manifest`, then re-run as a plain `handoff`, and `plan.md` becomes the
+    all-questions-open flatten while the old manifest survives with `planSha256`, the plan stamp, the record's
+    `planSha256` and `charterVersion` **all four matching**. `none` is a word rather than an omitted line
+    because "this run merged no answers file" is a positive fact. Both stamps are CRLF-immune; the manifest's
+    `handoffSha256` byte-hash is not.
 - **ONE question-body parse, pinned.** `QuestionResolution.QuestionBody` is the single definition (any fence
   length, any line ending, an unterminated container at EOF — the three shapes the renderer already accepts);
   `TryLocateJsonBody` is only its span-based write twin. They forked once and it went **both ways**:
@@ -541,8 +549,8 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   - **Chose refuse-the-override over #187's record-the-source.** Recording makes an override auditable, not
     safe: the flatten would still assert the overriding value in a side file nobody has to read. The residual
     hazard — a refusal leaves the PREVIOUS run's `plan.md`, and `plan-sha256` cannot expose that (same plan,
-    different answers file) — is #187's `answersSha256` to close.
-  - **What `answerSource` can and cannot say**, so the withdrawn reading does not get re-invented in #187:
+    different answers file) — is CLOSED by #187's `answersSha256` and the second stamp line (below).
+  - **What `answerSource` can and cannot say** — the withdrawn reading, recorded so it is not re-invented:
     it does **NOT** distinguish *a human decided this* from *the automation supplied this* — `inline`
     conflates a reviewer's folded-in answer, the drafting agent's own edit, and any other writer, and
     `handoff` never reads the review log. It carries **which hash reproduces the decision**: `inline` ⇒
@@ -559,8 +567,42 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
     `HeadlessRecord.Schema`'s own rule — except 2 was raised from 1 by #173 *after* 0.24.0 shipped (the
     release commit carries `Schema = 1`), so no consumer has ever seen a schema-2 record. Not licence to do
     this under a *released* version; that is the mistake #142 made.
-- **Known-open, deliberately split:** #187 (the chain-of-custody manifest; `headless` still has no
-  `--answers`, so the record describes *the plan on disk* while the handoff describes *the plan plus a file*).
+- **`--manifest` writes the chain-of-custody manifest, from the SAME resolution pass** (#187). Boolean, not a
+  path: derived from `--out` (`-o plan.md` ⇒ `plan.manifest.json`), because `HeadlessCommand`'s own rationale
+  is *"a path convention a harness can compute"*. Its own **`schema` 1** and its own drift test —
+  deliberately NOT a `HeadlessRecord`, whose `artifact`/`sourceMap`/`anchorId` are all wrong here.
+  - **Stable core:** `schema` · `charterVersion` · `planSha256` · `answersSha256` · `handoffSha256` ·
+    `malformedQuestions` · `gate.{flagPassed, needsHuman, exitCode}` · `gate.unmatchedAnswerIds` ·
+    `questions[].{id, answered, answer, answerSource}`, document-ordered. **Not contract:** the three
+    file-NAME fields (the hashes are the join key, the names are decoration), `questions[].title`,
+    `blockers[]` ordering, key order. **`blockers[].detail` is never serialized** — the gate declares it
+    non-contract, and a versioned schema would make it one.
+  - **The governing absence rule, with a negative test:** *every line number in the manifest is a line in
+    `plan`, and the manifest carries no map into the handoff output at all.* No `artifact`, no `sourceMap`,
+    no `anchorId` — those three are exactly why emitting a record here was rejected.
+  - **`answerSource` is two-valued** (`inline` | `answers-file`), null when unanswered. #186 shipped REFUSAL,
+    so "the file overrode the plan" cannot occur and there is no token for it. It is classified **beside the
+    merge, by asking the merge what it did**, so it cannot drift from the emitter — a REJECTED entry therefore
+    reads `inline`.
+  - **`answered` here is NARROWER than the record's**: the record's is the plan's inline answer (pure in the
+    plan text), the manifest's is the MERGED answer. One name, two scopes — asserted, not assumed.
+  - **Neither flag implies the other.** `--fail-if-needs-human` would write an unbidden file (§5.0);
+    `--manifest` would change an exit code as a side effect of asking for a file. The gate is evaluated ONCE
+    per run and feeds both; `gate.flagPassed` records the **argv**, not obedience (hence not `enforced`).
+  - **Write order: handoff FIRST, then manifest**, both temp-file-then-rename. A handoff with no manifest is
+    an honest degraded state; a manifest describing a file that does not exist is a lie. So exit `1` no
+    longer promises "nothing was written" — the help text says so.
+  - **`handoffSha256` is ADVISORY and has no consumer** (Guardrails #505: their `PlanHash` covers
+    `guardrails.json` + `task.json`s, never the source markdown). A mismatch means tampering **or** a
+    line-ending rewrite in transit, indistinguishable from the hash alone.
+  - **One hash recipe for all three, and it is not `sha256sum`.** `File.ReadAllText` strips a UTF-8 BOM and
+    decodes UTF-16/32 per the mark; `PlanHash.Sha256Hex` hashes the **UTF-8 re-encoding of that string**. So
+    they match `sha256sum` only for a BOM-less UTF-8 file — Windows PowerShell 5.1 writes UTF-16LE, hence the
+    stderr **warning** (never a rejection) when the answers file is not BOM-less UTF-8.
+  - **Still deliberately NOT done:** `charter headless --answers`. Everything it produces is by contract a
+    pure function of the plan text (its artifact is pinned byte-identical to `export`'s), and its needs-human
+    is a strictly WEAKER predicate than the gate's — so the record still describes *the plan on disk* while
+    the handoff describes *the plan plus a file*, and that is the correct split.
 
 ## Git-mediated team review (the durable half)
 
@@ -647,9 +689,11 @@ verification. Exact emitted shape: `skills/charter/references/handoff.md`. The r
   *"Delegated decision — you must settle this before building:"* plus the metadata line plus a mode-specific
   `_Decide: …_` instruction naming the author's lean. An answered one gains no instruction.
 - **Every flattened plan ends with `<!-- charter: plan-sha256=<hex> -->`**, the same hash the headless record
-  calls `planSha256`. Before it, the flatten self-identified as nothing (front matter is stripped, with a
-  test pinning it), so "did the plan Charter recorded match the plan Guardrails consumed" was unanswerable in
-  principle. Charter's own renderer ESCAPES it (`DisableHtml`); that is the security posture, not a defect.
+  calls `planSha256`, preceded since #187 by `<!-- charter: answers-sha256=<hex|none> -->`. Before them, the
+  flatten self-identified as nothing (front matter is stripped, with a test pinning it), so "did the plan
+  Charter recorded match the plan Guardrails consumed" was unanswerable in principle — and the plan hash alone
+  still could not tell two runs over one plan with different answers apart. Charter's own renderer ESCAPES
+  them (`DisableHtml`); that is the security posture, not a defect.
 - **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms are accepted (raw, or already
   wrapped in ` ```mermaid ` / ` ```diff `); an already-fenced body is unwrapped before emitting, never
   double-fenced (a double fence makes the inner fence literal, so the diagram does not render on GitHub).
@@ -707,7 +751,8 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 | Team review: log layout, record schema, the 8 fold rules, `prev`/contested, §5.0 solo primacy | `docs/plans/03-git-mediated-team-review.md` |
 | Unattended run: exit codes; forensic-record shape and what raises `needsHuman` | `src/Charter.Cli/HeadlessExitCodes.cs`, `src/Charter.Core/HeadlessRecord.cs` |
 | **The `.headless.json` CONTRACT** a machine may assert on (stable core, absence semantics, note kinds) | `skills/charter/references/unattended.md`, bound by `HeadlessRecordContractTests` |
-| **Strict handoff, the delegated flatten, the provenance stamp, the one question-body parse** | `docs/plans/04-machine-consumer-contract.md`; predicate in `src/Charter.Core/HandoffGate.cs` |
+| **Strict handoff, the delegated flatten, the provenance stamps, the one question-body parse, the manifest** | `docs/plans/04-machine-consumer-contract.md`; predicate in `src/Charter.Core/HandoffGate.cs` |
+| **The `.manifest.json` CONTRACT** a machine may assert on (stable core, absence semantics, the hash recipe) | `skills/charter/references/handoff.md`, bound by `HandoffManifestContractTests` |
 | Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
 
 ## Status (update as milestones complete)

@@ -471,7 +471,19 @@ internal static class CharterCommands
                 + "`options` nor `recommended` (nothing to decide it with); a :::question body that will not "
                 + "parse; an unrecognized ::: directive (a misspelled :::questoin hides its target there); and "
                 + "duplicate question ids. Each is named on stderr with its id, title and target, along with any "
-                + "--answers id that matched no question in the plan. Default behaviour is unchanged.",
+                + "--answers id that matched no question in the plan. Default behaviour is unchanged. It does "
+                + "NOT imply --manifest: a gate flag must not write an unbidden file.",
+        };
+        var manifestOption = new Option<bool>("--manifest")
+        {
+            Description =
+                "Also write a chain-of-custody manifest describing THIS resolution: which plan, which answers, "
+                + "which output, the sha256 of all three, every question's resolved answer and whether it came "
+                + "from the plan (`inline`) or the file (`answers-file`), and the gate's verdict. It is a "
+                + "BOOLEAN, not a path -- the name is derived from --out (`-o plan.md` => `plan.manifest.json`) "
+                + "so a harness computes it without being told, and a derived name colliding with the plan or "
+                + "with --out is refused. It does NOT imply --fail-if-needs-human: asking for a file must not "
+                + "change an exit code. The gate is evaluated either way; `gate.flagPassed` records which.",
         };
 
         var handoff = new Command(
@@ -480,14 +492,20 @@ internal static class CharterCommands
                 + "Exit codes: 0 the handoff was written and nothing is outstanding; "
                 + HeadlessExitCodes.NeedsHuman + " (only with --fail-if-needs-human) the handoff WAS STILL "
                 + "WRITTEN and something needs a human -- read stderr, then the file; 1 a verb error (plan not "
-                + "found, unreadable --answers, or an --answers entry REJECTED against its question's mode, "
-                + "options or already-recorded answer) and NOTHING was written. "
+                + "found, unreadable --answers, an --answers entry REJECTED against its question's mode, options "
+                + "or already-recorded answer, or a --manifest name that would collide with the plan or with "
+                + "--out). A 1 means the INVOCATION failed, not that the disk is untouched: every check above "
+                + "runs before the write, so nothing was written -- but the handoff is written BEFORE its "
+                + "manifest, so a --manifest run that fails at the second write leaves a valid handoff with no "
+                + "manifest. That order is deliberate: a handoff with no manifest is an honest degraded state, "
+                + "while a manifest describing a file that does not exist is a lie. "
                 + ExitCodeVocabularyNote)
         {
             inputArgument,
             outOption,
             answersOption,
             failIfNeedsHumanOption,
+            manifestOption,
         };
 
         handoff.SetAction(parseResult => RunVerb("handoff", () =>
@@ -496,6 +514,7 @@ internal static class CharterCommands
             string outputPath = parseResult.GetValue(outOption)!;
             string? answersPath = parseResult.GetValue(answersOption);
             bool failIfNeedsHuman = parseResult.GetValue(failIfNeedsHumanOption);
+            bool writeManifest = parseResult.GetValue(manifestOption);
 
             if (!File.Exists(inputPath))
             {
@@ -503,10 +522,23 @@ internal static class CharterCommands
                 return 1;
             }
 
+            // Derived from --out, never named (Charter #187). `charter headless` exists partly to give a
+            // harness "a path convention it can compute from the plan path alone", and a --manifest that took
+            // a path would be the opposite: another thing to tell the harness. Refused rather than written
+            // when the derived name would land on the plan or on the handoff itself -- the derived-name
+            // convention's one sharp edge, refused the same way HeadlessCommand refuses its own.
+            string? manifestPath = writeManifest ? DeriveManifestPath(outputPath) : null;
+            if (manifestPath is not null
+                && ReportManifestNameCollision(manifestPath, inputPath, outputPath) is { } collision)
+            {
+                return collision;
+            }
+
             // --answers is OPTIONAL: when omitted, answers stays null and every :::question is handed off as an
-            // open/unresolved question (a legitimate, common case). When supplied, the file is parsed into the
-            // flat id -> value(s) shape HandoffMarkdown.Emit resolves against.
-            IReadOnlyDictionary<string, IReadOnlyList<string>>? answers = null;
+            // open/unresolved question (a legitimate, common case). When supplied, the file is read ONCE into
+            // its values plus the hash of the exact text they were parsed from -- the pair the in-band answers
+            // stamp and the manifest's `answersSha256` both come from.
+            HandoffAnswers? answers = null;
             if (!string.IsNullOrEmpty(answersPath))
             {
                 if (!File.Exists(answersPath))
@@ -539,13 +571,22 @@ internal static class CharterCommands
             // in this pipeline means "the output exists, go read it", and writing a handoff here would produce
             // a plan.md that silently differs from the resolution the caller asked for, with the difference
             // living only on stderr -- the out-of-band-signalling failure the in-band stamp exists to fight.
-            var rejected = AnswerRules.CheckAll(markdown, answers);
+            var rejected = AnswerRules.CheckAll(markdown, answers?.Values);
             if (rejected.Count > 0)
             {
                 return ReportRejectedAnswers(rejected, answersPath!);
             }
 
-            string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
+            string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers?.Values, answers?.Sha256);
+
+            // AT MOST ONE Evaluate per invocation, and it feeds BOTH consumers (Charter #187). It used to live
+            // inside the --fail-if-needs-human branch; the manifest needs the same verdict AND the same
+            // per-question resolution, and a second Evaluate would be a second resolution of the same plan --
+            // the one thing a chain-of-custody artifact must never be assembled from. Evaluated here, BEFORE
+            // the write, so the manifest can be built from a value rather than from a re-run.
+            HandoffGateResult? gate = failIfNeedsHuman || writeManifest
+                ? HandoffGate.Evaluate(markdown, answers?.Values)
+                : null;
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
             if (!string.IsNullOrEmpty(outputDir))
@@ -553,22 +594,43 @@ internal static class CharterCommands
                 Directory.CreateDirectory(outputDir);
             }
 
-            File.WriteAllText(outputPath, handoffMarkdown);
+            // HANDOFF FIRST, THEN MANIFEST. A handoff with no manifest is an honest degraded state a caller can
+            // see and re-run; a manifest describing a file that does not exist is a lie, and it is the exact
+            // lie this artifact was built to make impossible.
+            WriteAtomic(outputPath, handoffMarkdown);
             Console.WriteLine($"Handed off {inputPath} -> {outputPath}");
+
+            if (manifestPath is not null)
+            {
+                WriteAtomic(
+                    manifestPath,
+                    HandoffManifest.Build(
+                        markdown,
+                        handoffMarkdown,
+                        answers,
+                        gate!,
+                        failIfNeedsHuman,
+                        new HandoffManifestFiles(
+                            Path.GetFileName(Path.GetFullPath(inputPath)),
+                            answersPath is null ? null : Path.GetFileName(Path.GetFullPath(answersPath)),
+                            Path.GetFileName(Path.GetFullPath(outputPath))),
+                        CharterVersion.Current).ToJson());
+                Console.WriteLine($"Manifest {inputPath} -> {manifestPath}");
+            }
 
             if (!failIfNeedsHuman)
             {
                 return 0;
             }
 
-            // The gate runs AFTER the write, never instead of it (Charter #172). Every exit 2 in this pipeline
-            // means "the output exists, go read it" -- `charter headless`'s, Guardrails' BreakdownCommand's,
-            // and Guardrails' ExitCodes.TaskFailed's -- and inverting that here would be the exact class of
-            // seam-level surprise the flag exists to prevent. Refusing to write also would not WORK: the write
-            // above is unconditional, so a refusal leaves the PREVIOUS run's plan.md in place, and a stale
-            // flattened plan carries no open-question markers at all -- internally consistent, passing any
-            // lint, and indistinguishable to a consumer that only checks the file extension.
-            return ReportHandoffGate(HandoffGate.Evaluate(markdown, answers), outputPath);
+            // The gate's VERDICT is reported after the write, never instead of it (Charter #172). Every exit 2
+            // in this pipeline means "the output exists, go read it" -- `charter headless`'s, Guardrails'
+            // BreakdownCommand's, and Guardrails' ExitCodes.TaskFailed's -- and inverting that here would be
+            // the exact class of seam-level surprise the flag exists to prevent. Refusing to write also would
+            // not WORK: the write above is unconditional, so a refusal leaves the PREVIOUS run's plan.md in
+            // place, and a stale flattened plan carries no open-question markers at all -- internally
+            // consistent, passing any lint, and indistinguishable to a consumer that only checks the extension.
+            return ReportHandoffGate(gate!, outputPath);
         }));
 
         return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
@@ -590,6 +652,97 @@ internal static class CharterCommands
         "NOTE ON 2: a 2 here means the same thing it means in `charter headless` and in Guardrails -- the "
         + "output exists, go read it. The OUTLIER is Charter's own `poll`/`resolve` 2, which means a queue was "
         + "found and it was empty. Do not read one vocabulary as the other.";
+
+    /// <summary>
+    /// The manifest's derived path: <c>--out</c> with its final extension replaced by
+    /// <c>.manifest.json</c> (Charter #187). <c>-o plan.md</c> ⇒ <c>plan.manifest.json</c>;
+    /// <c>-o ../gr/plan.md</c> ⇒ <c>../gr/plan.manifest.json</c>, so the manifest always lands beside the
+    /// handoff it describes.
+    /// </summary>
+    private static string DeriveManifestPath(string outputPath)
+    {
+        string full = Path.GetFullPath(outputPath);
+        return Path.Combine(
+            Path.GetDirectoryName(full)!, Path.GetFileNameWithoutExtension(full) + ".manifest.json");
+    }
+
+    /// <summary>
+    /// Refuse a derived manifest name that would land on the plan or on the handoff, returning the verb-error
+    /// code — or null when the name is free.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The plan collision is real:</b> a plan named <c>x.manifest.json</c> beside <c>-o x.md</c> derives
+    /// straight onto the SOURCE. Charter never overwrites its own input, so the derived-name convention's sharp
+    /// edge is refused rather than papered over — the same call <c>HeadlessCommand</c> makes about its own two
+    /// derived names.
+    /// </para>
+    /// <para>
+    /// <b>The handoff collision is currently UNREACHABLE, and the check is the tripwire that keeps it so.</b>
+    /// <c>-o plan.manifest.json</c> looks like it must derive onto itself and does not: the stem is
+    /// <c>plan.manifest</c>, so the manifest lands at <c>plan.manifest.manifest.json</c>. Ugly, harmless, and
+    /// asserted from outside by <c>TheDerivedNameIsNeverTheHandoffItself_ForAnyOutShape</c> — which is where a
+    /// future change to <see cref="DeriveManifestPath"/> that DID collide would be caught. The branch is kept
+    /// because it costs one comparison and states the invariant at the seam that would violate it.
+    /// </para>
+    /// </remarks>
+    private static int? ReportManifestNameCollision(string manifestPath, string inputPath, string outputPath)
+    {
+        if (HeadlessCommand.SamePath(manifestPath, inputPath))
+        {
+            Console.Error.WriteLine(
+                $"charter handoff: the derived --manifest path would overwrite the plan itself ({inputPath}). "
+                    + "Rename the plan (the convention is <name>.charter.md) or choose a different --out.");
+            return 1;
+        }
+
+        if (HeadlessCommand.SamePath(manifestPath, outputPath))
+        {
+            Console.Error.WriteLine(
+                $"charter handoff: the derived --manifest path would overwrite the handoff itself "
+                    + $"({outputPath}). The manifest is named from --out by replacing its extension, so an "
+                    + "--out already ending in `.manifest.json` collides with itself. Choose a different --out.");
+            return 1;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Write <paramref name="contents"/> to <paramref name="path"/> via a sibling temp file and one
+    /// <c>File.Move(overwrite: true)</c>, so the file is never observed half-written.
+    /// </summary>
+    /// <remarks>
+    /// It matters most for the pair this verb now writes: a reader that catches a truncated handoff, or a
+    /// truncated manifest, gets a document that PARSES and is wrong rather than one that fails loudly. The temp
+    /// file is a sibling so the move stays within one volume (a cross-volume <c>File.Move</c> degrades to a
+    /// copy, which is not atomic), and it is removed on any failure so a crashed run leaves no litter beside
+    /// the caller's output.
+    /// </remarks>
+    private static void WriteAtomic(string path, string contents)
+    {
+        string full = Path.GetFullPath(path);
+        string temp = full + ".charter-tmp-" + Guid.NewGuid().ToString("N");
+
+        try
+        {
+            File.WriteAllText(temp, contents);
+            File.Move(temp, full, overwrite: true);
+        }
+        catch (Exception)
+        {
+            try
+            {
+                File.Delete(temp);
+            }
+            catch (Exception)
+            {
+                // Best-effort cleanup; the original failure is what the caller must see.
+            }
+
+            throw;
+        }
+    }
 
     /// <summary>
     /// Name every rejected <c>--answers</c> entry on STDERR and return the verb-error code (Charter #186).
@@ -864,24 +1017,28 @@ internal static class CharterCommands
             + "recap reference).");
     }
 
-    // Parses a --answers JSON file — a flat object mapping question id -> an array of answer value strings, e.g.
-    // {"q1": ["A"], "q2": ["some free-text answer"]} — into the IReadOnlyDictionary shape HandoffMarkdown.Emit
-    // resolves each :::question against. This shape is DELIBERATELY minimal and distinct from
-    // Charter.Server.Answer: `charter handoff` is an offline, file-in/file-out command with no dependency on a
-    // running review server or a live session, so the file is hand-authored rather than drained from the API.
-    private static IReadOnlyDictionary<string, IReadOnlyList<string>> ReadAnswers(string answersPath)
+    // Reads a --answers JSON file — a flat object mapping question id -> an array of answer value strings, e.g.
+    // {"q1": ["A"], "q2": ["some free-text answer"]} — into the dictionary HandoffMarkdown.Emit resolves each
+    // :::question against, PLUS the hash of the exact text that dictionary came from. This shape is
+    // DELIBERATELY minimal and distinct from Charter.Server.Answer: `charter handoff` is an offline,
+    // file-in/file-out command with no dependency on a running review server, so the file is hand-authored
+    // rather than drained from the API.
+    //
+    // A thin wrapper over Charter.Core's kernel, and thin ON PURPOSE (Charter #187): the parse and the hash
+    // must provably see ONE string. Reading the file once here and hashing it again in the manifest would be a
+    // TOCTOU whose only symptom is a manifest certifying a resolution nobody ran, and passing a dictionary and
+    // a hash as separate arguments would let a caller pair one file's values with another file's hash.
+    private static HandoffAnswers ReadAnswers(string answersPath)
     {
-        string json = File.ReadAllText(answersPath);
-        var raw = JsonSerializer.Deserialize<Dictionary<string, string[]>>(json)
-            ?? new Dictionary<string, string[]>();
+        // Bytes once, so the encoding sniff, the decode and the hash all describe ONE snapshot of the file.
+        byte[] bytes = File.ReadAllBytes(answersPath);
 
-        var answers = new Dictionary<string, IReadOnlyList<string>>(raw.Count);
-        foreach (var pair in raw)
+        if (HandoffAnswers.EncodingWarning(bytes) is { } warning)
         {
-            answers[pair.Key] = pair.Value ?? Array.Empty<string>();
+            Console.Error.WriteLine($"charter handoff: warning: {warning}");
         }
 
-        return answers;
+        return HandoffAnswers.Read(HandoffAnswers.Decode(bytes));
     }
 
     // Builds the root command hosting the `review` subcommand wired to Charter.Server.ReviewServer.

@@ -27,6 +27,10 @@ src/
     HeadlessRecord.cs / PlanWalk.cs  # the `headless` forensic record (source map + questions + notes); one joined walk
     QuestionIdentity.cs         # the :::question DECLARED-SHAPE fingerprint (an answer's "anchor", #75/3)
     AnswerRules.cs              # the ONE answer semantics: IsDecision (#188) + Merge/Check for --answers (#186)
+    HandoffManifest.cs          # `handoff --manifest`'s chain-of-custody file (schema 1) — its OWN artifact (#187)
+    HandoffAnswers.cs           # a --answers file's values AND the hash of the text they came from (one parse)
+    BareFileName.cs             # the ONE no-local-path rule, shared by the record and the manifest
+    PlanHash.cs                 # the ONE hash recipe: sha256 of the DECODED text re-encoded UTF-8 (NOT sha256sum)
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
     HeadlessExitCodes.cs        # the SEPARATE 0/2 contract for `headless` — NOT the drain vocabulary
@@ -304,6 +308,16 @@ update run `charter skills install --force` too.
   the path string, which is a no-op in exactly the case that matters. Testing this needs a real reparse point:
   Windows refuses `Directory.CreateSymbolicLink` without Developer Mode or elevation, so fall back to a
   **junction** (`cmd /c mklink /J`), which needs neither and which git resolves identically.
+- **A CLI help assertion must use SINGLE TOKENS.** System.CommandLine word-wraps help to the console width, so
+  a multi-word phrase can split across lines on one agent and not another — and a `DoesNotContain` over a
+  phrase then fails in the dangerous direction, passing because the old text *wrapped* rather than because it
+  is gone. `HandoffManifestTests.HandoffHelp_…` is the shape to copy: assert distinctive single tokens
+  (`--manifest`, `plan.manifest.json`, `INVOCATION`), never a sentence.
+- **`PlanHash.Sha256Hex` is NOT `sha256sum`.** It hashes the **decoded text re-encoded as UTF-8**, and Charter
+  reads files with `File.ReadAllText`, which strips a UTF-8 BOM and decodes UTF-16/32 per the mark. So the
+  three hashes in `handoff --manifest` equal `sha256sum` only for a BOM-less UTF-8 file. A test comparing one
+  to `SHA256.HashData(File.ReadAllBytes(...))` must therefore control the file's encoding, and a test asserting
+  the DIVERGENCE (`HandoffManifestTests.OnAUtf16AnswersFile_…`) is what stops someone "fixing" the recipe.
 - **`.review/` is created lazily, on the first append** — not in `ReviewLogWriter`'s constructor. A `charter
   review` that writes no comment must leave no trace beside the plan (plan-03 §5.0). Do not reintroduce an
   eager `EnsureDirectory`; `SoloReviewFootprintTests` and `SoloReviewPathTests` guard it.

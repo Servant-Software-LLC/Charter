@@ -99,7 +99,7 @@ public sealed class HeadlessRecord
     /// Build the record for <paramref name="markdown"/>.
     /// </summary>
     /// <param name="markdown">The plan's markdown, exactly as Charter read it.</param>
-    /// <param name="planFileName">The plan's BARE file name — never a path (see <see cref="NoPathsAllowed"/>).</param>
+    /// <param name="planFileName">The plan's BARE file name — never a path (see <see cref="BareFileName"/>).</param>
     /// <param name="artifactFileName">The exported artifact's BARE file name — never a path.</param>
     /// <param name="charterVersion">
     /// The tool version that produced this. Recorded because a forensic file that does not name its producer
@@ -249,27 +249,13 @@ public sealed class HeadlessRecord
     }
 
     /// <summary>
-    /// Why a path is refused where a name is required: the record's contract is that it carries no local
-    /// filesystem path (exactly like the exported artifact), so it is safe to collect and hand on. Accepting a
-    /// path and silently trimming it would make the guarantee depend on the caller remembering to trim.
+    /// The no-local-path guarantee, from its ONE kernel (<see cref="BareFileName"/>). It used to live here as
+    /// a private method; <see cref="HandoffManifest"/> needs exactly the same rule for three more names
+    /// (Charter #187), and a security-shaped rule with two implementations is one that can hold on Windows and
+    /// not on Unix. Nothing about the record's behaviour changed when it moved.
     /// </summary>
-    private const string NoPathsAllowed =
-        "must be a bare file name, not a path — the headless record deliberately carries no local path.";
-
     private static void RequireBareFileName(string value, string parameterName)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(value, parameterName);
-
-        // Checked against BOTH separators explicitly rather than via Path.GetFileName, which is
-        // platform-dependent: on Unix a backslash is an ordinary filename character, so a Windows path would
-        // sail through unnoticed there.
-        if (value.Contains('/', StringComparison.Ordinal)
-            || value.Contains('\\', StringComparison.Ordinal)
-            || value is "." or "..")
-        {
-            throw new ArgumentException($"'{parameterName}' {NoPathsAllowed}", parameterName);
-        }
-    }
+        => BareFileName.Require(value, parameterName);
 }
 
 /// <summary>One <c>:::question</c> as the record preserves it — the form a human would have filled in.</summary>

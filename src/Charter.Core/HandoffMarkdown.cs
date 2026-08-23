@@ -45,7 +45,17 @@ public static class HandoffMarkdown
     /// on Charter.Server). A <c>null</c> lookup, or a question id missing from it, means that question was
     /// never answered and is emitted as a clearly-flagged open question.
     /// </summary>
-    public static string Emit(string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers = null)
+    /// <param name="answersSha256">
+    /// The hash of the <c>--answers</c> file's text, for the in-band answers stamp (Charter #187). <b>Supply it
+    /// whenever <paramref name="answers"/> came from a file</b> — omitting it stamps <c>none</c>, which is a
+    /// claim that no answers file was involved. The CLI cannot get this wrong because it carries both halves in
+    /// one <see cref="HandoffAnswers"/>; an in-library caller resolving from a dictionary it built itself has no
+    /// file to name, and <c>none</c> is then the honest value.
+    /// </param>
+    public static string Emit(
+        string markdown,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers = null,
+        string? answersSha256 = null)
     {
         // Normalize line endings up front so the block model, the fence-stripping, and the full-line recovery
         // below all agree on '\n' — a block's RawContent is a slice of exactly this source.
@@ -79,6 +89,19 @@ public static class HandoffMarkdown
         // The hash is of the plan text EXACTLY AS READ, not of the normalized source above, so it is
         // byte-identical to `planSha256` in the same plan's `charter headless` record. Those two values are
         // the join; hashing different text here would make the join silently meaningless.
+        //
+        // TWO lines, because one identifies the PLAN and the pair identifies the RESOLUTION INPUTS
+        // (Charter #187). Reproduced before it was fixed: run once with `--answers v1.json --manifest`, then
+        // re-run as a plain `charter handoff`. The write is unconditional so plan.md becomes the
+        // all-questions-open flatten; no manifest is written because it is opt-in; the OLD manifest survives —
+        // and planSha256, this plan stamp, the headless record's planSha256 and charterVersion ALL FOUR MATCH.
+        // A manifest certifying decisions that are not in the file beside it, with every documented join green.
+        // The answers stamp makes exactly that visible from the two artifacts alone: the manifest says a hex,
+        // the file says `none`.
+        //
+        // The answers line goes FIRST so the flattened plan still ENDS with the plan hash, which
+        // references/handoff.md promises and a consumer may already be matching on.
+        parts.Add(AnswersStamp(answersSha256));
         parts.Add(Stamp(markdown ?? string.Empty));
 
         // A blank line between blocks keeps each one a distinct CommonMark block when the output is itself
@@ -99,6 +122,37 @@ public static class HandoffMarkdown
     /// the producer's own constant instead of a re-typed literal.
     /// </summary>
     public const string StampPrefix = "charter: plan-sha256=";
+
+    /// <summary>
+    /// The companion provenance comment: <c>&lt;!-- charter: answers-sha256=&lt;hex|none&gt; --&gt;</c>
+    /// (Charter #187). <paramref name="answersSha256"/> is null when no <c>--answers</c> file was supplied, and
+    /// the stamp then reads <see cref="NoAnswersFile"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why the plan hash alone was not enough.</b> A run that supplies answers and a run that supplies none
+    /// produce the same <c>plan-sha256</c> over the same plan — so a stale manifest from the first can sit
+    /// beside the output of the second with every documented join agreeing. This line is the difference, and it
+    /// is necessary AND sufficient: the hazard bites only when the resolution INPUTS differ, and the pair of
+    /// stamps is exactly those inputs.
+    /// </para>
+    /// <para>
+    /// It is also CRLF-immune, which the manifest's <c>handoffSha256</c> byte-hash is not — a line-ending
+    /// rewrite in transit invalidates that hash while leaving both stamps readable and correct.
+    /// </para>
+    /// </remarks>
+    public static string AnswersStamp(string? answersSha256)
+        => $"<!-- {AnswersStampPrefix}{answersSha256 ?? NoAnswersFile} -->";
+
+    /// <summary>The answers stamp's fixed prefix — the string a consumer scans for.</summary>
+    public const string AnswersStampPrefix = "charter: answers-sha256=";
+
+    /// <summary>
+    /// What the answers stamp carries when no <c>--answers</c> file was supplied. A word rather than an empty
+    /// value or an omitted line, because "this run merged no answers file" is a POSITIVE fact a consumer must
+    /// be able to read — an absent line would be indistinguishable from a producer too old to write one.
+    /// </summary>
+    public const string NoAnswersFile = "none";
 
     /// <summary>Convert one parsed block to its plain-CommonMark handoff text, dispatching on its kind.</summary>
     private static string EmitBlock(Block block, string source, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)

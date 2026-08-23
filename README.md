@@ -75,11 +75,13 @@ review it in the browser.
   error, when a human still has to decide or fix something.
 - `charter export <plan.charter.md> -o <out.html>` — writes a self-contained, **offline** artifact with
   every local asset inlined as a `data:` URI — no server, no runtime, portable anywhere.
-- `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>] [--fail-if-needs-human]` — emits
-  plain CommonMark for Guardrails, resolving each `:::question` against the optional `--answers` JSON file
-  (open questions that have no answer are handed off flagged). `--fail-if-needs-human` is the unattended
-  gate: it still **writes** the handoff, and exits **2** naming every decision nobody made — an escalation,
-  not a refusal.
+- `charter handoff <plan.charter.md> -o <out.md> [--answers <answers.json>] [--fail-if-needs-human]
+  [--manifest]` — emits plain CommonMark for Guardrails, resolving each `:::question` against the optional
+  `--answers` JSON file (open questions that have no answer are handed off flagged).
+  `--fail-if-needs-human` is the unattended gate: it still **writes** the handoff, and exits **2** naming
+  every decision nobody made — an escalation, not a refusal. `--manifest` additionally writes
+  `<out-stem>.manifest.json`, a chain-of-custody record of **which inputs produced this exact output** —
+  the hashes of the plan, the answers and the handoff, and where every answer came from.
 - `charter skills install [--project] [--force] [--overwrite-tracked]` — installs the bundled agent skills so
   your agent (and Guardrails) can discover them. `--force` overwrites an existing copy; it refuses to clobber
   git-tracked skill source that has uncommitted changes unless you add `--overwrite-tracked`. If the target

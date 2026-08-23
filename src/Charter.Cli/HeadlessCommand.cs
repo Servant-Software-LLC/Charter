@@ -144,10 +144,15 @@ internal static class HeadlessCommand
     }
 
     /// <summary>
-    /// True when two already-absolute paths name the same file, using the platform's own case rule — Windows
-    /// and macOS compare case-insensitively, Linux does not.
+    /// True when two paths name the same file, using the platform's own case rule — Windows and macOS compare
+    /// case-insensitively, Linux does not.
     /// </summary>
-    private static bool SamePath(string left, string right)
+    /// <remarks>
+    /// Shared with <c>charter handoff --manifest</c>, which refuses its own derived-name collisions by the same
+    /// rule (Charter #187). One implementation, because the interesting half is the platform case rule and a
+    /// second copy is a second chance to get it right on only one OS.
+    /// </remarks>
+    internal static bool SamePath(string left, string right)
         => string.Equals(
             Path.GetFullPath(left),
             Path.GetFullPath(right),

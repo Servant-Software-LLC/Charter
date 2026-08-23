@@ -1,15 +1,17 @@
 # The machine consumer — strict handoff and the record contract
 
-**Status:** design of record · **Rev 2**, 2026-08-23 (§9 added: the answers file is no longer trusted, and
+**Status:** design of record · **Rev 3**, 2026-08-23 (§10 added: the chain-of-custody manifest, and the
+in-band stamp gains a second line) · Rev 2, 2026-08-23 (§9 added: the answers file is no longer trusted, and
 `answered` no longer counts elements) · Rev 1, 2026-08-22 (adversarial pass applied — three of the first four
 decisions were reversed)
 **Closes:** #172 (`charter handoff` has no strict mode) · #173 (the `.headless.json` contract, and two
 naming collisions) · **#186** (an `--answers` file overwrites or erases a recorded answer with no validation)
-· **#188** (`answered` counts array elements, not content)
+· **#188** (`answered` counts array elements, not content) · **#187** (no verb produces the handoff CommonMark
+and a record of what was decided from one resolution pass)
 **Filed in support of:** Guardrails #496 — an epic to drive a complete Charter → Guardrails pipeline with
 no human in the loop, and prove afterwards that the run was proper rather than merely green.
-**Split out, deliberately NOT closed here:** #187 (the chain-of-custody manifest).
-**Filed reciprocally:** Guardrails #500.
+**Filed reciprocally:** Guardrails #500 (nothing branches on `target`) · Guardrails #505 (nothing downstream
+records the source plan's hash, so `handoffSha256` has no consumer).
 
 ---
 
@@ -179,6 +181,10 @@ instruction.
 Every flattened plan ends with `<!-- charter: plan-sha256=<hex> -->`, hashing the plan text **exactly as
 read** — byte-identical to `planSha256` in the same plan's headless record, which is the join.
 
+*(Rev 3 gives it a second line, `<!-- charter: answers-sha256=<hex|none> -->`, immediately above it. One
+stamp identifies the plan; the pair identifies the **resolution inputs**. See §10.5 for the reproduction that
+forced it, and why the plan hash alone is not enough.)*
+
 Four properties earn it its place, and no out-of-band record has all four: CommonMark-safe, **invisible** in
 a rendered diff, deterministic, and — the one that decides it — it **survives a consumer that ignores exit
 codes and side files**. *Out-of-band signalling cannot fix a failure of out-of-band signalling.*
@@ -247,7 +253,8 @@ so `charter-format-version: 1.0` reads identically to an unstamped plan. The rec
 - `charter headless` still has no `--answers`, so the record still describes *the plan on disk* while the
   handoff describes *the plan plus a file* (**#187** again).
 
-*(Rev 1 also listed #186 and #188 here. Rev 2 closes both — see §9.)*
+*(Rev 1 also listed #186 and #188 here. Rev 2 closes both — see §9. **Rev 3 closes #187 — see §10 — and the
+second bullet stands: `headless` is still not given `--answers`, deliberately. §10.0 says why.**)*
 
 ---
 
@@ -438,3 +445,231 @@ verified here, against the release commit, and write down that you did.
 meaning while every assertion in `HeadlessRecordContractTests` stayed green, because they all check that the
 token appears. It now also binds the one meaning that moved — the doc must carry the `[""]` case, and the
 record must actually report it unanswered, in the same test.
+
+---
+
+# Rev 3 — the chain-of-custody manifest
+
+## 10. One resolution pass, two artifacts
+
+Rev 1 and Rev 2 made `charter handoff` **judge** correctly. They did not make it **testify**. The flattened
+plan asserts a set of resolved decisions; nothing beside it records which inputs produced them, so the
+question *"was every question answered before handoff, and by what"* had to be answered from
+`<plan>.headless.json` — a file built by a **different verb**, from a **different resolution** (the plan on
+disk, with no `--answers` merged at all). Both files exit `0`, both are internally consistent, and #187
+reproduced them disagreeing on the same plan in the same session: the record said `"answered": true,
+"answer": ["Postgres"]` while the handoff said `Answered: Cassandra`.
+
+`charter handoff` therefore gains a boolean **`--manifest`**, which writes `<out-stem>.manifest.json` — a
+**new artifact, with its own `schema 1` and its own drift test** — from the **same resolution pass** that
+writes the CommonMark. `charter headless` is not touched at all.
+
+### 10.0 The four things this deliberately is not
+
+Each was considered and rejected; each is what a future reader will re-propose.
+
+**Not `headless --answers`.** Everything `headless` produces is *by contract* a pure function of the plan
+text — `HeadlessRecord.Build` has no answers parameter, and the artifact it writes is pinned byte-identical to
+`charter export`'s (invariant 1). Feeding it answers forces a choice between breaking that pinned test and
+having one verb emit two outputs that contradict each other. Worse, **`headless`'s needs-human is a strictly
+WEAKER predicate than the gate's** (§4.1 — the gate also blocks an undecidable agent question and an unknown
+`:::foo`), so a `headless --answers` would look like the pipeline gate while testing a different question.
+Guardrails #496's harness asserts `headless` exits `0` today; giving it `--answers` would make that assertion
+*look* correct while still testing the wrong predicate.
+
+**Not a third verb.** Charter already has one silent wrong-verb failure — reach for `headless` when you
+wanted `handoff` and you get exit `0` with no `plan.md` (§7). A third name in the same neighbourhood buys a
+second.
+
+**Not a merged verb, no rename, no exit-code renumbering.** §7's reasoning is unchanged: `headless`'s `0`/`2`
+contract is documented, tested, and being written against now.
+
+**Not a `HeadlessRecord` emitted from `handoff`.** Three of its fields are wrong on this path and #187 names
+them: `artifact` has no value (emitting `null` retypes an always-string field, a schema bump by the record's
+own rule), `sourceMap` and `questions[].sourceLine` map to the `.charter.md` whose line numbers bear no
+relation to the flattened output, and `anchorId` appears nowhere in the flattened markdown. A consumer would
+join against the wrong file. That rejection is what §10.1's *deliberately absent* list preserves.
+
+### 10.0.1 `--manifest` is BOOLEAN, not a path
+
+`HeadlessCommand`'s own reasoning decides it: that verb exists partly for *"a path convention a harness can
+compute from the plan path alone — `export` requires you to name `-o`, which means telling the harness where
+to look."* The manifest's name is therefore **derived from `--out`**: `-o plan.md` ⇒ `plan.manifest.json`,
+`-o ../gr/plan.md` ⇒ `../gr/plan.manifest.json`. A derived name that would collide with the plan or with
+`--out` is **refused (exit 1)**, exactly as `HeadlessCommand` refuses its own.
+
+### 10.0.2 Neither flag implies the other, in either direction
+
+`--fail-if-needs-human` does **not** turn the manifest on: it would write an unbidden file beside a plan,
+which plan-03 §5.0 solo primacy forbids ("no trace where nothing was said"). `--manifest` does **not** turn
+the gate on: it would change an exit code as a side effect of asking for a file, which is the seam-level
+surprise §2.1 exists to prevent. The manifest records `gate.flagPassed` precisely so the two stay separable —
+the gate is *always evaluated* when a manifest is written, and `flagPassed: false` records that its verdict
+was reported to the file and **not** to `$?`.
+
+### 10.1 Contents
+
+**Stable core — a machine may assert on this:** `schema` · `charterVersion` · `planSha256` ·
+`answersSha256` · `handoffSha256` · `malformedQuestions` · `gate.{flagPassed, needsHuman, exitCode}` ·
+`gate.unmatchedAnswerIds` · `questions[].{id, answered, answer, answerSource}`, and **`questions[]` is
+document-ordered**.
+
+**Explicitly NOT contract:** the three file-**name** fields (`plan`, `answers`, `handoff`) ·
+`questions[].title` · `gate.blockers[]` ordering · JSON key order.
+
+The names deserve their own sentence, because they are the fields a reader reaches for first and the ones
+that mean least. `-o ../gr/plan.md` records `"handoff": "plan.md"` — the bare name, never a path (the same
+no-local-path guarantee the record and the artifact keep) — and **effectively every Guardrails handoff is
+named `plan.md`**. **The hashes are the join key; the names are decoration.**
+
+**Deliberately absent, and this is load-bearing: no `artifact`, no `sourceMap`, no `anchorId`.** The
+governing rule, which has a negative test of its own:
+
+> **Every line number in the manifest is a line in `plan`, and the manifest carries no map into the handoff
+> output at all.**
+
+Those three fields are exactly why emitting a `HeadlessRecord` from `handoff` was rejected (§10.0). A future
+"helpful" addition of any of them reintroduces the wrong-file join this artifact exists to avoid.
+
+**`gate.blockers[].detail` is NOT serialized.** `HandoffGate.cs` documents it as *"Not a contract; do not
+parse it"*; putting it in a versioned schema makes it a de-facto contract the first time a harness greps it.
+`kind` carries the wire meaning, and `id`/`title`/`target`/`sourceLine` carry the rest.
+
+### 10.2 `answerSource` — what it can and cannot say
+
+**Two values: `inline` | `answers-file`.** #186 shipped **refusal** of the override, so `overrodeInline` and
+`clearedInline` are *impossible* — they are not omitted for brevity, they cannot occur. **Do not add them:
+a field that can never be true is worse than an absent one**, because a consumer will write an assertion
+against it and read the permanent `false` as evidence.
+
+**It does NOT distinguish "a human decided this" from "the automation supplied this."** §9.1 records the
+withdrawal of that first reading, and it is repeated here so it cannot propagate back in: `inline` conflates
+a reviewer's answer folded in by `poll --apply` / `resolve`, the drafting agent's own edit of the
+`.charter.md`, and anything else that wrote the key — and **`handoff` never reads the review log**, so it
+holds no evidence about who decided anything.
+
+What it carries is **which hash reproduces this decision**: `inline` ⇒ `planSha256` covers it; `answers-file`
+⇒ reproducing it also needs `answersSha256`. It is therefore defined **mechanically — which input the merge
+took the value from** — so it cannot drift from the emitter. In code it is not a second reader of the same
+inputs: the classification asks `AnswerRules.Merge` *what it just did* (identity against the merge's own
+return value), immediately beside the merge call in `HandoffGate.Evaluate`, and the flatten calls that same
+`Merge`. A re-stated-verbatim value therefore reads `answers-file`, because that is where the merge took it
+from, even though both hashes would reproduce it.
+
+**The limit this implies, stated so nobody oversells the artifact:** *the manifest can certify where a
+decision lived, never that a human made it.*
+
+### 10.3 Absence semantics
+
+Stated because *empty*, *not applicable* and *too old to know* look identical on the wire — the same reason
+§6 states them for the record.
+
+- **`answers: null` + `answersSha256: null` ⇒ no `--answers` was passed.** That is **not** the same as an
+  empty answers file, which is a file and hashes to the hash of its text (`{}` → a real hex).
+- **`questions[]` counts READABLE questions.** A `:::question` whose body will not parse is not in it — it
+  appears only as a `malformed-question` blocker with `id: null`, because Charter has no id to give it.
+  **`malformedQuestions` is emitted so `> 0` is a one-field detection**, since otherwise a plan with a broken
+  question yields a `questions[]` that looks complete and entirely answered while the handoff has DELETED
+  that question's id, title and target from the document the manifest is vouching for.
+- **`questions[]` is not a map.** Duplicate ids are a gate blocker, but the plan still has two entries and
+  both are emitted; `sourceLine` tells them apart. (Permitted by the rule in §10.1: it is a line in `plan`.)
+- **`gate.blockers: []` genuinely means nothing blocks.** Nothing here is computed conditionally — unlike the
+  record's old `notes: []` (§6.1), which meant "nothing of a kind Charter had" while two lints went to stderr
+  with no note kind.
+- **`answerSource: null` on an unanswered question.** There is no value, so there is no source; it is not a
+  third token.
+
+### 10.4 No clock
+
+The manifest is a **pure function of (plan text, answers text, the `--fail-if-needs-human` flag,
+`charterVersion`, three file names)**. No timestamp, no local path, no random. Two runs are byte-identical,
+which makes **reproducibility itself assertable** — a harness diffs two runs rather than trusting a sentence.
+The "when" is the file's own mtime, exactly as for the headless record.
+
+### 10.5 The in-band stamp gains a second line
+
+`<!-- charter: answers-sha256=<hex|none> -->` is emitted beside the existing `plan-sha256` line, immediately
+above it — so the flattened plan still *ends* with the plan hash, which §5.2 and `references/handoff.md`
+already promise.
+
+**The hazard, reproduced before it was fixed.** Run once with `--answers v1.json --manifest
+--fail-if-needs-human` (exit `0`), then re-run as plain `charter handoff plan.charter.md -o plan.md`. The
+write is unconditional, so `plan.md` becomes the all-questions-open flatten; **no manifest is written, because
+it is opt-in**; the OLD manifest survives — and `planSha256`, the in-band plan stamp, `.headless.json`'s
+`planSha256` and `charterVersion` **all four match**. The result is a manifest certifying decisions that are
+not in the file beside it, with **every documented join green**.
+
+The second line makes that visible **from the two artifacts alone**: the manifest says a hex, the file says
+`none`. It is necessary AND sufficient — the hazard bites only when the resolution **inputs** differ, and the
+pair of stamps is exactly the inputs. It is also **CRLF-immune**, which the `handoffSha256` byte-hash is not:
+a line-ending rewrite in transit invalidates the byte hash while leaving both stamps readable and correct.
+
+This changes #172's stamp, which is **unreleased** — cheap now, expensive after the release.
+
+### 10.6 The hash recipe — document it literally, it is not what a reader assumes
+
+**One recipe for all three hashes**, because a manifest whose fields mean different things is worse than one
+with fewer fields:
+
+> `File.ReadAllText` strips a UTF-8 BOM and decodes UTF-16 per the BOM; `PlanHash.Sha256Hex` then hashes the
+> **UTF-8 re-encoding of that decoded string**.
+
+So **none of the three hashes equals `sha256sum` of the file's bytes unless the file is BOM-less UTF-8.** For
+the plan and the handoff that is nearly always true (Charter writes the handoff itself). For the answers file
+it is not: a pipeline generating `answers.json` from **Windows PowerShell 5.1** gets UTF-16LE, and every
+comparison against `sha256sum` then mismatches permanently with nothing to explain it. `charter handoff`
+therefore **warns on stderr when the answers file is not BOM-less UTF-8**, naming what it found. A warning,
+not a rejection: the file decodes correctly and the run is honest — only the hash's relationship to
+`sha256sum` is surprising.
+
+`PlanHash`'s own remarks carry this, since it is now the identity function for **any** file in this pipeline
+rather than for the plan alone.
+
+### 10.7 The drift test binds MEANINGS, not names
+
+`HandoffManifestContractTests` follows the **fixed** template, not the original. #186/#188 proved the
+original insufficient: `HeadlessRecordContractTests` bound field NAMES only, so `answered` changed meaning
+while every assertion stayed green (§9.5). **A drift test that pins names is a spell-checker.**
+
+Three meanings are bound behaviourally as well as documentally, chosen because each is silently changeable
+and each would break a reproduction check with nobody at fault:
+
+1. **`answerSource`'s invariant that `answers-file` can never mean override** — bound as *the refusal*, not
+   as the token. A supplied value that differs from a recorded inline answer is rejected (#186), the merge
+   keeps the inline value, and the manifest says `inline`.
+2. **What `handoffSha256` is computed over** — the bytes written **including** both provenance stamps, not
+   the text before them.
+3. **What `answersSha256` covers** — the answers file's own text, **not** a canonicalized dictionary. Two
+   JSON texts that parse to the same dictionary hash differently, deliberately.
+
+Note that `answered` means something **narrower here than in the record**, and that is the fourth meaning the
+test binds: the record's `answered` is *the plan's own inline answer records a decision*, while the
+manifest's is *the MERGED answer records a decision*. One field name, two artifacts, two scopes — which is
+precisely the shape of defect #188 was, so it is asserted rather than assumed.
+
+`QuestionBodyParityTests` is extended, and is the highest-value test in the change. There is a real seam:
+`HandoffMarkdown.Emit` **normalizes line endings and then parses**, while `HandoffGate` →
+`PlanInventory.Build` → `PlanWalk.Blocks` parses the **raw** string. The manifest is the first artifact that
+vouches for the flattened file while being assembled from a *different parse of a different string*. The
+extension asserts **behaviourally** — the manifest's `questions[]` id set equals the ids the flatten actually
+emitted, and each entry's `answer` equals what the flatten printed, on the same inputs — without asserting
+the two call the same method. A **CR-only** row and rows that pass an answers dictionary were added, because
+neither existed.
+
+### 10.8 Known limits — stated, not fixed
+
+- **`handoffSha256` has no consumer.** Guardrails' own `PlanHash` hashes `guardrails.json` plus every
+  `task.json`; it does **not** hash the markdown the folder was broken down from, and nothing there records
+  the source plan's hash. Filed as **Guardrails #505**. The field is kept as the only tamper detector Charter
+  can offer, and is documented as **advisory**: a mismatch means either tampering **or a line-ending rewrite
+  in transit**, and those are not distinguishable from the hash alone — which is the other half of why
+  §10.5's stamps matter.
+- **Whether the plan was ever reviewed by a human is unknowable here.** `handoff` does not read the review
+  log at all. §10.2's limit is the same fact from the other end.
+- **`gate.flagPassed` records the argv, not obedience.** It says `--fail-if-needs-human` was on the command
+  line; it says nothing about whether the caller honoured the exit code. That is why the field is named
+  `flagPassed` and **not** `enforced`.
+- **Write order is handoff FIRST, then manifest**, and the exit-`1` help text was corrected to match: with
+  `--manifest`, a `1` no longer promises that *nothing* was written. A handoff with no manifest is an honest
+  degraded state; a manifest describing a file that does not exist is a lie. Both are written
+  temp-file-then-`File.Move(overwrite: true)`, so neither is ever observed half-written.
