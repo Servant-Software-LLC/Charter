@@ -27,3 +27,9 @@ dist/
 
 ## Scratch output from rehearsing an example (see examples/*/RUNBOOK.md)
 examples/**/.work/
+
+## Agent worktrees. A subagent given `isolation: "worktree"` gets a throwaway checkout here; the BRANCH
+## it commits to is a normal ref in the repo, so nothing is lost when the directory goes. Ignored because
+## the checkout is scratch, and because a stray one left behind by an interrupted agent should never look
+## like uncommitted work.
+.claude/worktrees/
