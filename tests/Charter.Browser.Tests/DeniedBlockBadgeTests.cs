@@ -861,8 +861,11 @@ public sealed partial class ReviewLoopBrowserTests
                 new PageClickOptions { Modifiers = new[] { KeyboardModifier.Alt } });
             await page.WaitForSelectorAsync(Ui("composer-input"));
             await page.FillAsync(Ui("composer-input"), "written after the rail arrived");
-            await page.ClickAsync(Ui("composer-save"));
-            await WaitForEventAsync(page, "submitted");
+            // SaveComposerAsync, not click + WaitForEventAsync("submitted"): this test has already seeded a
+            // note on every railed block above, so "has a submit EVER happened" is true before the click and
+            // the read below would race the POST (#209's family — the same defect that gave `SeedNotesAsync`
+            // its +count).
+            await SaveComposerAsync(page);
 
             var annotations = await ListAnnotationsAsync(server.Address, session.Key.Value);
             var note = FindByNote(annotations, "written after the rail arrived");
@@ -999,8 +1002,9 @@ public sealed partial class ReviewLoopBrowserTests
                 "  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); return null; }");
             await page.WaitForSelectorAsync(Ui("composer-input"));
             await page.FillAsync(Ui("composer-input"), "a quote taken across the badge");
-            await page.ClickAsync(Ui("composer-save"));
-            await WaitForEventAsync(page, "submitted");
+            // Nine notes have already been seeded by the sweep above, so an "ever submitted" wait returns on
+            // its first poll and every read below races the POST (#209's family).
+            await SaveComposerAsync(page);
 
             var annotations = await ListAnnotationsAsync(server.Address, session.Key.Value);
             var note = FindByNote(annotations, "a quote taken across the badge");
@@ -1494,9 +1498,16 @@ public sealed partial class ReviewLoopBrowserTests
     private static async Task SeedNotesAsync(IPage page, string anchorId, int count, string notePrefix)
     {
         // The markers are what every assertion reads, so the wait below is for a render caused by THESE
-        // notes — the count before the first one, plus one. Charter #198's prior art restated: an
-        // "at least one has happened" wait over a tap that accumulates for the page's whole life is
-        // satisfied by the render that ran on load, so it is not a wait at all.
+        // notes. Charter #198's prior art restated: an "at least one has happened" wait over a tap that
+        // accumulates for the page's whole life is satisfied by the render that ran on load, so it is not a
+        // wait at all.
+        //
+        // ...and #209's correction to that correction, which is the same lesson one notch finer: an
+        // increment of ONE is satisfied by the FIRST note's render, so seeding N and waiting for +1 is a
+        // partial-result wait wearing a count. Each note causes at least its own POST-response render, so
+        // the honest target is +count. Today the per-note `submitted` wait below already covers it — every
+        // render is emitted before its own `submitted` — which is precisely why the +1 could sit here
+        // looking correct. The day these are fired concurrently, +1 becomes live and +count does not.
         var markersBefore = await CountEventsAsync(page, "markers-rendered");
 
         for (var i = 0; i < count; i++)
@@ -1509,17 +1520,32 @@ public sealed partial class ReviewLoopBrowserTests
             await WaitForEventCountAsync(page, "submitted", before + 1);
         }
 
-        await WaitForEventCountAsync(page, "markers-rendered", markersBefore + 1, atLeast: true);
+        await WaitForEventCountAsync(page, "markers-rendered", markersBefore + count, atLeast: true);
     }
 
+    /// <summary>
+    /// Wait for the SDK's own event tap to reach a count. A READINESS gate for a browser→server round trip,
+    /// not a latency assertion — which is what sets its deadline.
+    ///
+    /// <para><b>Its deadline is <see cref="ReadinessTimeoutMs"/> and was a local 15s</b>, which is what gave
+    /// out under contention — see that constant for the two measurements.</para>
+    ///
+    /// <para><b>And the message can no longer contradict itself.</b> It used to re-read the count AFTER the
+    /// deadline, so a value that arrived in the gap produced <i>"the SDK emitted 2 'submitted' event(s)
+    /// within 15000ms, expected 2"</i> — a failure that reads as a paradox and sent a real investigation
+    /// looking for a product defect. What the loop actually SAW is reported now, the late arrival is reported
+    /// separately, and the two together name the cause: a wait that was too short, not a page that was
+    /// wrong.</para>
+    /// </summary>
     private static async Task WaitForEventCountAsync(
-        IPage page, string type, int target, bool atLeast = false, int timeoutMs = 15_000)
+        IPage page, string type, int target, bool atLeast = false, int timeoutMs = ReadinessTimeoutMs)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        var lastSeen = -1;
         while (DateTime.UtcNow < deadline)
         {
-            var seen = await CountEventsAsync(page, type);
-            if (atLeast ? seen >= target : seen == target)
+            lastSeen = await CountEventsAsync(page, type);
+            if (atLeast ? lastSeen >= target : lastSeen == target)
             {
                 return;
             }
@@ -1527,9 +1553,16 @@ public sealed partial class ReviewLoopBrowserTests
             await Task.Delay(25);
         }
 
+        var now = await CountEventsAsync(page, type);
+        var late = atLeast ? now >= target : now == target;
         Assert.Fail(
-            "the SDK emitted " + await CountEventsAsync(page, type) + " '" + type + "' event(s) within " +
-            timeoutMs + "ms, expected " + (atLeast ? "at least " : "") + target);
+            "the SDK had emitted " + lastSeen + " '" + type + "' event(s) when the " + timeoutMs +
+            "ms deadline passed, expected " + (atLeast ? "at least " : "") + target + ". It stands at " +
+            now + " now" +
+            (late
+                ? " — so it ARRIVED AFTER THE DEADLINE. That is a wait that was too short for this runner, " +
+                  "not a page that failed to do the work; raise the deadline rather than hunting the product."
+                : ", so the work genuinely never landed."));
     }
 
     /// <summary>
