@@ -258,6 +258,19 @@ update run `charter skills install --force` too.
 
 ## Conventions & gotchas (hard-won)
 
+- **A skill example containing a fenced block needs a FOUR-backtick outer fence, and getting it wrong fails
+  silently (#207).** CommonMark closes a fence on the first line of the same character whose run is at least
+  as long and which carries **no info string** — so ` ```mermaid ` does not close a ` ``` ` block, but the
+  bare ` ``` ` that ends the mermaid example does. A worked `.charter.md` example wrapped in three backticks
+  therefore ends at its own diagram: in `authoring-plans.md` the `:::` that should have closed the diagram
+  rendered as a live **"Unknown directive"** box which swallowed a `## Decisions we need from you` heading
+  and a whole `:::question`, the next `:::warn` rendered as a **real warn block**, and the example's closing
+  fence — now an *opener* — swallowed the paragraph of real instructions after it and rendered them as code.
+  Nothing errors and nothing warns; the file still renders, just wrongly, and an agent loading it reads the
+  leak as instruction rather than illustration. `SkillFenceBalanceTests` (Cli tests) now walks the real
+  CommonMark fence state machine over **both** skill trees — `skills/**` and `.claude/skills/**` — and fails
+  naming the file, the line and the remedy. **Do not "fix" it by counting backticks**: a count condemns the
+  correct four-backtick shape, which is the shape the fix uses.
 - **Classic `.sln`, not `.slnx`.** CI uses `setup-dotnet 8.0.x`, which cannot read `.slnx`.
 - **Apphost rename, not AssemblyName.** Rename the published `Charter.Cli` binary to `charter` in the
   workflow; never set a global `-p:AssemblyName` (it renames every project and collides on publish —

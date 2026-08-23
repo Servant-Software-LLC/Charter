@@ -188,7 +188,7 @@ so the marker would end up in the recorded decision and would stale answers the 
 
 ## A sample `.charter.md` skeleton
 
-```
+````
 # Payments service — reviewable plan
 
 Short framing paragraph: what we're building and why, in plain prose.
@@ -227,7 +227,7 @@ flowchart LR
 :::warn
 Whichever we pick, the migration is irreversible once the backfill starts.
 :::
-```
+````
 
 Render it with `charter render plan.charter.md -o plan.html` to sanity-check layout, then take it into the
 review loop (`references/review-loop.md`).
