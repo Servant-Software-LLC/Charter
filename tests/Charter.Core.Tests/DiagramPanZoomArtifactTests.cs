@@ -74,7 +74,7 @@ public class DiagramPanZoomArtifactTests
 
         // Still a real diagram: the block, the vendored Mermaid runtime, and the init that renders it.
         Assert.Contains($"<pre class=\"mermaid\" id=\"{block.Id}\">", exported, StringComparison.Ordinal);
-        Assert.Contains("mermaid.run()", exported, StringComparison.Ordinal);
+        Assert.Contains("mermaid.run(", exported, StringComparison.Ordinal);
 
         // …and none of the review-time affordance, nor the SDK that would provide it.
         Assert.DoesNotContain("data-charter-sdk", exported, StringComparison.Ordinal);

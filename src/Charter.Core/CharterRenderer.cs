@@ -168,7 +168,7 @@ public static class CharterRenderer
     /// <summary>
     /// The inlined offline Mermaid runtime: the vendored library (<see cref="MermaidResource.Library"/>,
     /// which exposes <c>globalThis.mermaid</c>) followed by a theme-aware
-    /// <c>mermaid.initialize({ startOnLoad: true, theme: … })</c> / <c>mermaid.run()</c> bootstrap — both as
+    /// <c>mermaid.initialize({ startOnLoad: false, theme: … })</c> / <c>mermaid.run({ nodes })</c> bootstrap — both as
     /// inline <c>&lt;script&gt;</c>, NEVER a CDN <c>src</c>. A saved <c>:::diagram</c> therefore renders with no
     /// network (invariant 1), and the only browser JS the renderer emits is the third-party library plus this
     /// minimal init call — Charter's own interaction JS stays in <c>sdk/</c> (invariant 6).
@@ -202,10 +202,35 @@ public static class CharterRenderer
         // that needs a `frame-src` we deliberately do not grant) WHILE still stripping <script> from diagram
         // labels — so no CSP relaxation is required and the security posture is not weakened. The theme tracks
         // prefers-color-scheme, the same signal the bundled stylesheet uses.
+        //
+        // Render ONLY the blocks Charter authored. Mermaid's default selector is `.mermaid`, document-wide,
+        // and `startOnLoad` re-applies it on window load — so a :::custom-html body containing a
+        // <pre class="mermaid"> (a plan that DOCUMENTS Mermaid is the obvious case) had that element replaced
+        // by a rendered SVG, in the served page and in the saved artifact alike. The escape hatch's one
+        // promise is that the author's markup is rendered as written, and invariant 1 says the artifact is
+        // what the author wrote (Charter #177). It looked intermittent because it fired only when some
+        // unrelated block elsewhere in the plan happened to be a diagram, which is what inlines this at all.
+        //
+        // The node list is narrowed the same way the SDK's anchor walk is: a MONOTONE containment test.
+        // `.custom-html-scroll` wraps the whole of an author's body, so an author forging that class inside
+        // their own markup only ever ADDS an ancestor match — forgery can shrink this set, never grow it, and
+        // shrinking it costs the forger their own rendering and nothing else. A nested :::diagram (inside a
+        // ::::note, say) still matches, so it renders exactly as before whenever the runtime is present.
         const string bootstrap =
-            "mermaid.initialize({ startOnLoad: true, securityLevel: 'antiscript', " +
+            "mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', " +
             "theme: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default' });\n" +
-            "mermaid.run();";
+            // Wrapped in an IIFE so the artifact's global scope stays as bare as it was: a :::custom-html
+            // body may carry a <script> of the author's own, and a plan is not the place to discover that
+            // Charter took a name.
+            "(function () {\n" +
+            "  var nodes = [];\n" +
+            "  var candidates = document.querySelectorAll('pre.mermaid');\n" +
+            "  for (var i = 0; i < candidates.length; i++) {\n" +
+            "    var parent = candidates[i].parentElement;\n" +
+            "    if (!parent || !parent.closest('.custom-html-scroll')) nodes.push(candidates[i]);\n" +
+            "  }\n" +
+            "  mermaid.run({ nodes: nodes });\n" +
+            "})();";
 
         return "\n<script>" + library + "</script>\n<script>\n" + bootstrap + "\n</script>\n";
     }

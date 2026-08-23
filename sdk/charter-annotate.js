@@ -32,12 +32,25 @@ window.CharterAnnotate = (function () {
   // SDK without touching server internals.
   var CHANNEL = 'charter-annotate';
 
-  // Every element the SDK builds carries this attribute. It is the anchoring layer's self-guard
-  // (see closestAnchored) AND the marker that keeps SDK chrome out of derived context labels.
+  // Every element the SDK builds carries this attribute. It NAMES that element, for the SDK's own
+  // stylesheet and for the browser tests, which is all it does.
   // Deliberately an ATTRIBUTE, never an `id`: the renderer anchors blocks by `id`, so an SDK
   // element with an id could be resolved as an annotation target. The SDK's UI has no ids at all,
   // so even a guard bug degrades to "no anchor", never "the wrong anchor".
   var UI_ATTR = 'data-charter-ui';
+
+  // It is NOT proof of ownership, and it used to be treated as such — the anchoring layer's self-guard
+  // (closestAnchored) and the block-text walker both matched on it. :::custom-html passes an author's
+  // attributes through verbatim (that is the whole point of the escape hatch), so a body carrying
+  // data-charter-ui made the SDK treat that subtree as its own chrome: Alt+click anywhere inside it resolved
+  // to null, and blockTextNodes dropped its text out of the offset frame, shifting the start/end of every
+  // note taken lower down that block (Charter #176).
+  //
+  // Ownership is therefore a JS PROPERTY, set by make() on every element the SDK constructs. HTML cannot
+  // express one, so an author's markup can never claim it, and no name in the document is trusted. This is
+  // the same move clearMarkers makes with its ledger and the two are the same rule: CHARTER IDENTIFIES ITS
+  // OWN CHROME BY CONSTRUCTION, NEVER BY PATTERN-MATCHING A DOCUMENT IT DOES NOT OWN.
+  var OWNED = 'charterOwned';
 
   // The three annotation kinds Charter supports. The value each maps to is the wire
   // token sent to the server (kept stable and human-readable).
@@ -107,8 +120,15 @@ window.CharterAnnotate = (function () {
     // The selected note (#137). Held as an ID rather than a card, because render() rebuilds every card
     // — the selection is re-projected onto the new DOM instead of pointing at a detached node.
     selectedId: '',
-    selectedAnchorEl: null
+    selectedAnchorEl: null,
+    // Exactly what the last renderMarkers() pass put on the page, so clearMarkers can undo THAT and nothing
+    // else. See clearMarkers for why a document-wide sweep by class name was the wrong shape.
+    marks: newMarks()
   };
+
+  function newMarks() {
+    return { classed: [], counted: [], created: [] };
+  }
 
   // ---- capability key: read from the page URL's ?key= query string --------------------
   function readKey() {
@@ -173,11 +193,14 @@ window.CharterAnnotate = (function () {
 
   // ---- anchoring: the three kinds -----------------------------------------------------
 
-  // Nodes that must never resolve to an annotation anchor: the SDK's own chrome (composer,
-  // panel, markers, overlay) and the native controls of a rendered :::question form. The guard
-  // lives at the ANCHORING layer rather than in the event handlers, so every path that could
-  // produce an anchor — click, selection, or a future one — is covered by construction.
-  var UNANCHORABLE = '[' + UI_ATTR + '], input, textarea, select, button, option, form.question';
+  // Nodes that must never resolve to an annotation anchor: the native controls of a rendered :::question
+  // form, and the form itself. The guard lives at the ANCHORING layer rather than in the event handlers, so
+  // every path that could produce an anchor — click, selection, or a future one — is covered by construction.
+  //
+  // The SDK's own chrome is refused too, but it is NOT in this selector: chrome is recognised by OWNERSHIP
+  // (isSdkUi), because `[data-charter-ui]` is a name an author's :::custom-html body can carry and a name is
+  // not proof (Charter #176). See OWNED.
+  var UNANCHORABLE = 'input, textarea, select, button, option, form.question';
 
   // The annotate modifier's NAME, per platform. The mechanic is identical everywhere — macOS's ⌥ key sets
   // `event.altKey`, so nothing about the handling changes — but its KEYCAP does not read "Alt" on a Mac, and
@@ -283,9 +306,15 @@ window.CharterAnnotate = (function () {
   // which the HTML parser hoists clear of the region. Balancing an author's body means parsing it. That case
   // is covered from the other side instead: the review panel reads the server's `anchorStatus` for a pending
   // note, so an unmappable anchor is STATED as an orphan rather than drawn as healthy (see buildItem).
+  //
+  // The attribute test is `anchorIdOf`, not `hasAttribute`, and the difference is load-bearing: an element
+  // carrying `data-anchor=""` with no id SATISFIED hasAttribute and yielded a null id, so the walk stopped on
+  // a block whose anchor could never be recorded. That is the state Charter #178 is about, and answering
+  // "not an anchor" here is strictly better than guarding downstream, because the walk then CONTINUES
+  // OUTWARD to a real anchor — the same degradation the opaque-region half already has, instead of null.
   function isAnchorElement(el) {
     if (!el || el.nodeType !== 1) return false;
-    if (!(el.id || el.hasAttribute('data-charter-anchor') || el.hasAttribute('data-anchor'))) return false;
+    if (!anchorIdOf(el)) return false;
     return !insideOpaqueRegion(el);
   }
 
@@ -312,12 +341,22 @@ window.CharterAnnotate = (function () {
     // The self-guard: anything inside SDK chrome (or a native control) has NO anchor, full stop.
     // Without it a selection that ends inside the panel would anchor to the panel and post a
     // bogus annotation — carrying a quote copied out of another reviewer's note — to the agent.
-    if (el.closest(UNANCHORABLE)) return null;
+    if (isSdkUi(el) || el.closest(UNANCHORABLE)) return null;
     while (el && el.nodeType === 1) {
       if (isAnchorElement(el)) return el;
       el = el.parentElement;
     }
     return null;
+  }
+
+  // A block a reviewer can SEE and POINT AT that still refuses notes — as opposed to a gesture that landed on
+  // nothing (the page's margin) or on the SDK's own chrome, where there is nothing to explain because the
+  // reviewer did not point at plan content. Exactly one block qualifies: a rendered :::question.
+  function refusesNotes(node) {
+    var el = (node && node.nodeType === 3) ? node.parentElement : node;
+    if (!el || el.nodeType !== 1 || typeof el.closest !== 'function') return false;
+    if (isSdkUi(el)) return false;
+    return !!el.closest('form.question');
   }
 
   function anchorIdOf(el) {
@@ -364,9 +403,16 @@ window.CharterAnnotate = (function () {
     return !!el && !isSdkUi(el) && !insideOpaqueRegion(el);
   }
 
+  // Is this node the SDK's own chrome, or inside it? Answered by the ownership property make() sets, walked
+  // up by hand because `closest` can only ask about attributes — and an attribute is exactly what an
+  // author's verbatim body is free to carry (Charter #176).
   function isSdkUi(node) {
     var el = (node && node.nodeType === 3) ? node.parentElement : node;
-    return !!(el && el.nodeType === 1 && typeof el.closest === 'function' && el.closest('[' + UI_ATTR + ']'));
+    while (el && el.nodeType === 1) {
+      if (el[OWNED] === true) return true;
+      el = el.parentElement;
+    }
+    return false;
   }
 
   // (a) element: anchor a note to a whole rendered block by its stable block id. `block` is the element
@@ -376,17 +422,43 @@ window.CharterAnnotate = (function () {
     return { kind: KIND.element, anchorId: anchorIdOf(block) };
   }
 
-  // The block's own text nodes in document order, with every [data-charter-ui] subtree skipped, plus their
-  // values. Concatenating `texts` gives the block's text content — the SINGLE reference frame that both the
-  // recorded start/end offsets and the panel's quote lookup are expressed in. SDK chrome injected into a
-  // block (a marker, a count badge) can therefore never shift an offset or contribute to a quote.
+  // ---- what counts as the block's TEXT --------------------------------------------------
+  //
+  // Elements whose text nodes are MACHINERY, not words a human reads: a <style> or <script> inside a block.
+  // Mermaid ships its theme CSS in a <style> INSIDE the rendered <svg>, and :::custom-html may carry either
+  // — a plan that documents a widget, or pastes in a fragment of a real page, routinely does.
+  //
+  // Matched case-insensitively because an SVG element's tagName keeps its lower-case local name while an
+  // HTML element's is upper-cased.
+  //
+  // ONE definition, TWO readers, deliberately. The derived label (visibleText) has skipped these since #48;
+  // the OFFSET FRAME never did, so a note taken below an author's inline CSS was recorded against a span
+  // shifted by the length of that CSS source, and the agent was handed the wrong text (Charter #179). Same
+  // question, so it must not be answered twice.
+  var NON_VISIBLE_TAGS = { STYLE: true, SCRIPT: true };
+
+  function isNonVisible(el) {
+    return NON_VISIBLE_TAGS[String(el.tagName || '').toUpperCase()] === true;
+  }
+
+  // Is this subtree excluded from the block's text? The SDK's own chrome (a marker, a count badge, a zoom
+  // bar) is not the author's words, and neither is machinery. Ownership, not `[data-charter-ui]`: an
+  // author's body carrying that attribute would otherwise drop its own text out of the frame and shift every
+  // offset below it — the same defect from the other direction (Charter #176).
+  function outsideBlockText(node) {
+    return node[OWNED] === true || isNonVisible(node);
+  }
+
+  // The block's own text nodes in document order, plus their values. Concatenating `texts` gives the block's
+  // text content — the SINGLE reference frame that both the recorded start/end offsets and the panel's quote
+  // lookup are expressed in, and the frame an agent reads those offsets against.
   function blockTextNodes(block) {
     var nodes = [];
     var texts = [];
     (function walk(node) {
       if (!node) return;
       if (node.nodeType === 1) {
-        if (node.hasAttribute && node.hasAttribute(UI_ATTR)) return;
+        if (outsideBlockText(node)) return;
         for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
         return;
       }
@@ -422,10 +494,16 @@ window.CharterAnnotate = (function () {
     // range on the callout — with offsets measured through the <svg>'s theme <style>. It used to be refused
     // here only by accident, because the walk stopped on the id-less <pre>.
     if (diagramBlock(selection.anchorNode) || isDiagramBlock(block)) return null;
+    // No id, no anchor — refuse BEFORE the composer opens, never after the reviewer has typed into it
+    // (Charter #178). isAnchorElement makes this unreachable today; it is kept because the cost of being
+    // wrong is a note the reviewer wrote and never gets back, and because the composer is invited open by
+    // whatever this returns.
+    var anchorId = anchorIdOf(block);
+    if (!anchorId) return null;
     var span = blockSpan(block, range);
     return {
       kind: KIND.textRange,
-      anchorId: anchorIdOf(block),
+      anchorId: anchorId,
       quote: quote,
       // Offsets into the ANCHORED BLOCK's own text, or nulls. Never a pair from two frames (#56).
       start: span ? span.start : null,
@@ -535,27 +613,17 @@ window.CharterAnnotate = (function () {
 
   // ---- human-readable labels ----------------------------------------------------------
 
-  // Elements whose text nodes are MACHINERY, not words a human reads — a <style> or <script> inside a block
-  // (Mermaid ships its theme CSS in a <style> INSIDE the rendered <svg>; :::custom-html may carry either).
-  // Matched case-insensitively because an SVG element's tagName keeps its lower-case local name while an
-  // HTML element's is upper-cased.
-  var NON_VISIBLE_TAGS = { STYLE: true, SCRIPT: true };
-
-  function isNonVisible(el) {
-    return NON_VISIBLE_TAGS[String(el.tagName || '').toUpperCase()] === true;
-  }
-
-  // The text a human sees INSIDE a block, with every SDK-owned subtree excluded — otherwise a
-  // count badge injected into the block would pollute the composer's "what am I annotating" line
-  // and the panel entry's target label.
+  // The text a human sees INSIDE a block — the same exclusions as the offset frame, from the one definition
+  // they share (outsideBlockText): SDK-owned chrome, because a count badge injected into the block would
+  // otherwise pollute the composer's "what am I annotating" line and the panel entry's target label; and
+  // <style>/<script>, because their contents are source rather than words.
   function visibleText(root) {
     if (!root) return '';
     var out = [];
     (function walk(node) {
       if (!node) return;
       if (node.nodeType === 1) {
-        if (node.hasAttribute && node.hasAttribute(UI_ATTR)) return;
-        if (isNonVisible(node)) return;
+        if (outsideBlockText(node)) return;
         for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
         return;
       }
@@ -613,6 +681,10 @@ window.CharterAnnotate = (function () {
   // ---- submit: POST the annotation to /api/{key}/prompts + emit over the boundary ------
   function submit(annotation) {
     if (!annotation || !annotation.anchorId) {
+      // The composer opens BEFORE this is reached, so by now the reviewer has typed the note — and this used
+      // to emit over the postMessage boundary and return, which reaches a test harness and no human at all
+      // (Charter #178). Nothing is saved either way; the only question is whether the reviewer finds out.
+      explain('That note was not saved — Charter could not tell which block it belongs to.');
       emit('error', { reason: 'no-anchor', annotation: annotation });
       return Promise.resolve(null);
     }
@@ -1264,10 +1336,31 @@ window.CharterAnnotate = (function () {
   // The block root of a rendered :::question form — the element carrying the question id. Usually
   // the form itself; a form nested under an annotated block resolves to that ancestor. Returns null
   // for any form Charter does not own, which is what keeps the SDK from claiming a foreign submit.
+  //
+  // `data-question-id` is one more name a :::custom-html body can carry, and this is the gateway to
+  // everything the SDK does to a question form — intercepting its native submit, re-labelling its Save
+  // button, disabling and re-enabling it, hanging a status line off it, and putting it all back on dispose.
+  // Done to an author's own <form>, that is the escape hatch being rewritten by the review chrome, which is
+  // the defect Charter #176 is about wearing different clothes. So the same monotone containment rule
+  // applies: inside an opaque region it is the author's form, not Charter's. A real question is a top-level
+  // block (or nested in a callout) and is never inside one.
   function questionRoot(form) {
     if (!form || form.nodeType !== 1 || form.tagName !== 'FORM') return null;
-    if (form.hasAttribute('data-question-id')) return form;
-    return form.closest ? form.closest('[data-question-id]') : null;
+    var root = form.hasAttribute('data-question-id')
+      ? form
+      : (form.closest ? form.closest('[data-question-id]') : null);
+    return (root && !insideOpaqueRegion(root)) ? root : null;
+  }
+
+  // Every rendered :::question in the PLAN, in document order — the sweep twin of questionRoot, filtered by
+  // the same rule so the two cannot disagree about which forms are Charter's.
+  function questionForms() {
+    var found = document.querySelectorAll('form[data-question-id]');
+    var forms = [];
+    for (var i = 0; i < found.length; i++) {
+      if (questionRoot(found[i])) forms.push(found[i]);
+    }
+    return forms;
   }
 
   // Intercept the native submit of a rendered :::question <form>. Non-question forms (none of
@@ -1353,7 +1446,7 @@ window.CharterAnnotate = (function () {
   }
 
   function wireQuestionForms() {
-    var forms = document.querySelectorAll('form[data-question-id]');
+    var forms = questionForms();
     for (var i = 0; i < forms.length; i++) {
       ensureWired(forms[i], forms[i]);
       syncSubmitState(forms[i], forms[i]);
@@ -1486,7 +1579,7 @@ window.CharterAnnotate = (function () {
   // Undo the wiring: drop the status chrome and return every Save button to the DISABLED state the
   // renderer emits, so a disposed SDK leaves an inert (non-navigating) page behind.
   function unwireQuestionForms() {
-    var forms = document.querySelectorAll('form[data-question-id]');
+    var forms = questionForms();
     for (var i = 0; i < forms.length; i++) {
       var form = forms[i];
       var status = form.querySelector('[' + UI_ATTR + '="answer-status"]');
@@ -1708,8 +1801,11 @@ window.CharterAnnotate = (function () {
     '.charter-anchor-selected { outline: 2px solid var(--charter-accent); outline-offset: 3px; }'
   ].join('\n');
 
+  // Every element the SDK puts in the document is built here, which is what makes ownership decidable: the
+  // property below is set on construction and cannot be reached from markup (see OWNED).
   function make(tag, className, uiName, text) {
     var el = document.createElement(tag);
+    el[OWNED] = true;
     if (className) el.className = className;
     if (uiName) el.setAttribute(UI_ATTR, uiName);
     if (text !== undefined && text !== null) el.textContent = text;
@@ -2013,6 +2109,21 @@ window.CharterAnnotate = (function () {
     state.statusIsSent = false;
     state.ui.status.textContent = text || '';
     state.ui.status.className = text ? 'charter-panel-status' : 'charter-panel-status charter-hidden';
+  }
+
+  // Say why a deliberate gesture produced nothing, WHERE THE REVIEWER CAN READ IT.
+  //
+  // setStatus alone is not enough: the status line lives inside the panel, and the panel is closed by
+  // default — so a message written to it while it is shut is the same silence it was meant to end. The panel
+  // therefore opens, as it already does when a note is saved, when a round is handed off and when a
+  // quarantined queue needs explaining. Focus is NOT moved (the reviewer is reading the document, not the
+  // panel), which is the same call all three of those make.
+  //
+  // This is the #170 rule generalised past markers: Charter has no vocabulary for "nothing happened, and
+  // that was correct", so absence gets a sentence rather than being left to be inferred.
+  function explain(text) {
+    setStatus(text);
+    showPanel();
   }
 
   function setSentStatus() {
@@ -2705,28 +2816,40 @@ window.CharterAnnotate = (function () {
     TABLE: 'table', UL: 'list', OL: 'numbered list', HR: 'horizontal rule', PRE: 'code block'
   };
 
+  // Undo the last marker pass — EXACTLY it, and nothing that merely resembles it.
+  //
+  // This used to sweep the whole document for `.charter-annotation-badge`, `.charter-badge-rail`,
+  // `.charter-has-annotations` and `[data-charter-annotation-count]` and destroy every match: elements
+  // removed, classes and attributes stripped. Every one of those names is a name a :::custom-html author can
+  // write — a plan DOCUMENTING Charter is the obvious case — and the escape hatch's one promise is that the
+  // author's markup is rendered as written. So an author's element was deleted from the served page, and the
+  // sweep runs on EVERY pass, annotated or not (renderMarkers calls this first), which means every SSE frame:
+  // a teammate's note arriving by pull was enough to do it (Charter #176).
+  //
+  // A narrower selector would not have fixed it, because there is no name an author cannot write. The fix is
+  // to stop asking the document what the SDK did and to REMEMBER it instead — the same rule make() applies to
+  // ownership. A block that has since left the DOM simply has nothing to undo, which the parentNode / element
+  // guards already handle.
+  //
+  // Rails first: each one OWNS the badge inside it, so removing the rail removes its badge with it. Without
+  // that a dispose() would leave empty rails behind and the document would stop being indistinguishable from
+  // the exported artifact's.
   function clearMarkers() {
-    var marked = document.querySelectorAll('.charter-has-annotations');
-    for (var i = 0; i < marked.length; i++) {
-      dropClass(marked[i], 'charter-has-annotations');
+    var marks = state.marks;
+    state.marks = newMarks();
+
+    for (var r = marks.created.length - 1; r >= 0; r--) {
+      var node = marks.created[r];
+      if (node && node.parentNode) node.parentNode.removeChild(node);
     }
-    // Swept on its own since #167: the accent bar is painted on the block's outermost box of its own
-    // (.table-scroll for a top-level table) while the COUNT stays on the anchor element, so the two are no
-    // longer always the same node and a sweep keyed off the class would strand the attribute on the table.
-    var counted = document.querySelectorAll('[data-charter-annotation-count]');
-    for (var c = 0; c < counted.length; c++) {
-      counted[c].removeAttribute('data-charter-annotation-count');
+    for (var i = 0; i < marks.classed.length; i++) {
+      dropClass(marks.classed[i], 'charter-has-annotations');
     }
-    // Rails first: each one OWNS the badge inside it, so removing the rail removes the badge with it and the
-    // sweep below is left with the in-block badges only. Without this a dispose() leaves empty rails behind
-    // and the document stops being indistinguishable from the exported artifact's.
-    var rails = document.querySelectorAll('.charter-badge-rail');
-    for (var r = 0; r < rails.length; r++) {
-      if (rails[r].parentNode) rails[r].parentNode.removeChild(rails[r]);
-    }
-    var badges = document.querySelectorAll('.charter-annotation-badge');
-    for (var j = 0; j < badges.length; j++) {
-      if (badges[j].parentNode) badges[j].parentNode.removeChild(badges[j]);
+    // Tracked apart from the class since #167: the accent bar is painted on the block's outermost box of its
+    // own (.table-scroll for a top-level table) while the COUNT stays on the anchor element, so the two are
+    // not always the same node.
+    for (var c = 0; c < marks.counted.length; c++) {
+      if (marks.counted[c]) marks.counted[c].removeAttribute('data-charter-annotation-count');
     }
   }
 
@@ -2757,14 +2880,20 @@ window.CharterAnnotate = (function () {
       var anchorId = order[k];
       var el = anchorElement(anchorId);
       if (!el) continue;
-      markerBox(el).classList.add('charter-has-annotations');
+      // Recorded as it is applied, never re-derived: clearMarkers undoes this ledger and only this ledger.
+      var box = markerBox(el);
+      box.classList.add('charter-has-annotations');
+      state.marks.classed.push(box);
       el.setAttribute('data-charter-annotation-count', String(counts[anchorId]));
+      state.marks.counted.push(el);
       var placement = badgePlacement(el);
       if (placement === 'append') {
-        el.appendChild(makeBadge(anchorId, counts[anchorId], notePhrase(counts[anchorId]) + ' on this block'));
+        var badge = makeBadge(anchorId, counts[anchorId], notePhrase(counts[anchorId]) + ' on this block');
+        el.appendChild(badge);
+        state.marks.created.push(badge);
       } else if (placement === 'rail') {
         var rail = mountBadgeRail(el, anchorId, counts[anchorId]);
-        if (rail) rails.push(rail);
+        if (rail) { rails.push(rail); state.marks.created.push(rail.rail); }
       }
     }
 
@@ -3220,10 +3349,18 @@ window.CharterAnnotate = (function () {
   // connected so a re-render (a FRESH <svg>) re-evaluates rather than leaving a view pointing at a
   // detached element; it ignores the childList mutations the SDK makes itself (this bar, the annotation
   // count badge) because those do not change which <svg> the block holds.
+  // `pre.mermaid` is a CLASS, and a :::custom-html body is free to carry it — so this scan is narrowed the
+  // same way the anchor walk is, by the monotone containment predicate: a <pre class="mermaid"> inside an
+  // opaque region is the author's markup, not a Charter diagram, and giving it a zoom bar, a tab stop, a
+  // role and a rewritten <svg> width would be the SDK editing a document it does not own (Charter #177's
+  // sibling; the renderer's Mermaid bootstrap is narrowed by the same rule). Forgery cannot widen the set:
+  // the real region encloses the whole body, so a forged inner one only ever adds an ancestor match.
   function scanDiagrams() {
     if (typeof document.querySelectorAll !== 'function') return;
     var blocks = document.querySelectorAll(DIAGRAM_BLOCK);
-    for (var i = 0; i < blocks.length; i++) watchDiagram(blocks[i]);
+    for (var i = 0; i < blocks.length; i++) {
+      if (!insideOpaqueRegion(blocks[i])) watchDiagram(blocks[i]);
+    }
   }
 
   function watchDiagram(block) {
@@ -3232,7 +3369,7 @@ window.CharterAnnotate = (function () {
     var observer = new MutationObserver(function () { syncDiagram(block); });
     try { observer.observe(block, { childList: true }); } catch (e) { return; }
     block.charterDiagramObserver = observer;
-    state.diagramObservers.push(observer);
+    state.diagramObservers.push({ block: block, observer: observer });
   }
 
   // Create, refresh or tear down the view for ONE :::diagram. Idempotent: the initial scan, the
@@ -3597,12 +3734,15 @@ window.CharterAnnotate = (function () {
 
   function disposeDiagrams() {
     while (state.diagrams.length) releaseDiagram(state.diagrams[state.diagrams.length - 1]);
+    // Each watch is retired through the block it was armed on, rather than by re-querying `pre.mermaid`
+    // across the document: the class is one an author can write, and a dispose has no business reaching
+    // into markup the SDK never touched (Charter #176's rule, same as clearMarkers').
     for (var i = 0; i < state.diagramObservers.length; i++) {
-      try { state.diagramObservers[i].disconnect(); } catch (e) { /* ignore */ }
+      var watch = state.diagramObservers[i];
+      try { watch.observer.disconnect(); } catch (e) { /* ignore */ }
+      watch.block.charterDiagramObserver = null;
     }
     state.diagramObservers = [];
-    var blocks = document.querySelectorAll(DIAGRAM_BLOCK);
-    for (var j = 0; j < blocks.length; j++) blocks[j].charterDiagramObserver = null;
     if (state.panLatch) { window.clearTimeout(state.panLatch); state.panLatch = 0; }
   }
 
@@ -3616,6 +3756,20 @@ window.CharterAnnotate = (function () {
       // Clicking away closes an EMPTY composer. A composer holding a draft stays put: losing a
       // half-written note to a stray click is the same failure mode as losing it to a reload.
       if (state.composer && !isSdkUi(ev.target) && !hasDraft()) closeComposer('composer-cancelled');
+      return;
+    }
+
+    // A rendered :::question is the one block a reviewer can point straight at and not annotate — it is
+    // native controls, and a note competing with the answer the block exists to collect would be worse than
+    // no note. That refusal is deliberate; being MUTE about it was not (Charter #178). The gesture produced
+    // no composer, no outline and no message, which leaves a reviewer unable to tell a rule from a bug.
+    //
+    // Default is prevented along with it, so the same Alt+click cannot half-work by ticking a radio while
+    // refusing the note.
+    if (refusesNotes(ev.target)) {
+      ev.preventDefault();
+      explain('A question block is answered with its own controls, so it cannot take a note. ' +
+              'Answer it here, or comment on a block beside it.');
       return;
     }
 
@@ -3674,9 +3828,12 @@ window.CharterAnnotate = (function () {
   // Deliberately NOT folded into hasDraft(): that guard also suppresses opening a composer, and a
   // half-answered question must not stop the reviewer annotating something else.
   function hasDirtyAnswer() {
-    var buttons = document.querySelectorAll('form[data-question-id] ' + SUBMIT_SELECTOR);
-    for (var i = 0; i < buttons.length; i++) {
-      if (!buttons[i].disabled) return true;
+    // Through questionForms, so an author's own <form data-question-id="…"> with an enabled submit button
+    // cannot look like a half-made decision and defer the reviewer's live reload for the life of the page.
+    var forms = questionForms();
+    for (var i = 0; i < forms.length; i++) {
+      var button = forms[i].querySelector(SUBMIT_SELECTOR);
+      if (button && !button.disabled) return true;
     }
     return false;
   }
