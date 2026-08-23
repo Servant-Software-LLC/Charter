@@ -82,7 +82,11 @@ review it in the browser.
   not a refusal.
 - `charter skills install [--project] [--force] [--overwrite-tracked]` — installs the bundled agent skills so
   your agent (and Guardrails) can discover them. `--force` overwrites an existing copy; it refuses to clobber
-  git-tracked skill source that has uncommitted changes unless you add `--overwrite-tracked`.
+  git-tracked skill source that has uncommitted changes unless you add `--overwrite-tracked`. If the target
+  turns out to be inside a git working tree — `~/.claude/skills` symlinked into a dotfiles repo, say — it says
+  so and prints the ignore rules to paste, because these copies are version-stamped and a committed one goes
+  stale. It never edits ignore rules itself, and never says anything under `--project`, where landing in the
+  repository is the whole point.
 - `charter sessions [--prune] [--stop-all]` — lists the review servers running on this machine, with the
   plan each is serving. A review server is easy to start and easy to walk away from; this is how you find
   one you have forgotten (and why `dotnet tool update` sometimes reports the binary is in use).

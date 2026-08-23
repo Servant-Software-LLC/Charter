@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using Xunit;
 
@@ -29,7 +28,7 @@ public class SkillsInstallOverwriteGuardTests
     [Fact]
     public void A_dirty_tracked_skill_folder_is_refused_and_its_uncommitted_work_survives()
     {
-        if (!GitAvailable())
+        if (!TestGit.IsAvailable)
         {
             // Without git the guard is inert BY DESIGN — the probe answers "no" and the install proceeds
             // exactly as it did before this existed. There is nothing to assert, and asserting the refusal
@@ -37,15 +36,15 @@ public class SkillsInstallOverwriteGuardTests
             return;
         }
 
-        string repo = NewGitRepo();
+        string repo = TestGit.NewRepo();
         try
         {
             string skills = Path.Combine(repo, "skills");
             string mine = Path.Combine(skills, "charter");
             Directory.CreateDirectory(mine);
             File.WriteAllText(Path.Combine(mine, "SKILL.md"), "---\nname: charter\n---\n\n# committed\n");
-            Git(repo, "add", "-A");
-            Git(repo, "commit", "-m", "authored skills");
+            TestGit.Run(repo, "add", "-A");
+            TestGit.Run(repo, "commit", "-m", "authored skills");
 
             // The work git could not bring back.
             File.AppendAllText(Path.Combine(mine, "SKILL.md"), "\nuncommitted sentence\n");
@@ -67,7 +66,7 @@ public class SkillsInstallOverwriteGuardTests
         }
         finally
         {
-            TryDelete(repo);
+            TestGit.TryDeleteRepo(repo);
         }
     }
 
@@ -78,7 +77,7 @@ public class SkillsInstallOverwriteGuardTests
     [Fact]
     public void A_clean_tracked_skill_folder_is_still_overwritten()
     {
-        if (!GitAvailable())
+        if (!TestGit.IsAvailable)
         {
             // Without git the guard is inert BY DESIGN — the probe answers "no" and the install proceeds
             // exactly as it did before this existed. There is nothing to assert, and asserting the refusal
@@ -86,15 +85,15 @@ public class SkillsInstallOverwriteGuardTests
             return;
         }
 
-        string repo = NewGitRepo();
+        string repo = TestGit.NewRepo();
         try
         {
             string skills = Path.Combine(repo, "skills");
             Directory.CreateDirectory(Path.Combine(skills, "charter"));
             File.WriteAllText(
                 Path.Combine(skills, "charter", "SKILL.md"), "---\nname: charter\n---\n\n# committed\n");
-            Git(repo, "add", "-A");
-            Git(repo, "commit", "-m", "authored skills");
+            TestGit.Run(repo, "add", "-A");
+            TestGit.Run(repo, "commit", "-m", "authored skills");
 
             var result = CharterCliRunner.Run("skills", "install", "--target", skills, "--force");
 
@@ -103,14 +102,14 @@ public class SkillsInstallOverwriteGuardTests
         }
         finally
         {
-            TryDelete(repo);
+            TestGit.TryDeleteRepo(repo);
         }
     }
 
     [Fact]
     public void OverwriteTracked_proceeds_anyway_because_the_operator_asked()
     {
-        if (!GitAvailable())
+        if (!TestGit.IsAvailable)
         {
             // Without git the guard is inert BY DESIGN — the probe answers "no" and the install proceeds
             // exactly as it did before this existed. There is nothing to assert, and asserting the refusal
@@ -118,15 +117,15 @@ public class SkillsInstallOverwriteGuardTests
             return;
         }
 
-        string repo = NewGitRepo();
+        string repo = TestGit.NewRepo();
         try
         {
             string skills = Path.Combine(repo, "skills");
             string mine = Path.Combine(skills, "charter");
             Directory.CreateDirectory(mine);
             File.WriteAllText(Path.Combine(mine, "SKILL.md"), "---\nname: charter\n---\n\n# committed\n");
-            Git(repo, "add", "-A");
-            Git(repo, "commit", "-m", "authored skills");
+            TestGit.Run(repo, "add", "-A");
+            TestGit.Run(repo, "commit", "-m", "authored skills");
             File.AppendAllText(Path.Combine(mine, "SKILL.md"), "\nuncommitted sentence\n");
 
             var result = CharterCliRunner.Run(
@@ -140,7 +139,7 @@ public class SkillsInstallOverwriteGuardTests
         }
         finally
         {
-            TryDelete(repo);
+            TestGit.TryDeleteRepo(repo);
         }
     }
 
@@ -166,80 +165,6 @@ public class SkillsInstallOverwriteGuardTests
         finally
         {
             CharterCliRunner.TryDeleteDirectory(workDir);
-        }
-    }
-
-    private static string NewGitRepo()
-    {
-        string dir = CharterCliRunner.NewTempDirectory();
-        Git(dir, "init");
-        Git(dir, "config", "user.email", "test@example.com");
-        Git(dir, "config", "user.name", "Test");
-        return dir;
-    }
-
-    private static bool GitAvailable()
-    {
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo("git", "--version")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (process is null)
-            {
-                return false;
-            }
-
-            process.WaitForExit(10_000);
-            return process.ExitCode == 0;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
-
-    private static void Git(string workingDirectory, params string[] args)
-    {
-        var startInfo = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        foreach (string arg in args)
-        {
-            startInfo.ArgumentList.Add(arg);
-        }
-
-        using var process = Process.Start(startInfo)!;
-        process.WaitForExit(30_000);
-    }
-
-    private static void TryDelete(string dir)
-    {
-        try
-        {
-            if (Directory.Exists(dir))
-            {
-                // git writes read-only objects under .git on Windows; clear them or the delete fails.
-                foreach (string file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
-                {
-                    File.SetAttributes(file, FileAttributes.Normal);
-                }
-
-                Directory.Delete(dir, recursive: true);
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort temp cleanup.
         }
     }
 }

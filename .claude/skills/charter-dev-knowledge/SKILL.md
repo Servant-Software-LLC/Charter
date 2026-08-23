@@ -286,9 +286,24 @@ update run `charter skills install --force` too.
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
   handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener
   runs and will re-check a control the listener just cleared (#63).
-- **Charter reads git; it never writes git.** `GitCommand.Read` is the single shell-out, 5s timeout, and every
-  failure (git absent, not a repo, hung, sandboxed) returns `null` so the caller degrades to the solo-safe
-  answer. Never add a mutating git call.
+- **Charter reads git; it never writes git.** `GitCommand.Read` (server) and `GitWorkingTree` (CLI, #154/#194)
+  are the only shell-outs, and every failure (git absent, not a repo, hung, sandboxed) returns the "no" answer
+  so the caller degrades to the solo-safe path. Never add a mutating git call — **and that includes writing a
+  `.gitignore`.** `skills install` only ADVISES when its target resolves inside a work tree (#194); it never
+  lays ignore rules. Two independent reasons, both worth keeping: a tool that edits ignore rules in a repo the
+  user never named — reached only through a symlink from `$HOME` — is worse than one that says nothing; and a
+  `.gitignore` in a SUBDIRECTORY overrides a negation in the repo root, so the tempting self-ignoring `*` in
+  each skill folder makes `skills install --project` stop delivering the skill at all against the common
+  `.claude/*` + `!.claude/skills/` convention — and the symptom of an over-broad ignore rule is that nothing
+  appears. `SkillsInstallGitAdvisoryTests` pins that experiment with a real repo. If an opt-in `--gitignore`
+  is ever added, the ROOT `.gitignore` is the only safe place to write.
+- **`git rev-parse` resolves the process working directory to its PHYSICAL path**, so it sees straight through
+  a symlink or a Windows junction — which is the whole of #194, where `~/.claude/skills` was a symlink into a
+  dotfiles repo. `GitWorkingTree.LocateWorkTree` takes `--show-toplevel` and `--show-prefix` from ONE call, so
+  the repo root AND the target's position under it both come from git; never derive either by reasoning about
+  the path string, which is a no-op in exactly the case that matters. Testing this needs a real reparse point:
+  Windows refuses `Directory.CreateSymbolicLink` without Developer Mode or elevation, so fall back to a
+  **junction** (`cmd /c mklink /J`), which needs neither and which git resolves identically.
 - **`.review/` is created lazily, on the first append** — not in `ReviewLogWriter`'s constructor. A `charter
   review` that writes no comment must leave no trace beside the plan (plan-03 §5.0). Do not reintroduce an
   eager `EnsureDirectory`; `SoloReviewFootprintTests` and `SoloReviewPathTests` guard it.
