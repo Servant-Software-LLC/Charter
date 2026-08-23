@@ -302,7 +302,24 @@ update run `charter skills install --force` too.
   short-circuit — the one that used to exist for #48 returned `pre.mermaid` unconditionally and thereby made a
   NESTED diagram silently un-annotatable. Mermaid's theme CSS also rides in a `<style>` **inside** the
   `<svg>`, so a text-derived label reads as a stylesheet unless `style`/`script` are skipped — and note an SVG
-  element's `tagName` keeps its lower-case local name where an HTML element's is upper-cased.
+  element's `tagName` keeps its lower-case local name where an HTML element's is upper-cased. Both exclusions
+  now live in ONE predicate, `outsideBlockText`, read by the offset frame (`blockTextNodes`) as well as by the
+  label (`visibleText`): they had forked, and the offset frame's copy skipped neither `<style>`/`<script>`
+  (#179) nor anything but a raw `[data-charter-ui]` attribute test (#176) — see the next bullet.
+- **NO NAME IN A RENDERED PLAN IS PROOF OF ANYTHING — `:::custom-html` passes every class and attribute
+  through verbatim** (#176/#177/#178/#179). Before you write `document.querySelectorAll('.charter-…')`,
+  `el.closest('[data-charter-ui]')` or a `.mermaid` selector in the SDK or in an inlined bootstrap, note that
+  a plan DOCUMENTING Charter renders all of those into the page. Two shapes are safe and everything else is
+  a defect waiting to be filed:
+  1. **Ownership** — `make()` sets a private JS property (`charterOwned`) on every element the SDK builds, and
+     `isSdkUi` / `outsideBlockText` test that; `renderMarkers` records what it applied and `clearMarkers`
+     undoes that ledger. HTML cannot express a JS property, so it cannot be forged. `data-charter-ui` stays,
+     but only as the STYLING and TEST label it always was.
+  2. **Monotone containment** — where a name is the only handle (`mermaid.run`'s node list, `scanDiagrams`),
+     exclude anything inside `.custom-html-scroll`, so a forged class can only ever shrink the set.
+  **The test harness has the same hazard, and it bites.** `Ui("composer")` is `[data-charter-ui="composer"]`,
+  so a fixture whose escape hatch forges that name makes `AssertNoComposerForAsync` report a composer nobody
+  opened. Give a test that needs a forged UI name its own plan, or forge a name the harness does not read.
 - **`RenderBody`'s anchor pass iterates TOP-LEVEL nodes only** (`foreach (var node in document)`), so a
   container nested inside another — a `:::custom-html` or `:::diagram` inside a `::::note` or a list item —
   renders with **no id**. Anything walking the DOM for an anchor must treat that as "keep climbing", never as

@@ -57,7 +57,9 @@ it is for teams. Check it against §5.0 before designing it.
   wraps the block body in the single shared shell (`CharterDocument.Wrap`: doctype/html/head/body + one inline
   `<style>` from the bundled `assets/charter.css`). Only `export` stamps a CSP meta (its strict offline
   policy); the review server supplies the served-page CSP as an HTTP header. Mermaid is inlined parse-safe and
-  inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe).
+  inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe) — and with
+  `startOnLoad: false` plus an EXPLICIT node list, never the default document-wide `.mermaid` selector
+  (#177: it rewrote an author's `<pre class="mermaid">` inside `:::custom-html`, in the artifact too).
 - **Block catalog and the `:::question` schema are normative in the `charter-format` skill** — including the
   fact that there is **no** `:::annotated-code` or `:::file-tree` (they have no renderer). Cite it; never fork
   it. A drift test binds the skill's catalog to `BlockKind` ∪ `QuestionSpec`, so a fork breaks the build.
@@ -103,10 +105,32 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   walks straight past it to the block's own anchor and `SourceMap` never sees it. A wrapper holding an anchor
   would silently re-target every note on the block; any future one follows the same rule. The SDK's own chrome
   obeys the mirror rule: marked with the `data-charter-ui` **attribute**, **no ids at all**, so even a guard bug
-  degrades to "no anchor", never "the wrong anchor".
+  degrades to "no anchor", never "the wrong anchor". **But the attribute is a LABEL, not proof of ownership**
+  (#176) — see the SDK-integrity rule below.
+- **THE SDK OWNS WHAT IT BUILT, AND NOTHING THAT MERELY LOOKS LIKE IT** (#176/#177/#178/#179). Every name in a
+  rendered plan is a name a `:::custom-html` author may write, verbatim — that is what an escape hatch is —
+  so the SDK must never reach into the document by NAME and change what it finds. Concretely: `make()` stamps
+  a private JS property (`charterOwned`) on every element the SDK constructs, and `isSdkUi` / the block-text
+  walker test THAT rather than `[data-charter-ui]`; `renderMarkers` records the classes, attributes and
+  elements it applied and `clearMarkers` undoes exactly that ledger, rather than sweeping the document for
+  `.charter-annotation-badge` / `.charter-badge-rail` / `.charter-has-annotations` /
+  `[data-charter-annotation-count]` and destroying every match. HTML cannot express a JS property, so
+  ownership is not forgeable.
+  - **Where a name really is the only handle, narrow it with the OPAQUE-REGION predicate, which is monotone.**
+    Three places have to find plan markup by name — the renderer's Mermaid bootstrap and the SDK's
+    `scanDiagrams` (`pre.mermaid`), and `questionRoot`/`questionForms` (`form[data-question-id]`, the gateway
+    to intercepting a form's submit, re-labelling its button and disabling it) — so all three exclude anything
+    inside `.custom-html-scroll`: forging the region class inside your own body can only ever REMOVE your
+    markup from the set, never add someone else's. That is the #166 shape, reused.
+  - **This category is DESTRUCTIVE, which is why forgery mattered here and does not for #166.** #166's
+    predicate is a read-only containment test whose worst case is "unanchorable, degrading outward". These
+    four wrote: an author's element deleted on every SSE frame, an author's markup replaced by a rendered SVG
+    **in the exported artifact** (invariant 1), a reviewer's typed note dropped with no message, an author's
+    inline CSS counted into the offset frame a note is recorded against.
 - **SDK chrome may be a block's SIBLING; it must never be a block's ANCESTOR** (#164) — the mirror of the rule
   above, for chrome that sits *outside* a block rather than inside it. `closestAnchored` tests
-  `el.closest(UNANCHORABLE)` — which includes `[data-charter-ui]` — **before** it walks for an id, so a
+  `isSdkUi(el) || el.closest(UNANCHORABLE)` — the first half by OWNERSHIP since #176, the second being native
+  controls and `form.question` — **before** it walks for an id, so a
   chrome-marked ancestor makes every Alt+click anywhere inside that block resolve to `null`: the block silently
   stops being annotatable at all. That is why a count badge that cannot live inside its block rides a
   zero-height `.charter-badge-rail` inserted as the block's **previous sibling**, and why wrapping the block in
@@ -152,10 +176,12 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   **One carve-out, and it is the SDK's, not the renderer's: a `:::question` is not annotatable at all.**
   `form.question` is in the SDK's `UNANCHORABLE` list — a rendered question is native controls, and a note
   competing with the answer the block exists to collect would be worse than no note — so `closestAnchored`
-  refuses everything inside one and Alt+click there does nothing. The renderer still stamps the block's id and
+  refuses everything inside one. The renderer still stamps the block's id and
   `SourceMap` still registers it, so nothing is inconsistent; just do not read "top-level document nodes" as
-  "every top-level block can take a note", and do not "fix" the question block to match the sentence. (That
-  the refusal is a silent no-op rather than an explained one is filed as #178.)
+  "every top-level block can take a note", and do not "fix" the question block to match the sentence.
+  **The refusal SPEAKS** (#178): Alt+click inside a question prevents the default (so the same gesture cannot
+  half-work by ticking a radio) and opens the panel with the reason. A gesture that produces nothing and
+  explains nothing leaves a reviewer unable to tell a rule from a bug — the #170 rule, applied past markers.
 - **TWO REGIONS ARE OPAQUE TO THE ANCHOR WALK, and an id inside one is not an anchor** (#166).
   `div.custom-html-scroll` holds an author's verbatim markup and `pre.mermaid` holds Mermaid's generated
   markup. Neither kind of id was produced by `AnchorAssignment`, so `SourceMap` cannot map one to a line. The
@@ -277,7 +303,9 @@ Two field-level traps that have each cost a debugging session:
   whole block. `AnnotationApi.TryParseKind` is the strict ingress parse; `ParseKind` stays lenient *only* for
   reading a durable review-log record, where the alternative is dropping a comment somebody wrote.
 - **`start`/`end` index the BLOCK's own text**, from the selection's `Range`, via a shared walker that skips
-  every `[data-charter-ui]` subtree — one reference frame shared with the panel's quote lookup, so
+  **SDK-owned** subtrees and `<style>`/`<script>` (#179 — their contents are source, not words a human reads,
+  and an escape hatch carrying inline CSS shifted every offset below it by the length of that CSS). One
+  reference frame, shared with the panel's quote lookup and with the derived label, so
   `end > start` always holds for a real selection. They are **not** `anchorOffset`/`focusOffset`, which live in
   different text nodes and once drained as `start: 146, end: 0` over a ~150-character quote (#56). When no
   honest offset can be computed both are **`null`** — never a misleading pair. `quote` always carries the
