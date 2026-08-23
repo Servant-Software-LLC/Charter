@@ -52,6 +52,25 @@ window.CharterAnnotate = (function () {
   // OWN CHROME BY CONSTRUCTION, NEVER BY PATTERN-MATCHING A DOCUMENT IT DOES NOT OWN.
   var OWNED = 'charterOwned';
 
+  // What one piece of REBUILDABLE chrome is, across the rebuild that replaces it (Charter #200).
+  //
+  // render() does not update its chrome in place, it destroys and rebuilds it: renderPanel empties the list,
+  // and renderMarkers opens with clearMarkers. Both are deliberate and load-bearing — the ownership ledger
+  // can only undo exactly what it did (#176), and the sweep-and-rebuild has to complete in ONE synchronous
+  // turn so no frame is ever painted without a badge (#198). The cost is that an element holding keyboard
+  // focus is REMOVED, and the browser drops focus to <body>: the same end state as #168, reached by a route
+  // the reviewer did not initiate — a teammate's note arriving over SSE, or hydrateLog() after a local save.
+  //
+  // The value is { key, fallback, gone }: `key` names the same control across renders, `fallback` names the
+  // enclosing chrome to land on when the control itself is legitimately gone (Resolve disappears the moment
+  // it is used, and the card that held it is still there), and `gone` is the sentence the reviewer is told
+  // when neither survives.
+  //
+  // A JS PROPERTY, set at construction, for exactly the reason OWNED is: a :::custom-html body can carry any
+  // class or attribute Charter uses, so the counterpart is looked up in a ledger the SDK populates AS IT
+  // BUILDS — never by querying the document for a name it does not own (#176).
+  var FOCUS = 'charterFocus';
+
   // The three annotation kinds Charter supports. The value each maps to is the wire
   // token sent to the server (kept stable and human-readable).
   var KIND = Object.freeze({
@@ -123,7 +142,12 @@ window.CharterAnnotate = (function () {
     selectedAnchorEl: null,
     // Exactly what the last renderMarkers() pass put on the page, so clearMarkers can undo THAT and nothing
     // else. See clearMarkers for why a document-wide sweep by class name was the wrong shape.
-    marks: newMarks()
+    marks: newMarks(),
+    // The rebuildable chrome THIS render pass built, keyed by the name that survives a rebuild (see FOCUS).
+    // Populated by keyChrome as each element is constructed and reset at the top of every render, so a
+    // reviewer's focus is put back on the counterpart of what they were on rather than on whatever the
+    // document happens to be carrying that name (#200).
+    focusIndex: Object.create(null)
   };
 
   function newMarks() {
@@ -2203,6 +2227,99 @@ window.CharterAnnotate = (function () {
     else hidePanel({ focus: true });
   }
 
+  // ---- keeping the reviewer's place across a rebuild (Charter #200) ---------------------
+  //
+  // The teardown is not the bug and is not touched here — see FOCUS for why render() has to destroy and
+  // rebuild. What was missing is the other half: putting the reviewer back on the rebuilt counterpart of the
+  // control they were on. Without it a keyboard reviewer poised on a block's count badge loses their place
+  // because somebody else committed a note, and lands on <body> with nothing to say why.
+  //
+  // Three sentences the design will not say, each of which would be a worse bug than the one being fixed:
+  //
+  //   * "focus belongs to Charter". It does not. Restoration happens ONLY for chrome the SDK built, that the
+  //     SDK itself just removed, and only while nothing else has claimed focus in the meantime. A render
+  //     landing while the reviewer is typing in the composer or reading the plan must not move the caret —
+  //     the same call #168 made when it left focus opt-in for every automatic panel open.
+  //   * "the element that had focus is the element to restore". It is destroyed; holding the reference across
+  //     the rebuild is exactly the stale read #198 documented. What is carried across is a NAME.
+  //   * "any landing place beats <body>". It does not. See restoreChromeFocus for the vanished case.
+
+  // Name one rebuildable control, and register the instance this pass built. A caller with nothing stable to
+  // name it by passes no key and the control simply does not participate: two cards keyed 'item:' would make
+  // the ledger answer for the wrong note, which is the one failure worse than not restoring at all.
+  function keyChrome(el, key, fallback, gone) {
+    if (!key) return el;
+    el[FOCUS] = { key: key, fallback: fallback || '', gone: gone || '' };
+    state.focusIndex[key] = el;
+    return el;
+  }
+
+  // Ask for focus, and CHECK it was taken. A rebuilt control can come back disabled — Jump on a note whose
+  // block has just left the plan — and focus() on a disabled element silently does nothing, which would
+  // leave the reviewer on <body> with this code believing it had put them back.
+  function landChromeFocus(el) {
+    if (!el) return false;
+    focusChrome(el);
+    return document.activeElement === el;
+  }
+
+  // Is this element still in the document the reviewer is looking at? The rebuilt page is what decides
+  // whether focus was actually taken away, so nothing is inferred from having called clearMarkers.
+  function inDocument(el) {
+    if (!el) return false;
+    if (typeof el.isConnected === 'boolean') return el.isConnected;
+    return !!(document.body && document.body.contains(el));
+  }
+
+  // What the reviewer is on RIGHT NOW, if it is chrome this render is about to rebuild.
+  //
+  // Everything else answers null and is never touched afterwards: the composer they are typing in (SDK
+  // chrome, but render() does not rebuild it), the panel toggle, a block of the plan, a zoomable diagram.
+  // Ownership is read from the construction-time property, so an author's markup cannot present itself as
+  // something to hand focus to (#176).
+  function takeChromeFocus() {
+    var active = document.activeElement;
+    if (!active || !isSdkUi(active)) return null;
+    var focus = active[FOCUS];
+    return focus ? { el: active, focus: focus } : null;
+  }
+
+  // ...and put them back on its counterpart, if the rebuild really did take it away.
+  //
+  // The vanished case — the note was retracted, the block was edited out, so this render built no
+  // counterpart and no surviving fallback either. Focus is NOT moved. Every landing place Charter could
+  // invent (the toggle, the first badge, the top of the document) is one the reviewer did not ask for, and
+  // relocating them there silently is worse for a screen-reader user than the drop itself: they would be
+  // told where they are and never told that what they were on is gone. So the browser's own outcome stands,
+  // and the absence gets a sentence — #170's rule, one trigger over: Charter has no vocabulary for
+  // "this is gone, and that was correct", so it says so rather than leaving it to be inferred. explain() is
+  // the existing shape for that, and it deliberately opens the panel WITHOUT taking focus (#168).
+  function restoreChromeFocus(taken) {
+    if (!taken) return;
+
+    // Still on the page, so the rebuild did not touch it and the browser still has focus exactly where the
+    // reviewer left it. Moving it would be a steal, not a repair.
+    if (inDocument(taken.el)) return;
+
+    // Something else has claimed focus since it was captured — a composer opening on a saved note, a host
+    // driving the page. Whatever it is, it is more recent than what was captured. The browser only falls
+    // back to <body> when it removes the focused element, so that is the one state worth repairing.
+    var active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) return;
+
+    if (landChromeFocus(state.focusIndex[taken.focus.key])) {
+      emit('focus-restored', { key: taken.focus.key });
+      return;
+    }
+    if (taken.focus.fallback && landChromeFocus(state.focusIndex[taken.focus.fallback])) {
+      emit('focus-restored', { key: taken.focus.fallback });
+      return;
+    }
+
+    if (taken.focus.gone) explain(taken.focus.gone);
+    emit('focus-not-restored', { key: taken.focus.key });
+  }
+
   // ---- the composer: a near-target, dismissible popover (replaces window.prompt, #41) ---
 
   function closeComposer(reason) {
@@ -2529,6 +2646,11 @@ window.CharterAnnotate = (function () {
     return actorOf(entry) === 'human' ? who : 'Agent (via ' + who + ')';
   }
 
+  // The sentence a reviewer gets when the card they were on is not in the new render (#200 / #170).
+  var ITEM_GONE =
+    'That note is no longer in the list, so your keyboard focus was left where it is rather than moved ' +
+    'somewhere you did not ask for.';
+
   function buildItem(entry, marking) {
     var record = entry.record;
     // An anchor resolves by EXACT block-id match or it is orphaned (§4.3) — there is no fuzzy re-binding.
@@ -2660,6 +2782,19 @@ window.CharterAnnotate = (function () {
     // affordance and the only one that reads as an action, and retiring it would leave the behaviour
     // undiscoverable for anyone who does not think to click the card.
     item.setAttribute('tabindex', '0');
+    // ...which makes the card a tab stop, and renderPanel empties the list on every render — so a reviewer
+    // reading a card loses it to a teammate's note exactly as a badge does (#200). Keyed by the note's own
+    // id, and not at all without one: two cards sharing a key would restore focus to the wrong note.
+    var cardKey = record.id ? 'item:' + record.id : '';
+    keyChrome(item, cardKey, '', ITEM_GONE);
+
+    // Each control in the row is the same control across a rebuild when it does the same thing to the same
+    // note, and it falls back to the CARD. A control routinely disappears by being USED — Resolve is gone
+    // the moment the comment is resolved — and the card that carried it is still there and is where the
+    // reviewer was; landing there is a restore, not the "it vanished" case.
+    function keyed(el, uiName) {
+      return cardKey ? keyChrome(el, uiName + ':' + record.id, cardKey, ITEM_GONE) : el;
+    }
     item.addEventListener('click', function (ev) {
       // The action row owns its own clicks — a Resolve must not also scroll the document.
       if (ev.target && ev.target.closest && ev.target.closest('.charter-item-actions')) return;
@@ -2673,7 +2808,7 @@ window.CharterAnnotate = (function () {
     }, false);
 
     var actions = make('div', 'charter-item-actions', 'item-actions');
-    var jump = button('charter-btn', 'item-jump', 'Jump');
+    var jump = keyed(button('charter-btn', 'item-jump', 'Jump'), 'item-jump');
     jump.disabled = !entry.el || orphaned;
     jump.addEventListener('click', function () { selectNote(record); }, false);
     actions.appendChild(jump);
@@ -2681,9 +2816,9 @@ window.CharterAnnotate = (function () {
     // Edit and Delete are the AUTHOR's own: a retract by anyone else is retained and reported by the fold
     // but never applied, so offering the button would only promise something the model refuses.
     if (record.mine && !retracted) {
-      var edit = button('charter-btn', 'item-edit', 'Edit');
+      var edit = keyed(button('charter-btn', 'item-edit', 'Edit'), 'item-edit');
       edit.addEventListener('click', function () { openComposerForEdit(record, item); }, false);
-      var remove = button('charter-btn', 'item-delete', 'Delete');
+      var remove = keyed(button('charter-btn', 'item-delete', 'Delete'), 'item-delete');
       remove.addEventListener('click', function () { deleteNote(record.id); }, false);
       actions.appendChild(edit);
       actions.appendChild(remove);
@@ -2695,7 +2830,7 @@ window.CharterAnnotate = (function () {
     // change the status: reopening a settled decision as a side effect of adding a sentence would be a
     // surprising write, and reopen deserves to stay its own act.
     if (record.committed && !retracted) {
-      var reply = button('charter-btn', 'item-reply-btn', 'Reply');
+      var reply = keyed(button('charter-btn', 'item-reply-btn', 'Reply'), 'item-reply-btn');
       reply.addEventListener('click', function () { openComposerForReply(record, item); }, false);
       actions.appendChild(reply);
     }
@@ -2703,7 +2838,7 @@ window.CharterAnnotate = (function () {
     // Resolve is open to anyone — review is collaborative — but only for a committed comment that is not
     // already settled closed or withdrawn.
     if (record.committed && !retracted && record.status !== 'resolved') {
-      var resolve = button('charter-btn', 'item-resolve', 'Resolve');
+      var resolve = keyed(button('charter-btn', 'item-resolve', 'Resolve'), 'item-resolve');
       resolve.addEventListener('click', function () { resolveNote(record.id); }, false);
       actions.appendChild(resolve);
     }
@@ -3017,10 +3152,19 @@ window.CharterAnnotate = (function () {
     return notePhrase(count) + ' on the following ' + (RAIL_SUBJECT[tagName] || 'block');
   }
 
+  // The sentence a reviewer gets when the badge they were on is not in the new render (#200 / #170).
+  var BADGE_GONE =
+    'That block no longer shows a review marker, so your keyboard focus was left where it is rather than ' +
+    'moved somewhere you did not ask for.';
+
   function makeBadge(anchorId, count, label) {
     var badge = button('charter-annotation-badge', 'badge', String(count));
     badge.setAttribute('data-anchor-id', anchorId);
     badge.setAttribute('aria-label', label);
+    // The same badge across a rebuild is the one counting the same block — appended or railed alike, since
+    // renderMarkers builds exactly one per anchor. No fallback: a block either shows a marker or it does
+    // not, and there is no enclosing chrome that would mean anything to land on (#200).
+    keyChrome(badge, 'badge:' + anchorId, '', BADGE_GONE);
     badge.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -3061,6 +3205,10 @@ window.CharterAnnotate = (function () {
 
   function render() {
     if (!ensureUi()) return;
+    // Read BEFORE anything is torn down, and only ever from chrome this pass is about to rebuild. The index
+    // is then emptied, so what a control is restored to is what THIS pass built and nothing older (#200).
+    var held = takeChromeFocus();
+    state.focusIndex = Object.create(null);
     var entries = orderedEntries();
     // Computed ONCE and handed to both halves: the panel says what the page is showing, so it must read the
     // same numbers the markers were painted from rather than a second opinion about them (#170).
@@ -3068,6 +3216,10 @@ window.CharterAnnotate = (function () {
     renderPanel(entries, marking.counts);
     renderMarkers(marking);
     syncSendButton();
+    // Last, and inside the same synchronous turn as the teardown that took the focus away — #198's rule
+    // applied to focus rather than to layout: nothing may yield between removing the element and putting the
+    // reviewer back, or a keystroke arrives at <body>.
+    restoreChromeFocus(held);
   }
 
   // ---- jump + transient highlight (never mutates the plan's DOM) -----------------------
@@ -4018,6 +4170,9 @@ window.CharterAnnotate = (function () {
     state.staleQueueShown = false;
     state.selectedId = '';
     state.selectedAnchorEl = null;
+    // The chrome it indexed has just been removed, so keeping the map would hold detached nodes alive for
+    // the life of the page — and a disposed SDK must leave nothing of itself behind (invariant 1).
+    state.focusIndex = Object.create(null);
     state.started = false;
   }
 

@@ -337,6 +337,24 @@ exception and lands on the card it names. Closing returns focus to the toggle, f
 queue explained — deliberately leave it off: stealing the caret out of a document the reviewer is reading
 would be a worse bug than the one this fixes.
 
+**A REBUILD gives focus back; nothing else may take it** (#200). `render()` does not update its chrome, it
+destroys and rebuilds it — `renderPanel` empties the list, `renderMarkers` opens with `clearMarkers` — and both
+are load-bearing (the ownership ledger can only undo exactly what it did, #176; the sweep-and-rebuild must
+finish in one synchronous turn so no frame is painted without a badge, #198). So the teardown stays, and the
+reviewer is put back on the **rebuilt counterpart** of what they were on. Three rules make that a repair rather
+than a claim on the caret:
+- The counterpart is found in a ledger the SDK populates **as it builds** (`charterFocus`, a private JS
+  property like `charterOwned`), never by querying the document for a class or attribute — same rule as #176.
+  Badges key on their anchor id; panel cards and their controls key on the note id, and a control falls back to
+  its card because a control routinely disappears by being *used* (Resolve).
+- Focus is restored **only** when the SDK's own keyed chrome held it immediately before the rebuild, the
+  rebuild really removed it, and nothing else has claimed focus since. Chrome that survives the pass — the
+  composer above all — is left exactly where it is: "it is ours" is not a licence to move it.
+- **When the new render has no counterpart** (the note was retracted, the block was edited away), focus is
+  **not moved** and the absence is disclosed through `explain()`. Every landing place Charter could invent is
+  one the reviewer did not ask for, and a silent relocation tells a screen-reader user where they now are while
+  never telling them what became of where they were. This is the next rule, applied to focus.
+
 **Absence is DISCLOSED, never left to be inferred** (#170, generalizing #164). Charter has one vocabulary for
 *annotated* (the accent bar) and one for *how many* (the count badge), and **no third state meaning "annotated,
 but not shown here"** — so a marker that correctly disappears reads as breakage unless something says

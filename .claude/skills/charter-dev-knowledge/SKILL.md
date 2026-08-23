@@ -231,6 +231,17 @@ update run `charter skills install --force` too.
   `A_badge_is_measured_as_the_page_shows_it_even_when_a_render_lands_mid_probe` reproduces this on every OS by
   awaiting the SDK's own `reviewLog()` at the probe's yield point (`window.__charterProbeReentry`), and proves
   the sweep happened by stamping the badge first — so it can never pass vacuously.
+- **A focus rule is only asserted by a real `Tab`/`Enter` and a live `document.activeElement` read (#168,
+  #200).** Three cheap reads are green while the defect is fully present: `tabIndex >= 0` (true of plenty of
+  things Tab never reaches), an element handle captured before the event (`renderMarkers` rebuilds, so it is
+  detached afterwards — the #198 trap, one layer up), and calling `.focus()` from the test to get focus where
+  the assertion wants it, which asserts the browser rather than the product. **And the re-render has to be
+  caused the way the product causes it**: a second author's record appended to `<plan>.review/` while the
+  server runs, waited on with `WaitForSelectorWhileTouchingAsync`, not a call to `render()`/`renderMarkers`.
+  Because `render()` is one synchronous turn, a selector that has appeared is proof the focus decision has
+  already been made — no extra wait is needed or trustworthy. Every #200 test pairs its positive rule with an
+  **anti-steal** control (focus something the render does not rebuild — a `.table-scroll` region, the open
+  composer — and assert it did not move); without that half, "always restore focus" passes everything.
 - **`document.elementFromPoint` is VIEWPORT-relative, and `scrollIntoView` scrolls EVERY scrollable ancestor.**
   Both halves bite in the same test. A badge below the fold hit-tests as a miss however correct it is, so a
   probe has to bring it into view first — but doing that *between* two readings of a scrolled block is what
