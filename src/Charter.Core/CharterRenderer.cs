@@ -308,11 +308,26 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
     {
         // Dispatch on the SAME classification the block model uses (CharterMarkdown.ClassifyContainer), so the
-        // renderer and the catalog can never disagree on what a :::directive is. The containers whose markup
-        // diverges from the default callout get a bespoke writer; :::note / :::warn / :::comparison fall through
-        // to the default; and an unrecognized :::foo (BlockKind.Unknown) renders as a visible unknown-directive
-        // element rather than silently masquerading as a note (Charter #22).
-        switch (CharterMarkdown.ClassifyContainer(obj))
+        // renderer and the catalog can never disagree on what a :::directive is.
+        var kind = CharterMarkdown.ClassifyContainer(obj);
+
+        // :::note / :::warn / :::comparison are the ONLY kinds that descend into their children — base.Write
+        // reaches WriteChildren, which is what makes a :::question nested inside one render as a real,
+        // answerable form. That set is READ from CharterMarkdown.RendersChildren rather than restated here,
+        // because NestedDirectiveLint's whole predicate is built on it and a second listing would drift
+        // (Charter #203). Do NOT narrow it: nested :::diagram / :::custom-html render today and
+        // OpaqueRegionAnchorTests depends on it.
+        if (CharterMarkdown.RendersChildren(kind))
+        {
+            base.Write(renderer, obj);
+            return;
+        }
+
+        // Everything below writes ContainerBody(obj) and never walks children, so a directive nested inside one
+        // of these is inert text. An unrecognized :::foo (BlockKind.Unknown) — and any future kind not yet given
+        // a writer — renders as a visible unknown-directive element rather than silently masquerading as a note
+        // (Charter #22).
+        switch (kind)
         {
             case BlockKind.Diagram:
                 WriteDiagram(renderer, obj);
@@ -326,11 +341,8 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             case BlockKind.CustomHtml:
                 WriteCustomHtml(renderer, obj);
                 break;
-            case BlockKind.Unknown:
-                WriteUnknown(renderer, obj);
-                break;
             default:
-                base.Write(renderer, obj);
+                WriteUnknown(renderer, obj);
                 break;
         }
     }

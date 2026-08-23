@@ -148,6 +148,23 @@ the whole record over one turns a diagnostic into an outage.
 | `unknown-directive` | An unrecognized `:::foo`: rendered visibly, but nothing interprets it. | no |
 | `missing-recommendation` | An open, human, select-mode question carries no `recommended` key at all (#142). | no |
 | `untracked-deferral` | A paragraph defers work without naming an issue, ticket or URL (#156). | no |
+| `nested-question` | A `:::question` inside a container that renders its children — drawn as a live, answerable form, invisible to the block model (#203). | **yes** |
+| `nested-diff` | A `:::diff` nested the same way: it flattens as blockquoted prose, where line-initial `+`/`-` are read as bullet markers (#203). | no |
+| `nested-unknown-directive` | An unrecognized `:::foo` nested the same way — it may be a misspelled `:::question` (#203). | no |
+| `nested-directive` | Any other nested `:::` directive — `comparison`, `diagram`, `note`, `warn` (#203). | no |
+
+**Why four nesting tokens and not one.** `charter handoff --fail-if-needs-human` blocks on `nested-question`,
+`nested-diff` and `nested-unknown-directive` but **not** on `nested-directive`, and the record escalates only on
+`nested-question`. A consumer branches on `kind`, so a single token carrying three tiers would make the gate's
+verdict unreproducible from the record. The tiers are not a guess: each kind's flattened body was read back as
+plain CommonMark (`NestedDirectiveFlattenTests`). A nested `:::diff`'s markers really are eaten by bullet
+parsing; a nested `:::comparison`, `:::diagram`, `:::note` and `:::warn` really do survive intact, losing only
+the block's framing and its anchors.
+
+**Nesting is reported only where the renderer draws it LIVE** — inside `:::note` / `:::warn` / `:::comparison`,
+a list item, or a blockquote, along the whole ancestor chain. A directive inside `:::custom-html`, `:::diagram`,
+`:::diff` or an unknown `:::foo` renders as inert text, asserts nothing false, and is the author's own markup;
+none of those is reported.
 
 The last two arrived in `schema` 2 and are the reason it is 2. Before them, `notes: []` did **not** mean
 "Charter noticed nothing" — `charter handoff` printed both lints to stderr with no matching note kind — so
@@ -212,19 +229,29 @@ and it was empty"* — close to the opposite. Do not read one vocabulary as the 
 `needsHuman` in the record and the exit code are the **same fact**, so a harness reading the file and one
 reading `$?` cannot disagree. On exit `2`, stderr also names each outstanding item with its line.
 
-## What raises `needsHuman` — exactly three things
+## What raises `needsHuman` — exactly four things
 
 1. An **open `:::question` whose `target` is `human`** — the decision review existed to elicit, with nobody
    there to make it.
 2. A **`:::question` whose body will not parse** — its `target` is unknown, and assuming `agent` would let a
    crew sail past a decision nobody can even read.
-3. **Duplicate `:::question` ids** — an answer would resolve into every block sharing the id, so both
+3. A **`:::question` nested inside a container that renders its children** (#203) — it is drawn on the page as
+   a real, answerable form, so a human may already have answered it, while it appears nowhere in `questions[]`
+   and no answer to it can ever be folded back. The record cannot report the decision, so it must not certify
+   that none is needed.
+4. **Duplicate `:::question` ids** — an answer would resolve into every block sharing the id, so both
    `poll --apply` and `resolve` refuse the write and the plan cannot be settled unattended at all.
 
 Nothing else raises it. A **missing or unsupported format-version marker**, an **unknown `:::foo`
-directive**, a missing `recommended` and an untracked deferral land in `notes[]` and **do not** change the
-exit code — every other verb treats those as warnings too, and widening the rule would make the flag almost
-always true and therefore worthless.
+directive**, a missing `recommended`, an untracked deferral and a nested directive that is not a question land
+in `notes[]` and **do not** change the exit code — every other verb treats those as warnings too, and widening
+the rule would make the flag almost always true and therefore worthless.
+
+**That base-rate argument is why #3 is an exception rather than a breach of the rule.** It is what excludes
+`unknown-directive`: unknown directives occur in ordinary plans, so escalating on them would fire constantly.
+A correct plan has **zero** nested questions, so #3 is false on every healthy document — it costs nothing on
+the plans the flag exists to wave through, and it is the only signal that a decision a human can see is one
+Charter cannot.
 
 > **Exit `0` does not mean every question is answered.** An open `:::question` with `target: agent` raises
 > nothing and changes no exit code — by design, because **you** are the agent it is addressed to. Read

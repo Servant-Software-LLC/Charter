@@ -471,6 +471,31 @@ internal static class CharterMarkdown
         return BlockKind.Unknown;
     }
 
+    /// <summary>
+    /// <b>Which container kinds RENDER THEIR CHILDREN</b> — the one fact that decides whether a directive
+    /// nested inside one is drawn live or is inert text, and therefore the one predicate
+    /// <see cref="NestedDirectiveLint"/> is built on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>CharterContainerRenderer.Write</c> reaches <c>WriteChildren</c> only for these three; every other kind
+    /// (<c>:::diagram</c>, <c>:::diff</c>, <c>:::custom-html</c>, and an unknown <c>:::foo</c>) writes its
+    /// <c>ContainerBody</c> as text and never walks children. Markdig parses all six identically, so the
+    /// difference is entirely the renderer's — which is why this is read by the renderer's own dispatch AND by
+    /// the lint, rather than being restated in either (Charter #203).
+    /// </para>
+    /// <para>
+    /// <b>Why the lint cannot instead ask "is this nested?".</b> A structural test would flag a
+    /// <c>:::question</c> inside <c>:::custom-html</c> — which renders as inert prose, asserts nothing false, and
+    /// is the author's own markup by decree. That decree exists today only in the SDK's opaque-region predicate
+    /// (#166/#176); a structural test would be the first C#-side opinion about an opaque region's interior, and
+    /// the opposite one. The defect #203 names is the divergence between what the renderer draws LIVE and what
+    /// the block model admits — so the predicate has to be about live rendering, and nothing else.
+    /// </para>
+    /// </remarks>
+    internal static bool RendersChildren(BlockKind kind)
+        => kind is BlockKind.Note or BlockKind.Warn or BlockKind.Comparison;
+
     private static bool IsDiagram(CustomContainer container)
         => string.Equals(container.Info?.Trim(), "diagram", StringComparison.OrdinalIgnoreCase);
 

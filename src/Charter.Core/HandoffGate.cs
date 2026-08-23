@@ -72,7 +72,8 @@ public sealed record HandoffQuestionResolution(
 /// <summary>One thing standing between the flattened plan and an unattended run.</summary>
 /// <param name="Kind">
 /// A stable hyphenated token: <c>unanswered-human-question</c>, <c>undecidable-agent-question</c>,
-/// <c>malformed-question</c>, <c>unknown-directive</c>, <c>duplicate-question-id</c>.
+/// <c>malformed-question</c>, <c>unknown-directive</c>, <c>duplicate-question-id</c>,
+/// <c>nested-question</c>, <c>nested-diff</c>, <c>nested-unknown-directive</c>.
 /// </param>
 /// <param name="Id">The question's id, or null where the defect has none (an unknown directive).</param>
 /// <param name="Title">The question put to the reviewer, or null where there is none.</param>
@@ -97,7 +98,7 @@ public sealed record HandoffBlocker(
 /// plan has.
 /// </para>
 /// <para>
-/// <b>Three places where this is deliberately STRICTER than the record.</b> Each one is a case the record
+/// <b>Four places where this is deliberately STRICTER than the record.</b> Each one is a case the record
 /// treats as a warning because every other verb does, and where "every other verb" is the wrong precedent for
 /// a flag whose entire purpose is refusing to certify what nobody checked:
 /// </para>
@@ -124,6 +125,15 @@ public sealed record HandoffBlocker(
 ///     preserved as prose either way and nothing interprets it — so the strict gate resolves the ambiguity
 ///     toward the human, which is the same principle the anchor model uses when it orphans rather than
 ///     misattributes.</description></item>
+///   <item><description><b>A nested <c>:::diff</c> and a nested unknown <c>:::foo</c> block</b> (Charter #203).
+///     The record files both as warnings, and files a nested <c>:::question</c> as an escalation — the same
+///     record/gate asymmetry as above, inherited rather than invented: the record escalates on KNOWN decisions,
+///     the gate on POSSIBLE ones. A nested <c>:::diff</c> earns a blocker on evidence rather than by analogy:
+///     read out of the flatten, its line-initial <c>+</c>/<c>-</c> are consumed as CommonMark bullet markers,
+///     so an added and a removed line become indistinguishable and a reader is shown a deleted line as a
+///     requirement (<c>NestedDirectiveFlattenTests</c>). A nested <c>:::comparison</c>, <c>:::diagram</c>,
+///     <c>:::note</c> or <c>:::warn</c> does NOT block: each of those bodies was read out of the same flatten
+///     and survives blockquoting intact.</description></item>
 /// </list>
 /// <para>
 /// <b>What it does NOT do is refuse to write.</b> That is the caller's contract, and it is deliberate: every
@@ -147,6 +157,15 @@ public static class HandoffGate
 
     /// <summary>Two or more <c>:::question</c> blocks sharing an id.</summary>
     public const string DuplicateQuestionId = "duplicate-question-id";
+
+    /// <summary>A <c>:::question</c> that renders as a live form but is not a block (Charter #203).</summary>
+    public const string NestedQuestion = "nested-question";
+
+    /// <summary>A <c>:::diff</c> that renders live but flattens as bullet-parsed prose (Charter #203).</summary>
+    public const string NestedDiff = "nested-diff";
+
+    /// <summary>An unrecognized nested <c>:::foo</c>, which may be a misspelled <c>:::question</c>.</summary>
+    public const string NestedUnknownDirective = "nested-unknown-directive";
 
     /// <summary>
     /// Wire token: the resolved answer came from the <c>answer</c> recorded INLINE in the plan, so
@@ -185,6 +204,30 @@ public static class HandoffGate
                     UnknownDirective, null, null, null, note.SourceLine,
                     "an unrecognized ::: directive is passed through as prose that nothing interprets; a "
                         + "misspelled :::question hides its target here"));
+            }
+            else if (note.Kind == HeadlessNoteKind.NestedQuestion)
+            {
+                blockers.Add(new HandoffBlocker(
+                    NestedQuestion, null, null, null, note.SourceLine,
+                    "a :::question nested inside a container renders as a real, answerable form but is not a "
+                        + "block, so its decision is absent from the flatten and no answer to it can be folded "
+                        + "back; move it to the top level"));
+            }
+            else if (note.Kind == HeadlessNoteKind.NestedDiff)
+            {
+                blockers.Add(new HandoffBlocker(
+                    NestedDiff, null, null, null, note.SourceLine,
+                    "a :::diff nested inside a container flattens as blockquoted prose, where line-initial + "
+                        + "and - are read as bullet markers — an added and a removed line become "
+                        + "indistinguishable, so a reader sees a deleted line as a requirement"));
+            }
+            else if (note.Kind == HeadlessNoteKind.NestedUnknownDirective)
+            {
+                blockers.Add(new HandoffBlocker(
+                    NestedUnknownDirective, null, null, null, note.SourceLine,
+                    "an unrecognized ::: directive nested inside a container is unknowable by definition and "
+                        + "invisible to the block model as well; a misspelled :::questoin hides its target twice "
+                        + "over here"));
             }
         }
 

@@ -336,6 +336,38 @@ public enum HeadlessNoteKind
     /// raises <see cref="HeadlessRecord.NeedsHuman"/>.
     /// </summary>
     UntrackedDeferral,
+
+    /// <summary>
+    /// A <c>:::question</c> nested inside a container that renders its children, so it is drawn as a real,
+    /// answerable form and is invisible to the block model (Charter #203). It RAISES
+    /// <see cref="HeadlessRecord.NeedsHuman"/>: the decision is absent from <c>questions[]</c> entirely, so
+    /// without it the record would say nobody is needed over a question a human is looking at.
+    /// </summary>
+    NestedQuestion,
+
+    /// <summary>
+    /// A <c>:::diff</c> nested inside a container that renders its children (Charter #203). A warning in the
+    /// record, a BLOCKER for strict handoff: it flattens as blockquoted prose, where line-initial <c>+</c> and
+    /// <c>-</c> are consumed as CommonMark bullet markers, so an added and a removed line become
+    /// indistinguishable.
+    /// </summary>
+    NestedDiff,
+
+    /// <summary>
+    /// An unrecognized <c>:::foo</c> nested inside a container that renders its children (Charter #203). A
+    /// warning in the record, a BLOCKER for strict handoff, for exactly the reason a top-level one is: a
+    /// misspelled <c>:::questoin</c> classifies as one and may hide a <c>target: human</c> decision.
+    /// </summary>
+    NestedUnknownDirective,
+
+    /// <summary>
+    /// Any OTHER <c>:::</c> directive nested inside a container that renders its children — a
+    /// <c>:::comparison</c>, <c>:::diagram</c>, <c>:::note</c> or <c>:::warn</c> (Charter #203). A warning
+    /// only: each of those bodies was READ out of the flatten and survives blockquoting as CommonMark prose
+    /// (a table, a list, Mermaid source in a fence, prose), so the loss is presentational — the block's own
+    /// framing and its anchors — never a corrupted or absent fact.
+    /// </summary>
+    NestedDirective,
 }
 
 /// <summary>One recorded diagnostic.</summary>
@@ -357,6 +389,10 @@ public sealed record HeadlessNote(HeadlessNoteKind Kind, string Message, int? So
         HeadlessNoteKind.UnknownDirective => "unknown-directive",
         HeadlessNoteKind.MissingRecommendation => "missing-recommendation",
         HeadlessNoteKind.UntrackedDeferral => "untracked-deferral",
+        HeadlessNoteKind.NestedQuestion => "nested-question",
+        HeadlessNoteKind.NestedDiff => "nested-diff",
+        HeadlessNoteKind.NestedUnknownDirective => "nested-unknown-directive",
+        HeadlessNoteKind.NestedDirective => "nested-directive",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown headless note kind."),
     };
 }

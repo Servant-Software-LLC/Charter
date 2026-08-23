@@ -268,7 +268,7 @@ public class QuestionBodyParityTests
         // THE seam this change adds, and the reason this file is the highest-value test in it. Until now the
         // two parses only had to agree about a plan; now one artifact VOUCHES FOR THE OTHER, and it is
         // assembled from a different parse of a different string: HandoffMarkdown.Emit normalizes line endings
-        // and THEN parses, while HandoffGate -> PlanInventory.Build -> PlanWalk.Blocks parses the RAW markdown.
+        // and THEN parses, while HandoffGate -> PlanInventory.Build -> PlanWalk.Walk parses the RAW markdown.
         // A manifest naming a question the flatten did not emit, or an answer the flatten did not print, is a
         // chain-of-custody artifact certifying a document other than the one on disk.
         //
