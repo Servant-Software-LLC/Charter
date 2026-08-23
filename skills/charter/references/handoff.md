@@ -205,6 +205,38 @@ silently dropped:
 >   Charter.Core/
 ```
 
+### Link reference definitions lead the file
+
+A plan's `[foo]: http://example.com "Title"` declarations are **carried across**, as one block at the **very
+top** of the flattened file — above the plan's own title. The flatten is a *new* CommonMark document, so
+`See [foo].` resolves against the definitions **that file** carries; without them `[foo]` would be literal
+text, and the plan an LLM breaks down would have lost a piece of its meaning (Charter #175).
+
+```
+[foo]: http://example.com "The design note"
+[bar]: ./docs/adr-014.md
+
+# Plan title
+```
+
+Four things worth knowing before you assert on it:
+
+- **They are RE-SERIALISED, not copied.** Spelling is normalised: `<url>` keeps its angle brackets only when
+  it needs them (empty, whitespace, control characters or parentheses), a title is re-quoted with `"`, and a
+  title spread over two lines is joined onto one. The values themselves — label, destination, title — are
+  exactly what the renderer resolved.
+- **One line per distinct label, the FIRST definition.** `[Foo]` and `[foo]` are one label (CommonMark folds
+  case and whitespace), and the first wins, so the flatten resolves a reference **exactly as the rendered
+  page did**.
+- **A definition nested inside a `:::` container appears twice** — once at the top, once inside that
+  container's own flatten. The nested copy is **inert**: the leading block is first, and first wins. It is
+  left visible rather than surgically removed because the alternative filter is unsound — a `:::note`
+  flattens its first inner line to `> **Note:** [inner]: …`, which defines nothing.
+- **A plan that uses no reference links is UNCHANGED** — no block, no blank line, and the file still opens
+  with `# Title` exactly as before.
+
+The **end** of the file is unaffected: the provenance stamps are still the last two lines (below).
+
 ## `--fail-if-needs-human` — the unattended gate
 
 ```

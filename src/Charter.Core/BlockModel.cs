@@ -99,24 +99,70 @@ public sealed record Block(BlockKind Kind, string RawContent)
 }
 
 /// <summary>
+/// One of a plan's <c>[label]: url "title"</c> link reference definitions, as Markdig RESOLVED it
+/// (Charter #175).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>A definition is not a block, and this type is why it does not have to become one.</b> It carries no
+/// <see cref="BlockKind"/>, no id and — deliberately — <b>no source offset of any kind</b>. A definition
+/// renders as nothing, so it must never occupy an anchor slot (#171); exposing an offset here would also let
+/// §10.7's LF-normalised-vs-raw parse divergence leak through a public channel, since the only consumer
+/// (<see cref="HandoffMarkdown.Emit"/>) parses normalised text while <c>PlanWalk</c> parses the raw string.
+/// </para>
+/// <para>
+/// <b>These are the RESOLVED values, never a source slice.</b> Markdig's
+/// <c>LinkReferenceDefinition.Span.End</c> is short by two when the title sits on a continuation line, so a
+/// slice of the node's own span ends mid-token — re-emitting it injects a title-less definition plus a
+/// garbage paragraph. That is #171 repeating one level down (trusting the same node family's spans), and it
+/// is pinned by <c>HandoffLinkDefinitionTests</c>. The cost, accepted: spelling is NORMALISED —
+/// <c>&lt;url&gt;</c> loses its brackets, and a title is re-quoted.
+/// </para>
+/// </remarks>
+/// <param name="Label">The definition's label, unescaped, exactly as Markdig resolves references against it.</param>
+/// <param name="Url">The link destination, unescaped. May be empty (<c>[a]: &lt;&gt;</c> is legal CommonMark).</param>
+/// <param name="Title">The optional title, unescaped, or null when the definition declares none.</param>
+public sealed record LinkDefinition(string Label, string Url, string? Title);
+
+/// <summary>
 /// A Charter deliverable parsed into ordered <see cref="Block"/>s.
 /// </summary>
 public sealed class BlockDocument
 {
-    private BlockDocument(IReadOnlyList<Block> blocks) => Blocks = blocks;
+    private BlockDocument(IReadOnlyList<Block> blocks, IReadOnlyList<LinkDefinition> linkDefinitions)
+    {
+        Blocks = blocks;
+        LinkDefinitions = linkDefinitions;
+    }
 
     /// <summary>The document's blocks, in source order.</summary>
     public IReadOnlyList<Block> Blocks { get; }
 
     /// <summary>
+    /// The plan's winning link reference definitions, in source order — a SECOND, NON-BLOCK channel
+    /// (Charter #175).
+    /// </summary>
+    /// <remarks>
+    /// It is a separate channel rather than a <see cref="BlockKind"/> precisely so that nothing about the
+    /// block stream moves: the definitions never occupy an anchor slot, never perturb
+    /// <see cref="AnchorAssignment"/>'s duplicate discriminator and never add a <see cref="SourceMap"/> entry.
+    /// <see cref="HandoffMarkdown.Emit"/> is the only reader. See
+    /// <see cref="CharterMarkdown.ParseDocument(string, out IReadOnlyList{LinkDefinition})"/> for what
+    /// "winning" means.
+    /// </remarks>
+    public IReadOnlyList<LinkDefinition> LinkDefinitions { get; }
+
+    /// <summary>
     /// Parse markdown into ordered <see cref="Block"/>s. Each top-level CommonMark block (plus each
     /// <c>:::</c> directive container) becomes one <see cref="Block"/> whose <see cref="Block.RawContent"/>
     /// is the exact source text it spans — so its <see cref="Block.Id"/> depends only on its own content.
+    /// The plan's link reference definitions come back beside them on <see cref="LinkDefinitions"/>, never
+    /// as blocks.
     /// </summary>
     public static BlockDocument Parse(string markdown)
     {
         markdown ??= string.Empty;
-        var document = CharterMarkdown.ParseDocument(markdown);
+        var document = CharterMarkdown.ParseDocument(markdown, out var linkDefinitions);
 
         var blocks = new List<Block>();
         foreach (var node in document)
@@ -125,7 +171,7 @@ public sealed class BlockDocument
             blocks.Add(new Block(kind, rawContent));
         }
 
-        return new BlockDocument(blocks);
+        return new BlockDocument(blocks, linkDefinitions);
     }
 }
 
@@ -381,25 +427,93 @@ internal static class CharterMarkdown
     /// </description></item>
     /// </list>
     /// <para>
-    /// Stripping the group cannot break reference links: Markdig resolves every <c>[foo]</c> against the
-    /// document's link-reference dictionary during <see cref="Markdown.Parse(string, MarkdownPipeline, MarkdownParserContext)"/>,
-    /// so the <c>LinkInline</c>s are already materialized before this runs. The group node is only the
-    /// definitions' place in the block tree, and nothing reads it back.
+    /// Stripping the group cannot break reference links IN THIS DOCUMENT: Markdig resolves every <c>[foo]</c>
+    /// against the document's link-reference dictionary during <see cref="Markdown.Parse(string, MarkdownPipeline, MarkdownParserContext)"/>,
+    /// so the <c>LinkInline</c>s are already materialized before this runs.
+    /// </para>
+    /// <para>
+    /// <b>The group IS read back, by exactly one consumer</b> (Charter #175 — this used to say "nothing reads
+    /// it back", and that stopped being true the day the handoff had to carry the definitions ACROSS to
+    /// another document). The overload below hands its resolved definitions to
+    /// <see cref="BlockDocument.LinkDefinitions"/>, whose only reader is
+    /// <see cref="HandoffMarkdown.Emit"/>: the flattened plan is a NEW document, and CommonMark resolves
+    /// <c>[foo]</c> there against the definitions THAT file carries, so dropping them handed Guardrails a
+    /// dangling reference where the reviewer saw a link. Nothing else reads the group, and nothing reads it
+    /// as a BLOCK — the strip above is unchanged, and the definitions still occupy no anchor slot.
     /// </para>
     /// </summary>
-    internal static MarkdownDocument ParseDocument(string markdown)
+    internal static MarkdownDocument ParseDocument(string markdown) => ParseDocument(markdown, out _);
+
+    /// <summary>
+    /// <see cref="ParseDocument(string)"/>, additionally handing back the stripped group's definitions as
+    /// resolved <see cref="LinkDefinition"/> triples in SOURCE ORDER — one per distinct label, the FIRST
+    /// definition of that label (Charter #175).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Distinctness and the winner are Markdig's own, never re-derived.</b> A label's identity is
+    /// case-insensitive and whitespace-folded (<c>[Foo]</c>, <c>[foo]</c> and <c>[FOO]</c> are one label;
+    /// <c>[a   b]</c> is <c>a b</c>), and CommonMark says the FIRST definition wins. Rather than reimplement
+    /// either rule, this reads <c>LinkReferenceDefinitionGroup.Links</c> — the very dictionary the parse
+    /// resolved every <c>[foo]</c> against — and keeps the children that are IN it. So the flattened plan
+    /// resolves a reference exactly as the rendered page does, by construction rather than by agreement.
+    /// The children are already in source order, so walking them preserves it without consulting a span.
+    /// </para>
+    /// <para>
+    /// <b>Definitions from anywhere in the document are collected here</b>, including ones nested inside a
+    /// list item, a blockquote or a <c>:::</c> container: Markdig hoists every definition into ONE
+    /// document-level group. That is what makes the alternative design — "a definition span-contained by a
+    /// block is already carried by that block, so filter it out" — unsound, because a container's flatten
+    /// RESHAPES its body: a <c>:::note</c> turns its first inner line into
+    /// <c>&gt; **Note:** [inner]: …</c> (a paragraph, not a definition) and a <c>:::diagram</c> buries it
+    /// inside a <c>```mermaid</c> fence. Both are span-contained; neither defines anything.
+    /// </para>
+    /// </remarks>
+    internal static MarkdownDocument ParseDocument(
+        string markdown, out IReadOnlyList<LinkDefinition> linkDefinitions)
     {
         var document = Markdown.Parse(markdown, Pipeline);
 
+        var definitions = new List<LinkDefinition>();
         for (var i = document.Count - 1; i >= 0; i--)
         {
+            if (document[i] is LinkReferenceDefinitionGroup group)
+            {
+                definitions.InsertRange(0, WinningDefinitions(group));
+            }
+
             if (document[i] is YamlFrontMatterBlock or LinkReferenceDefinitionGroup)
             {
                 document.RemoveAt(i);
             }
         }
 
+        linkDefinitions = definitions;
         return document;
+    }
+
+    /// <summary>
+    /// The definitions in <paramref name="group"/> that WON — the ones its <c>Links</c> dictionary actually
+    /// resolves references against — in source order.
+    /// </summary>
+    private static List<LinkDefinition> WinningDefinitions(LinkReferenceDefinitionGroup group)
+    {
+        // Reference identity: LinkReferenceDefinition is a Markdig syntax class with no Equals override, so
+        // the default comparer asks "is this the very node the dictionary points at", which is exactly the
+        // question. Comparing by label would mean re-implementing CommonMark's label folding.
+        var winners = new HashSet<LinkReferenceDefinition>(group.Links.Values);
+
+        var resolved = new List<LinkDefinition>(winners.Count);
+        foreach (var child in group)
+        {
+            if (child is LinkReferenceDefinition definition && winners.Contains(definition))
+            {
+                resolved.Add(new LinkDefinition(
+                    definition.Label ?? string.Empty, definition.Url ?? string.Empty, definition.Title));
+            }
+        }
+
+        return resolved;
     }
 
     /// <summary>Classify a top-level Markdig block and capture the raw source text it spans.</summary>

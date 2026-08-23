@@ -773,6 +773,32 @@ verification. Exact emitted shape: `skills/charter/references/handoff.md`. The r
 - **`:::diagram` / `:::diff` flatten to EXACTLY ONE fence.** Both body forms are accepted (raw, or already
   wrapped in ` ```mermaid ` / ` ```diff `); an already-fenced body is unwrapped before emitting, never
   double-fenced (a double fence makes the inner fence literal, so the diagram does not render on GitHub).
+- **A plan's LINK REFERENCE DEFINITIONS lead the flattened file** (#175). The flatten is a NEW CommonMark
+  document, so `See [foo].` resolves against the definitions *that file* carries — and after #171 stripped the
+  `LinkReferenceDefinitionGroup` it carried none, handing Guardrails literal `[foo]` text where the reviewer
+  saw a link. One normalised block, above the plan's title; **a plan using no reference links is byte-identical
+  to before**. Three rules and two dead designs:
+  - **RE-SERIALISED from Markdig's resolved `Label`/`Url`/`Title`, never sliced from the source.**
+    `LinkReferenceDefinition.Span.End` is **short by two** when the title sits on a continuation line, and the
+    resulting slice defines **nothing at all** when re-parsed — so the corrupt text lands in the plan *and*
+    the reference still dangles. That is #171 repeating one level down: trusting the same node family's spans.
+  - **Distinctness and the winner are MARKDIG'S OWN** — the emitter keeps the children present in
+    `LinkReferenceDefinitionGroup.Links`, the very dictionary the parse resolved every `[foo]` against. So the
+    flatten resolves a reference exactly as the RENDER does, by construction rather than by agreement.
+  - **TOP placement is forced, not aesthetic.** Appending at the end re-opens the redirection bug: a LOSER
+    definition surviving verbatim earlier would win over an appended winner. Winners first ⇒ CommonMark's
+    first-definition-wins does the work and every nested copy is inert.
+  - **The containment filter ("span-contained ⇒ already carried") is DEAD, unsound twice.** Markdig hoists
+    every definition — list item, blockquote, `:::` container — into ONE document-level group, but a
+    container's flatten RESHAPES its body: a `:::note` turns one into `> **Note:** [inner]: …` (a paragraph)
+    and a `:::diagram` buries it inside a ` ```mermaid ` fence. Both render as links and dangle in the handoff.
+  - **`BlockKind` did NOT grow a member.** The definitions ride a second, non-block channel
+    (`BlockDocument.LinkDefinitions`, read only by `HandoffMarkdown.Emit`) with **no source offset exposed**,
+    so they still occupy no anchor slot and add no `sourceMap` entry.
+  - Accepted residues: a nested definition appears **twice** (inert); spelling is **normalised**; unreferenced
+    definitions are **still emitted**; and `[^1]: body` — an ordinary definition to Charter, which enables no
+    footnotes — is carried, because the governing rule is *the flatten resolves references the way the render
+    does*.
 - **Nothing is silently dropped.** An unknown `:::foo` keeps its body (blockquoted prose on flatten, an escaped
   `<pre>` on render); a **resolved** question renders as resolved (`class="question answered"` +
   `data-answered="true"`, values pre-selected, an "Answered" chip) so a second round does not re-ask a settled

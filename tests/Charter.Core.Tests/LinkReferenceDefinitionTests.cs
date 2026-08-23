@@ -123,17 +123,23 @@ public class LinkReferenceDefinitionTests
         // CommonMark Guardrails breaks down.
         var handoff = HandoffMarkdown.Emit(UnusedDefinition);
 
-        // Compared WITHOUT the trailing provenance stamp (Charter #172/#187), which hashes the SOURCE plan —
-        // and these two sources genuinely differ by the link definition. The claim being pinned is that the
-        // flattened CONTENT is identical, which is exactly what the stamp is not.
-        Assert.Equal(HandoffOutput.WithoutStamp(HandoffMarkdown.Emit(NoDefinition)), HandoffOutput.WithoutStamp(handoff));
+        // The claim is unchanged and is the one that matters: the opening blocks appear ONCE.
         Assert.Equal(1, Occurrences(handoff, "# Title"));
 
-        // NOTE (#175): the definitions themselves are now absent from the handoff, so a plan whose prose uses
-        // [foo] hands Guardrails a dangling reference. That is a KNOWN GAP, not the intended end state — it was
-        // never carried faithfully (the pre-#171 "carry" was the corrupt prefix slice this test pins against),
-        // and carrying it properly is a handoff-contract decision. This equality is the behaviour to revisit
-        // when #175 is settled, NOT a statement that dropping them is correct.
+        // #175 SETTLED the gap this test used to record. The definitions are now carried, as ONE normalised
+        // block leading the flatten — so the two flattens are no longer equal, and the difference is exactly
+        // that block. Asserting it as a DIFFERENCE rather than deleting the comparison is deliberate: the
+        // pre-#171 defect was extra CONTENT smuggled in under a definition's name, so "the definition line,
+        // and nothing else" is precisely what has to be proved.
+        //
+        // Compared WITHOUT the provenance stamps (Charter #172/#187), which hash the SOURCE plan — and these
+        // two sources genuinely differ by the link definition. The claim being pinned is about the flattened
+        // CONTENT, which is exactly what the stamps are not.
+        var withDefinition = HandoffOutput.WithoutStamp(handoff);
+        Assert.StartsWith("[bar]: http://other.example\n\n", withDefinition, StringComparison.Ordinal);
+        Assert.Equal(
+            HandoffOutput.WithoutStamp(HandoffMarkdown.Emit(NoDefinition)),
+            withDefinition["[bar]: http://other.example\n\n".Length..]);
     }
 
     [Fact]
