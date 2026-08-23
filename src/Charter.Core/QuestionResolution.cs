@@ -420,18 +420,10 @@ public static class QuestionResolution
     }
 
     /// <summary>True when <paramref name="line"/> opens a directive container — three or more colons followed
-    /// by a directive name.</summary>
-    private static bool IsOpenFence(string line)
-    {
-        var trimmed = line.AsSpan().TrimStart();
-        var colons = 0;
-        while (colons < trimmed.Length && trimmed[colons] == ':')
-        {
-            colons++;
-        }
-
-        return colons >= 3 && trimmed[colons..].Trim().Length > 0;
-    }
+    /// by a directive name. Read from <see cref="DirectiveFence"/>, the one fence vocabulary, which the
+    /// flatten reads too (#190): this tolerance used to live here alone, which is exactly how the two seams
+    /// came to disagree about a <c>::::</c> container in the first place.</summary>
+    private static bool IsOpenFence(string line) => DirectiveFence.IsOpen(line);
 
     /// <summary>
     /// The rewritten raw content of one <c>:::question</c> block with its answer spliced in, or <c>null</c> when
@@ -647,23 +639,7 @@ public static class QuestionResolution
         return true;
     }
 
-    /// <summary>True when <paramref name="line"/> is a container closing fence — three or more colons only.</summary>
-    private static bool IsCloseFence(ReadOnlySpan<char> line)
-    {
-        var trimmed = line.Trim();
-        if (trimmed.Length < 3)
-        {
-            return false;
-        }
-
-        foreach (var ch in trimmed)
-        {
-            if (ch != ':')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    /// <summary>True when <paramref name="line"/> is a container closing fence — three or more colons only.
+    /// Read from <see cref="DirectiveFence"/> for the same reason <see cref="IsOpenFence"/> is.</summary>
+    private static bool IsCloseFence(ReadOnlySpan<char> line) => DirectiveFence.IsClose(line);
 }

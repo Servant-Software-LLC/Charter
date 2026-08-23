@@ -60,6 +60,12 @@ it is for teams. Check it against §5.0 before designing it.
   inits with `securityLevel: 'antiscript'` (inline SVG under CSP, no sandboxed iframe) — and with
   `startOnLoad: false` plus an EXPLICIT node list, never the default document-wide `.mermaid` selector
   (#177: it rewrote an author's `<pre class="mermaid">` inside `:::custom-html`, in the artifact too).
+  It is inlined **iff the render actually wrote a `<pre class="mermaid">`, at any nesting depth** — the flag
+  comes from the container renderer, not from a walk (#184: it used to come from the anchor pass's
+  top-level-only loop, so a `:::diagram` inside a `::::note` or a list item never inlined the runtime and
+  rendered as its own source text, *intermittently*, since any unrelated top-level diagram made it draw by
+  coincidence). The exported artifact gains the runtime for such a plan, which is invariant 1 being kept, not
+  bent: a saved diagram must be the same picture the served page shows.
 - **Block catalog and the `:::question` schema are normative in the `charter-format` skill** — including the
   fact that there is **no** `:::annotated-code` or `:::file-tree` (they have no renderer). Cite it; never fork
   it. A drift test binds the skill's catalog to `BlockKind` ∪ `QuestionSpec`, so a fork breaks the build.
@@ -557,6 +563,15 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   `::::question` read fine in the record while the flatten deleted its id/title/target, and an unterminated
   container flattened perfectly while the record escalated it. `QuestionBodyParityTests` asserts the two
   verbs reach the same verdict, not that they call the same method.
+  - **And ONE fence vocabulary under both** (`DirectiveFence`, #190). The `any fence length` tolerance was
+    granted to the question path alone, so every OTHER container still matched `^:::\w+` / `^:::\s*$` and a
+    `::::` container flattened with both its fence lines still in the body. That is not exotic authoring —
+    `charter-format` tells an author to widen the fence whenever a body line would itself start with `:::`, so
+    it fired on the NESTING case. **"Invariant 5 held anyway" was true of two of the six containers**: a
+    note/warn's leak rode behind a blockquote `>`, but `:::comparison` and `:::custom-html` emit their inner
+    lines verbatim, so the leak was a live directive line at column zero in the plain-CommonMark handoff, and
+    a `:::diff`'s leaked opener defeated the fence unwrap and re-emitted the container's own fences as diff
+    content inside an escalated fence (#48/C2, via #190).
 - **An `--answers` entry may FILL, never REPLACE** (#186). It settles a question the plan left open and may
   re-state a recorded `answer` verbatim — *an answers file may only ADD information* — but it may never
   overwrite one, and `[]`/`null` is a rejection rather than an erasure ("no answer" is already spelled by
@@ -842,4 +857,8 @@ holding Charter's prose to what the code does.
     no orphan diff (an orphan shows its `quote`, never a diff).
   - **`reopen` still has no writer.** `ReviewOpKind.Reopen` is understood by the fold, but nothing appends one
     — no API route, no CLI verb — so a `reopen` can only reach a log from outside Charter.
+- **Known-open, and read it before changing the block model:** **#203** — a `:::question` nested inside a
+  `::::note` renders as an answerable form but is invisible to `BlockDocument`, so `needsHuman` reads false,
+  `--fail-if-needs-human` exits 0, the flatten emits its raw JSON body, and the answer can never be folded
+  back. It is a format/anchor-model decision, not a code fix.
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

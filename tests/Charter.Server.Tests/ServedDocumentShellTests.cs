@@ -24,6 +24,19 @@ public class ServedDocumentShellTests
         ":::note\nA note.\n:::\n\n" +
         ":::diagram\ngraph TD\nA-->B\n:::\n";
 
+    /// <summary>
+    /// Charter #184 — the same shell, over a plan whose ONLY diagram is nested inside a <c>::::note</c>.
+    /// There is deliberately no top-level diagram: with one present the runtime is inlined for that block and
+    /// the nested one draws by coincidence, which is what made the defect read as intermittent.
+    /// </summary>
+    private const string NestedDiagramPlan =
+        "# Nested Diagram Plan\n\n" +
+        "Prose, and no top-level diagram anywhere in this plan.\n\n" +
+        "::::note\n" +
+        "A callout that explains itself with a picture.\n\n" +
+        ":::diagram\ngraph TD\nIngress-->Auth\n:::\n" +
+        "::::\n";
+
     [Fact]
     public async Task ServedPage_IsCompleteStyledDocument_WithNonIframeMermaid_AndNoTemplateLeak()
     {
@@ -67,6 +80,45 @@ public class ServedDocumentShellTests
             // pair of assertions that could both hold with the feature simply absent would prove nothing.
             Assert.Contains("charter-zoom-bar", body, System.StringComparison.Ordinal);
             Assert.Contains("diagram-zoom-reset", body, System.StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Charter #184 — the served page inlines the Mermaid runtime for a diagram that is NOT a direct child of
+    /// the document. <c>hasDiagram</c> was raised by the same top-level-only walk as the anchor pass, so this
+    /// page carried the diagram's SOURCE TEXT and no runtime at all. Deterministic and on every OS: the
+    /// browser suite proves the block becomes a picture, this proves the bytes that make it one are served.
+    /// </summary>
+    [Fact]
+    public async Task ServedPage_InlinesTheMermaidRuntime_ForADiagramNestedInsideACallout()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-nested-" + System.Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, NestedDiagramPlan);
+        try
+        {
+            var session = ReviewSession.Create(planPath);
+            using var server = ReviewServer.Start(
+                session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+            using var client = new HttpClient();
+
+            var keyedUri = new UriBuilder(server.Address) { Query = "key=" + session.Key.Value }.Uri;
+            using var response = await client.GetAsync(keyedUri);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+
+            // The block has always rendered; what was missing is the runtime that turns it into a picture —
+            // the vendored library's BYTES (a bootstrap alone would leave it blank offline) and the run call.
+            Assert.Contains("<pre class=\"mermaid\"", body, System.StringComparison.Ordinal);
+            Assert.Contains("__esbuild_esm_mermaid_nm", body, System.StringComparison.Ordinal);
+            Assert.Contains("mermaid.run(", body, System.StringComparison.Ordinal);
         }
         finally
         {

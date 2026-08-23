@@ -53,7 +53,8 @@ public static class CharterRenderer
 
     /// <summary>
     /// Render <paramref name="markdown"/> to the block-body HTML only — the rendered blocks plus, when a
-    /// <c>:::diagram</c> is present, the inlined offline Mermaid runtime — WITHOUT the document shell. This is
+    /// <c>:::diagram</c> was actually rendered (at ANY depth: nested inside a <c>::::note</c> or a list item
+    /// counts — Charter #184), the inlined offline Mermaid runtime — WITHOUT the document shell. This is
     /// the shared core of <see cref="Render(string)"/> (which wraps it in the styled shell) and of
     /// <see cref="ArtifactExporter"/> (which runs its offline asset transforms over this body before wrapping it
     /// in the shell with the export CSP). Splitting body from shell keeps the shell a single source of truth
@@ -91,7 +92,10 @@ public static class CharterRenderer
         // drift). Every id/data-anchor the renderer emits below is read from THIS assignment.
         var assignment = AnchorAssignment.Build(document, markdown);
 
-        var hasDiagram = false;
+        // This walk stamps ANCHORS, and only anchors. It iterates TOP-LEVEL nodes by design — the reachable
+        // anchor set is settled (top-level nodes, plain list items, :::comparison rows, :::diff lines) — so
+        // nothing that must see NESTED content may be derived from it. `hasDiagram` used to be, and a
+        // :::diagram inside a ::::note or a list item therefore never inlined the Mermaid runtime (#184).
         foreach (var node in document)
         {
             var (kind, _) = CharterMarkdown.Describe(node, markdown);
@@ -105,10 +109,6 @@ public static class CharterRenderer
             else if (kind == BlockKind.Warn)
             {
                 attributes.AddClass("warn");
-            }
-            else if (kind == BlockKind.Diagram)
-            {
-                hasDiagram = true;
             }
             else if (kind == BlockKind.Comparison)
             {
@@ -148,8 +148,8 @@ public static class CharterRenderer
         // and a :::diff as a <div class="diff"> of per-line <div>s each carrying its own sub-anchor and
         // add/del class. Every other container (:::note, :::warn, :::comparison) falls through to the
         // default rendering this subclass delegates to.
-        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(
-            new CharterContainerRenderer(markdown, assignment, pendingAnswers));
+        var containers = new CharterContainerRenderer(markdown, assignment, pendingAnswers);
+        renderer.ObjectRenderers.Replace<HtmlCustomContainerRenderer>(containers);
 
         // A wide table must stay REACHABLE, so every table is emitted inside its own scroll container
         // (Charter #68). The wrapper is anchor-invisible by construction — see CharterTableRenderer.
@@ -160,9 +160,22 @@ public static class CharterRenderer
 
         var body = writer.ToString();
 
-        // Offline portability (invariant 1): when the document contains at least one :::diagram, inline the
-        // vendored Mermaid runtime + a theme-aware bootstrap ONCE. With no diagram, stay lean — inline nothing.
-        return hasDiagram ? body + MermaidRuntimeMarkup() : body;
+        // Offline portability (invariant 1): when the render actually WROTE a diagram, inline the vendored
+        // Mermaid runtime + a theme-aware bootstrap ONCE. With no diagram, stay lean — inline nothing.
+        //
+        // The question is asked of the CONTAINER RENDERER, which answers "did I emit a <pre class="mermaid">?"
+        // — not of a walk over the document (Charter #184). Two reasons, and the second is why this shape
+        // rather than a recursive descent:
+        //
+        //   * A DESCENT would have to know which containers swallow their bodies (:::custom-html emits its
+        //     body verbatim, an unknown :::foo escapes it into a <pre>, :::diff and :::question never render
+        //     children at all), so a :::diagram nested in one of those would count while nothing on the page
+        //     could ever use the runtime. That knowledge already lives in exactly one place — WriteDiagram is
+        //     called or it is not — and this reads it there instead of restating it.
+        //   * It therefore cannot re-widen #177. A FORGED <pre class="mermaid"> inside :::custom-html is the
+        //     author's markup, passed through verbatim; no WriteDiagram runs for it, so it raises nothing.
+        //     Charter's own nested diagram draws; a name an author can type still buys them nothing.
+        return containers.WroteDiagram ? body + MermaidRuntimeMarkup() : body;
     }
 
     /// <summary>
@@ -215,7 +228,8 @@ public static class CharterRenderer
         // `.custom-html-scroll` wraps the whole of an author's body, so an author forging that class inside
         // their own markup only ever ADDS an ancestor match — forgery can shrink this set, never grow it, and
         // shrinking it costs the forger their own rendering and nothing else. A nested :::diagram (inside a
-        // ::::note, say) still matches, so it renders exactly as before whenever the runtime is present.
+        // ::::note, say) still matches — and since Charter #184 it is also enough, on its own, to get this
+        // runtime inlined at all, so it draws in a plan that has no other diagram.
         const string bootstrap =
             "mermaid.initialize({ startOnLoad: false, securityLevel: 'antiscript', " +
             "theme: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default' });\n" +
@@ -259,6 +273,22 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     private readonly string _markdown;
     private readonly AnchorAssignment _assignment;
     private readonly IReadOnlyDictionary<string, IReadOnlyList<string>>? _pendingAnswers;
+
+    /// <summary>
+    /// True once this renderer has written at least one <c>&lt;pre class="mermaid"&gt;</c> — the ONE fact that
+    /// decides whether <see cref="CharterRenderer.RenderBody(string)"/> inlines the Mermaid runtime.
+    /// </summary>
+    /// <remarks>
+    /// It is recorded HERE, at the moment the element is emitted, rather than derived from a walk over the
+    /// document (Charter #184). The old flag came from the anchor pass's top-level-only loop, so a
+    /// <c>:::diagram</c> inside a <c>::::note</c> or a list item never set it and rendered as its own source
+    /// text — intermittently, since any unrelated top-level diagram inlined the runtime and made the nested
+    /// one draw by coincidence. Answering from the write itself makes the flag exactly co-extensive with the
+    /// nodes the bootstrap will look for: no descent needs to know which containers swallow their bodies, and
+    /// a forged <c>pre.mermaid</c> inside <c>:::custom-html</c> — never written by this renderer — still
+    /// raises nothing (#177).
+    /// </remarks>
+    public bool WroteDiagram { get; private set; }
 
     public CharterContainerRenderer(string markdown, AnchorAssignment assignment)
         : this(markdown, assignment, pendingAnswers: null)
@@ -392,6 +422,11 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             renderer.Write("<pre class=\"mermaid\"");
             WriteId(renderer, obj.TryGetAttributes()?.Id);
             renderer.Write('>');
+
+            // Inside the guard on purpose: the flag means "a mermaid ELEMENT is in the output", which is the
+            // only thing the inlined runtime can act on. Writing the source with the markup suppressed leaves
+            // nothing for Mermaid to find, so it must not pull 3.5 MB of library in behind it.
+            WroteDiagram = true;
         }
 
         // Emit the Mermaid source EXACTLY as authored (the client library reads the element's textContent, so

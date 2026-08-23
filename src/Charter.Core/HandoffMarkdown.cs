@@ -18,17 +18,13 @@ namespace Charter.Core;
 /// The block model (<see cref="BlockDocument.Parse(string)"/>) is the single source of truth for what a
 /// block IS (invariant 3), so this seam never re-implements Markdig traversal: it parses once, then
 /// dispatches on each block's <see cref="BlockKind"/> in source order. A container's
-/// <see cref="Block.RawContent"/> spans the whole <c>:::</c> container, so the conversion strips the opening
-/// fence line (<c>^:::\w+</c>) and the closing fence line (<c>^:::\s*$</c>) and reshapes what remains.
+/// <see cref="Block.RawContent"/> spans the whole <c>:::</c> container, so the conversion strips its opening
+/// and closing fence lines — recognized by <see cref="DirectiveFence"/> at ANY fence length, the same
+/// vocabulary <see cref="QuestionResolution.QuestionBody"/> reads (Charter #172/#190) — and reshapes what
+/// remains.
 /// </remarks>
 public static class HandoffMarkdown
 {
-    // The opening directive fence — ":::" immediately followed by the container name (note/warn/diagram/…).
-    private static readonly Regex OpenFence = new(@"^:::\w+", RegexOptions.Compiled);
-
-    // The closing directive fence — a line that is nothing but ":::" and optional trailing whitespace.
-    private static readonly Regex CloseFence = new(@"^:::\s*$", RegexOptions.Compiled);
-
     // The opening fence's directive name — the first non-whitespace token after the ":::". Used only to name
     // an unrecognized directive in its flagged handoff line.
     private static readonly Regex OpenFenceName = new(@"^:::\s*(\S+)", RegexOptions.Compiled);
@@ -231,8 +227,33 @@ public static class HandoffMarkdown
     /// <summary>
     /// The lines between a container's fence pair. Normalizes line endings, drops surrounding blank lines so
     /// the fences are the first/last lines regardless of whether the span carried a trailing newline, then
-    /// strips the opening (<c>^:::\w+</c>) and closing (<c>^:::\s*$</c>) fence lines.
+    /// strips the opening and closing fence lines — recognized by <see cref="DirectiveFence"/>, the one fence
+    /// vocabulary this shares with <see cref="QuestionResolution.QuestionBody"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Any fence length</b> (Charter #190). This used to match <c>^:::\w+</c> and <c>^:::\s*$</c>, so a
+    /// container opened with FOUR colons had neither fence recognized and both survived into the flattened
+    /// body. That is not an exotic shape: <c>charter-format</c> tells an author to widen the fence whenever a
+    /// body line would itself start with <c>:::</c>, so the defect fired on the NESTING case — a callout
+    /// carrying a diagram, a <c>:::diff</c> OF a Charter plan — which is where it is least likely to be
+    /// noticed. #172 had already widened the <c>::::question</c> path (there the unreadable body cost the
+    /// handoff the question's id, title and target); this is the same widening for the prose containers, and
+    /// now through the same helper so they cannot drift apart again.
+    /// </para>
+    /// <para>
+    /// "Invariant 5 held anyway" was true of only two of the six containers. A note/warn flattens to a
+    /// blockquote, so its leaked <c>::::</c> rode behind a <c>&gt;</c> — luck, not design. A
+    /// <c>:::comparison</c> and a <c>:::custom-html</c> emit their inner lines VERBATIM, so the leak was a
+    /// live directive line at column zero in the plain-CommonMark handoff; and a <c>:::diff</c>'s leaked
+    /// opener sat where <see cref="TryUnwrapOwnFence"/> looks for the body's own <c>```diff</c> fence, so the
+    /// unwrap failed and the container's fence lines came out as diff CONTENT inside an escalated fence.
+    /// </para>
+    /// <para>
+    /// Only the FIRST and LAST line are tested, which is what keeps a colon run inside a body content: a
+    /// <c>:::diff</c>'s context lines arrive as <c>" :::note"</c> and stay exactly where the author put them.
+    /// </para>
+    /// </remarks>
     private static List<string> InnerLines(string rawContent)
     {
         var normalized = (rawContent ?? string.Empty)
@@ -251,12 +272,12 @@ public static class HandoffMarkdown
             lines.RemoveAt(0);
         }
 
-        if (lines.Count > 0 && OpenFence.IsMatch(lines[0]))
+        if (lines.Count > 0 && DirectiveFence.IsOpen(lines[0]))
         {
             lines.RemoveAt(0);
         }
 
-        if (lines.Count > 0 && CloseFence.IsMatch(lines[^1]))
+        if (lines.Count > 0 && DirectiveFence.IsClose(lines[^1]))
         {
             lines.RemoveAt(lines.Count - 1);
         }
