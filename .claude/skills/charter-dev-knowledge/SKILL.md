@@ -342,10 +342,19 @@ update run `charter skills install --force` too.
 - **`RenderBody`'s anchor pass iterates TOP-LEVEL nodes only** (`foreach (var node in document)`), so a
   container nested inside another — a `:::custom-html` or `:::diagram` inside a `::::note` or a list item —
   renders with **no id**. Anything walking the DOM for an anchor must treat that as "keep climbing", never as
-  "here is the anchor" (which yields `anchorId: null`) and never as "no anchor". Two more consequences worth
-  knowing before you file a bug: `hasDiagram` is computed from the same top-level loop, so a nested
-  `:::diagram` never gets the Mermaid runtime inlined and renders as its own source text; and a nested block
-  has no `SourceMap` entry of its own, so the enclosing block's line is the honest answer for it.
+  "here is the anchor" (which yields `anchorId: null`) and never as "no anchor". A nested block also has no
+  `SourceMap` entry of its own, so the enclosing block's line is the honest answer for it. **That loop stamps
+  anchors and nothing else — never derive a per-DOCUMENT fact from it.** `hasDiagram` was, and a nested
+  `:::diagram` therefore never inlined the Mermaid runtime and rendered as its own source text (#184). It now
+  comes from `CharterContainerRenderer.WroteDiagram`, set where the `<pre class="mermaid">` is actually
+  written — which is exactly co-extensive with the nodes the bootstrap looks for, needs no knowledge of which
+  containers swallow their bodies (`:::custom-html`, `:::diff`, `:::question`, an unknown `:::foo`), and
+  cannot re-widen #177 because a forged `pre.mermaid` is never written by that method.
+  **The same shape recurs one layer down and is NOT fixed** (#203): `BlockDocument.Parse` is top-level-only
+  too, so a `:::question` nested in a `::::note` renders as a real answerable form while `needsHuman` reads
+  false, `--fail-if-needs-human` exits 0, the flatten emits its raw JSON body as blockquoted prose, and
+  `QuestionResolution.Apply` can never fold the answer back. Fixing it is a format/anchor-model decision
+  (charter-architect), not a code change — check #203 before touching the block model.
 - **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
   handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener

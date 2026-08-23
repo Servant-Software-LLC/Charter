@@ -120,6 +120,35 @@ survive normalization) and was widened to match, so a question the record can RE
 `QuestionBodyParityTests` pins it **behaviourally** — it asserts the two verbs reach the same verdict on the
 same container, not that they call the same method, so a future re-fork fails however it is spelled.
 
+### 3.1 The same widening, for the other five containers (#190)
+
+The fix above single-sourced the **question body**. It did not single-source the **fence vocabulary**, so
+`HandoffMarkdown.InnerLines` kept its `^:::\w+` / `^:::\s*$` pair for `:::note`, `:::warn`, `:::comparison`,
+`:::diagram`, `:::diff` and `:::custom-html` — and a `::::` container therefore flattened with **both of its
+fence lines still in the body**. `charter-format` §"Two closers" tells an author to open with `::::` whenever
+a body line would itself start with `:::`, so this fired precisely on the nesting case.
+
+**"Invariant 5 held anyway" was true of two of the six.** A note/warn flattens to a blockquote, so its leaked
+`::::` rode behind a `>` and could not be read as a directive downstream — luck, not design. The other four
+were live breaches:
+
+| Container | What the leak did |
+|---|---|
+| `:::comparison`, `:::custom-html` | inner lines are emitted VERBATIM, so `::::comparison` / `::::custom-html` was a directive line at **column zero** in the plain-CommonMark handoff |
+| `:::diff` | the leaked opener sat where `TryUnwrapOwnFence` looks for the body's own ` ```diff ` fence, so the unwrap failed and the container's own fences came out as diff **content** inside an escalated ` ````diff ` block — #48/C2 through the back door, on the exact form the format skill documents |
+| `:::note` / `:::warn` | `> **Note:** ::::note` — cosmetic, and only because of the blockquote |
+
+`DirectiveFence` (`src/Charter.Core/DirectiveFence.cs`) is now the ONE definition of what opens and what
+closes a container — any fence length, leading whitespace tolerated — read by `QuestionResolution` and by
+`HandoffMarkdown.InnerLines` alike. Only a container span's **first and last** line are tested against it, so
+an indented colon run inside a `:::diff` body stays content.
+
+**Still top-level-only, deliberately.** This widens fence RECOGNITION, not the block model: `BlockDocument`
+still yields top-level blocks, so a container nested inside another is flattened as part of its parent (a
+`:::diagram` inside a `::::note` emerges as blockquoted directive text, not as a ` ```mermaid ` fence). For
+`:::question` that is a real defect with a needs-human consequence — filed as **#203**, and a
+format/anchor-model decision rather than a code fix.
+
 ## 4. `charter handoff --fail-if-needs-human`
 
 - **Writes its output, exits `2`** (§2.1). `HeadlessExitCodes` is shared with `charter headless`, because
