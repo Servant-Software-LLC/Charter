@@ -78,7 +78,7 @@ gets answered inline). **It may never replace a decision the plan already record
 not a way to un-answer one.
 
 A violating entry is **rejected**: `charter handoff` exits **1**, writes **nothing**, and names every
-violation on stderr. Five rules, each of which used to pass silently (#186, #188):
+violation on stderr. Six rules, each of which used to pass silently (#186, #188, #202):
 
 | Rejected | Because |
 |---|---|
@@ -87,7 +87,29 @@ violation on stderr. Five rules, each of which used to pass silently (#186, #188
 | a `bool` value that is not `true`/`false`, or a `number` value that is not a number | same rule; those two modes declare a value domain too |
 | `[]` or `null` | "this question was not answered here" is already spelled by **omitting the id**, so an empty value could only ever delete a decision |
 | `[""]` or any blank value | a blank string is what a mis-written `jq` produces, not a decision — it would flatten as `Answered:` with nothing after it |
+| a value carrying a **control character** other than `U+000A`, or `U+2028`/`U+2029` | the flatten is line-oriented, and an answer's value is emitted straight into it — a bare `\r` lands as `Answered: alpha␍beta`, a line terminator where you meant a character |
 | a value that differs from an `answer` the plan already records | a recorded decision is the living document's durable half; change it in the `.charter.md`, not from outside |
+
+### The one line break an answer may carry
+
+**`U+000A`, and nothing else.** A `free-text` answer may legitimately be several lines — the review page draws
+that question as a `<textarea>`, and a reviewer writing two sentences on two lines is using it as intended.
+Those newlines travel into the flatten intact: blocks are separated by a blank line, so an answer's own
+newlines can never carry a reader out of the question they belong to.
+
+Every other line break, and every other control character, is **refused rather than cleaned** — the rule is
+`char.IsControl` minus `U+000A`, plus `U+2028`/`U+2029`. Two reasons a value can be unusable:
+
+- readers **disagree** about whether it ends a line (CommonMark ends one on a lone `\r`; most line-splitters
+  do not), so a document carrying one has no single answer to *how many lines is this*; or
+- it is **invisible** in the plan the reviewer approved (a `\t` collapses to a space; an `ESC` opens an ANSI
+  escape sequence in anything that `cat`s the output).
+
+Cleaning it would be worse than refusing it: the plan would then record one text and the handoff assert
+another, with nothing anywhere saying so. The same rule guards the review page's answer route (a `400`) and
+`charter poll --apply` / `charter resolve` (exit `5`, answers preserved) — a control character is refused
+wherever an answer enters, so it never reaches a plan or a handoff. Note NBSP and the zero-width format
+characters are **not** refused: they occur in ordinary human text.
 
 **Two asymmetries, on purpose.**
 

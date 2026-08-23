@@ -1210,3 +1210,126 @@ reviewed anything (`handoff` never reads the review log — §10.8); that the ca
 plan"* — becomes **`charter review verify`**, a subcommand. That is acceptable where `headless`/`handoff` was
 not (§7, §10.0), and the difference is the whole reason: **reaching for the wrong one there fails SILENTLY**
 (exit `0`, no `plan.md`), whereas `charter verify <plan.charter.md>` is a **loud** guard naming the other verb.
+
+---
+
+# Rev 7 — an answer must be carryable as a line of text
+
+## 14. A raw carriage return in an answer reaches the handoff as a bare CR (#202)
+
+A `:::question` whose answer carried a raw CR flattened as `**Q: T** — Answered: alpha␍beta`. The cause is a
+seam, not an oversight: **an answer arrives JSON-ESCAPED inside the question body**, so `HandoffMarkdown.Emit`'s
+opening normalisation — which folds every CR and CRLF in the plan's own text, precisely so the block model and
+the emitter agree on `\n` — never sees it as a character. It becomes one only after the JSON decode, which
+happens later. Everything downstream of that decode is line-oriented and none of it was told.
+
+It is small and it sits underneath two things that assume otherwise:
+
+1. **It makes "only line endings differ" undecidable.** §13.3 had to make `charter verify` **decline to
+   diagnose** a `handoffSha256` mismatch whenever the file carries a lone CR, because `ReviewBaseStatus`'s
+   normalisation — which collapses one — would have blessed a genuine content change as a line-ending rewrite.
+   Safe, and it means the verifier goes quiet exactly where the content is unusual.
+2. **A bare CR in CommonMark handed to `plan-breakdown` is undefined at best.** The consumer sees a line
+   terminator where the reviewer meant a character.
+
+### 14.1 Refuse at ENTRY, never sanitise at emission
+
+**Sanitising at emission was rejected, and the argument is #187's.** A cleaned value would make the plan and
+the flatten assert *different text* for the same decision, with the difference recorded nowhere — the exact
+divergence the provenance stamps exist to make visible. `answersSha256` and `plan-sha256` would both still
+join, over a document whose answer nobody supplied. And it would put a **second** answer semantics at the
+emitter while `AnswerRules` compares values with `StringComparer.Ordinal` at the merge, so the two would
+disagree about what the answer *is* the moment a value needed cleaning.
+
+Note the emitter already collapses newlines in `rationale` (`Inline`), and that is **not** a precedent. A
+rationale is the author's prose, never round-tripped and never compared; collapsing it is lossless in meaning.
+An answer is a **decision value**: it is compared against `options`, tested for equality against the recorded
+inline answer (§9.1), echoed into the metadata line, and written back into the living document. A value
+sanitised on one leg and not another breaks the round trip.
+
+So the refusal sits where the value ENTERS, which is also consistent with §9.3's ruling that a bad answers file
+is a bad **invocation**.
+
+### 14.2 The rule — a category, with one carve-out
+
+> An answer value may carry **U+000A** and no other character `char.IsControl` is true of (C0 U+0000–U+001F,
+> DEL U+007F, C1 U+0080–U+009F), and neither **U+2028** nor **U+2029**.
+
+**Naming `\r` alone would be re-litigated the first time somebody pasted a form feed**, so the rule is a
+category and the boundary is argued from harm. Every member commits at least one of two:
+
+- **Contested line status.** Readers *disagree* about whether the character ends a line — CommonMark ends one
+  on a lone CR, `string.Split('\n')` does not, `ReviewBaseStatus` collapses it, `charter verify` refuses to. A
+  document carrying one has no single answer to *how many lines is this*, which is the whole of §13.3. CR, VT,
+  FF and NEL sit here — and so do U+2028/U+2029, which are line terminators to JavaScript and to
+  `string.ReplaceLineEndings` while being `Zl`/`Zp` rather than `Cc`. **That is why they are named alongside
+  the category rather than assumed inside it.**
+- **Invisibility.** The character is not what the reviewer saw. A TAB collapses to a space wherever the plan is
+  rendered, so the plan and the flatten look identical while differing, and it silently defeats the Ordinal
+  membership test §9.4's rules are built on. ESC is worse: it opens an ANSI escape sequence in anything that
+  `cat`s the handed-off `plan.md`. A review artifact whose bytes say something other than what the human
+  approved is not a review artifact.
+
+**Where it stops, deliberately.** NBSP (`Zs`) and the zero-width format characters (`Cf`, the bidi overrides
+included) are **not** refused. They occur in honest human text — NBSP in "10 km", the bidi controls throughout
+right-to-left prose — and refusing them would refuse real answers. The bidi-override display hazard is real and
+strictly **wider** than answers: it applies to every string a plan carries (`title`, an option label, prose), so
+it is a format-wide question, not this one.
+
+### 14.3 U+000A is legitimate, and that decides the size of the fix
+
+**Yes, a newline in a free-text answer is legitimate**, and the evidence is not an inference — it is a
+**documented, shipped affordance**. The renderer draws a `free-text` question as a **`<textarea>`**, and
+`skills/charter/references/review-loop.md` tells every reviewer, in those words: *"In a free-text answer, Enter
+is a newline and Ctrl/⌘+Enter saves."* Refusing `U+000A` would refuse an answer Charter's own reviewer
+documentation instructs people to write, which is a worse bug than the one being fixed.
+
+It is also **safe**, which is why it needs no special carriage into the line-oriented flatten:
+
+- `Emit` joins blocks with a blank line, so an answer's extra newlines can never carry a reader out of the
+  question they belong to;
+- the answered lead and the metadata line stay one CommonMark paragraph, where the extra `\n` is a soft break;
+- `charter verify`'s `LeadAbove` already walks back to the block's blank line rather than looking one line up —
+  and says in its own comment that a title or an answer value may contain a newline.
+
+And the browser cannot produce anything else: a `<textarea>`'s API value is CRLF-normalised to LF, and the
+"Something else" write-in is an `<input type="text">`, whose value sanitisation strips CR and LF outright. So
+the rule refuses nothing a reviewer at the shipped page can type.
+
+### 14.4 Three gates, one predicate
+
+`AnswerRules.Malformation` is the single reason-producing predicate (`IsForbidden` is the rule itself), read by
+every place a value can enter:
+
+| Gate | Where | Result |
+|---|---|---|
+| submit | `POST /api/{key}/answers` | **400** naming the code point; nothing queued |
+| invocation | `AnswerRules.Check` (so `CheckAll` and `Merge`) | `charter handoff` exits **1**, writes nothing (§9.3) |
+| write | `QuestionResolution.ApplyToFile` | `MalformedAnswerException` ⇒ `poll --apply` / `resolve` exit **5**, answers preserved |
+
+**The write gate is not redundant with the submit gate**, and the reason is worth keeping: `charter resolve`
+reads the durability sidecar **directly** — no HTTP route in the picture at all — and `ReviewSidecar.Rehydrate`
+restores whatever a *previous* Charter queued, including from before this rule existed. The write is the moment
+a character becomes permanent, so that is where the last refusal belongs.
+
+`QuestionResolution.Apply` (the pure kernel) also **skips** such a question, as the in-library guarantee
+mirroring §9.4's `Merge` fallback. That skip is deliberately not the whole defence: a silent skip returns the
+markdown byte-identical, and a byte-identical write is exactly what both callers score as a successful apply
+before committing the answer away — §11.1's destruction, one channel over.
+
+**The server gate is not a breach of §9.4's Asymmetry 1.** That principle is about *authority*: a human at the
+page may exceed the declared `options`, an invocation may not. A control character is nobody's decision — it is
+a malformation of the **carrier**, and a reviewer's authority is over what they decide, not over whether the
+decision is expressible as a line of text. The route still does no membership or mode checking.
+
+### 14.5 What this does NOT do
+
+- **`QuestionSpec` is unchanged.** A hand-authored `"answer": ["a\rb"]` in a `.charter.md` still parses, still
+  renders, and still flattens with the CR. The claim this closes is precisely *no answer that entered through
+  Charter can carry one* — the three channels above are all of them. Making the **format** refuse a control
+  character in a plan's own strings is a different and wider decision: it would have to reach `title`, `options`
+  and `recommended`, which land in the same emitted lines, and it would turn existing plans into
+  malformed-question placeholders and flip their `needsHuman`. That belongs to whoever owns the format, and is
+  **filed as #212**.
+- **No sanitising anywhere.** No emitter escapes, no normalising, no best-effort cleanup. A value is either
+  carryable or refused.

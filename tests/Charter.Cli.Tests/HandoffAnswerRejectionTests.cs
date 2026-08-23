@@ -119,6 +119,46 @@ public class HandoffAnswerRejectionTests : IDisposable
     }
 
     [Fact]
+    public void ACarriageReturnInAFreeTextAnswer_ExitsOneAndWritesNothing()
+    {
+        // Charter #202, through the real binary. A free-text question declares no options, so #186's
+        // membership check has nothing to test against and every shape check passes -- which is precisely why
+        // free-text is where a control character lands. The refusal is the same class as every other bad
+        // --answers entry: exit 1, nothing written, named on stderr.
+        const string openFreeText =
+            "---\ncharter-format-version: 1\n---\n\n# Plan\n\n:::question\n"
+            + "{\"id\": \"why\", \"title\": \"Why this approach?\", \"mode\": \"free-text\", "
+            + "\"target\": \"human\"}\n:::\n";
+
+        var (exit, _, stderr) = Run(openFreeText, "{\"why\": [\"alpha\\rbeta\"]}");
+
+        Assert.Equal(1, exit);
+        Assert.False(File.Exists(Out()), "a bare CR must never reach the handed-off document.");
+        Assert.Contains("'why'", stderr, StringComparison.Ordinal);
+        Assert.Contains("U+000D", stderr, StringComparison.Ordinal);
+
+        // And the reason itself must be printable: echoing the raw CR would tear the very line explaining it.
+        Assert.DoesNotContain('\r', stderr.Replace("\r\n", "\n", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AMultiLineFreeTextAnswer_IsAcceptedAndFlattensIntact()
+    {
+        // The boundary Charter #202 draws. LF is the one line break an answer may carry: the review page gives
+        // a free-text question a <textarea>, and Emit joins blocks with a blank line so the extra newline can
+        // never carry a reader out of the question it belongs to.
+        const string openFreeText =
+            "---\ncharter-format-version: 1\n---\n\n# Plan\n\n:::question\n"
+            + "{\"id\": \"why\", \"title\": \"Why this approach?\", \"mode\": \"free-text\", "
+            + "\"target\": \"human\"}\n:::\n";
+
+        var (exit, _, _) = Run(openFreeText, "{\"why\": [\"one\\ntwo\"]}", "--fail-if-needs-human");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("Answered: one\ntwo", File.ReadAllText(Out()), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HandoffHelp_SaysWhatMakesAnAnswersFileUnusable()
     {
         var (_, stdout, _) = CharterCliRunner.Run("handoff", "--help");

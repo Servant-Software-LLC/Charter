@@ -625,6 +625,43 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   - **Separately** (a different axis — the *question's* declared schema, not the answer's provenance): a
     **`free-text`** question can only be checked for SHAPE (one value, not blank), because it declares no
     options to test against. Do not hunt for one rule behind both.
+- **AN ANSWER VALUE MAY CARRY `U+000A` AND NO OTHER CONTROL CHARACTER** (#202), and neither `U+2028` nor
+  `U+2029`. An answer arrives **JSON-escaped** inside the `:::question` body, so `HandoffMarkdown.Emit`'s
+  opening line-ending fold — which catches every CR in the plan's own text — never sees it as a character:
+  it becomes one only after the JSON decode. So a raw CR flattened as `Answered: alpha␍beta`, a line
+  terminator where the reviewer meant a character.
+  - **Refused at ENTRY, never sanitised at emission.** Cleaning the value would make the plan and the flatten
+    assert different text for one decision with the difference recorded nowhere — the #187 divergence — and
+    would put a second answer semantics at the emitter while `AnswerRules` compares values `Ordinal` at the
+    merge. (`Inline`'s newline collapse on `rationale` is NOT a precedent: a rationale is prose, never
+    round-tripped and never compared; an answer is a decision value that is.)
+  - **The rule is a CATEGORY** — everything `char.IsControl` covers (C0, DEL, C1) except `U+000A`, plus the
+    two `Zl`/`Zp` separators, which are line terminators to JS and `ReplaceLineEndings` while NOT being `Cc`,
+    hence named alongside. Naming `\r` alone would be re-litigated the first time somebody pasted a form feed.
+    It **stops** at NBSP and the `Cf` format characters (bidi overrides included): those occur in honest human
+    text, and the bidi hazard is strictly WIDER than answers.
+  - **`U+000A` IS LEGITIMATE, and that is what keeps the fix small.** Not an inference — `review-loop.md`
+    tells reviewers *"In a free-text answer, Enter is a newline and Ctrl/⌘+Enter saves"*, and the renderer
+    draws `free-text` as a `<textarea>`. Refusing LF would refuse an answer Charter's own reviewer
+    documentation instructs people to write. It is also
+    safe: `Emit` joins blocks with a blank line so extra newlines never leave the question, and `verify`'s
+    `LeadAbove` already walks back to that blank line rather than one line up. The browser cannot produce
+    anything else (a textarea's API value is CRLF→LF; the write-in `<input type="text">` strips CR and LF).
+  - **THREE gates, ONE predicate** (`AnswerRules.Malformation` / `IsForbidden`): the answer route **400**s,
+    `AnswerRules.Check` makes `handoff` exit **1** with nothing written, and
+    `QuestionResolution.ApplyToFile` throws `MalformedAnswerException` so `poll --apply`/`resolve` exit **5**
+    with the answers preserved. **The write gate is not redundant**: `charter resolve` reads the sidecar
+    directly with no HTTP route in the picture, and `Rehydrate` restores whatever a PRE-#202 Charter queued.
+    `Apply` (the pure kernel) also skips — the in-library guarantee — but a silent skip alone would be #203's
+    destruction, since a byte-identical write scores as a successful apply and commits the answer away.
+  - **The server gate does not breach the WHO-SUPPLIED-IT rule above.** That rule is about *authority*; a
+    control character is nobody's decision — it is a malformation of the CARRIER. The route still does no
+    membership or mode checking.
+  - **Known residue, deliberate:** `QuestionSpec` is unchanged, so a HAND-AUTHORED `"answer": ["a\rb"]` in a
+    `.charter.md` still parses, renders and flattens with the CR. The claim closed is *no answer that entered
+    through Charter carries one*. Making the FORMAT refuse control characters in a plan's own strings would
+    have to reach `title`/`options`/`recommended` (same emitted lines) and would turn existing plans into
+    malformed-question placeholders — a wider decision, filed as #212.
   - **Chose refuse-the-override over #187's record-the-source.** Recording makes an override auditable, not
     safe: the flatten would still assert the overriding value in a side file nobody has to read. The residual
     hazard — a refusal leaves the PREVIOUS run's `plan.md`, and `plan-sha256` cannot expose that (same plan,

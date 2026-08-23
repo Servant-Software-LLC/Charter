@@ -528,7 +528,9 @@ internal static class CharterCommands
                 + "An entry is REJECTED -- exit 1, NOTHING written, every violation named on stderr -- when its "
                 + "value is not one of a select question's `options`, is the wrong count for the question's "
                 + "`mode`, is empty/null (omit the id instead; an empty value is not a way to un-answer a "
-                + "question) or blank, or would REPLACE a decision the plan already records inline. It may fill "
+                + "question) or blank, carries a CONTROL character (U+000A is the only line break an answer may "
+                + "hold -- a bare CR or a form feed would put a line terminator into the handed-off CommonMark), "
+                + "or would REPLACE a decision the plan already records inline. It may fill "
                 + "an unanswered question and may re-state a recorded answer verbatim; it may not overwrite one.",
         };
         var failIfNeedsHumanOption = new Option<bool>("--fail-if-needs-human")

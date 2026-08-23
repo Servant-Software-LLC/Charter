@@ -36,10 +36,19 @@ public static class QuestionResolution
     /// Splice each answer in <paramref name="answersById"/> (question id -&gt; the selected/submitted value(s),
     /// the same shape as <c>Charter.Server.Answer.Values</c>) into the matching <c>:::question</c> block's JSON
     /// body as an <c>answer</c> array, returning the rewritten markdown. A question whose id is not in the map,
-    /// or whose body is not parseable JSON, is left untouched; every non-question byte of
-    /// <paramref name="markdown"/> (prose, other blocks, front matter, fences) is preserved verbatim.
+    /// whose body is not parseable JSON, or <b>whose values carry a character
+    /// <see cref="AnswerRules.IsForbidden"/> refuses</b> (Charter #202) is left untouched; every non-question
+    /// byte of <paramref name="markdown"/> (prose, other blocks, front matter, fences) is preserved verbatim.
     /// Deterministic in its inputs.
     /// </summary>
+    /// <remarks>
+    /// The control-character skip is the in-library guarantee, mirroring <see cref="AnswerRules.Merge"/>'s: a
+    /// value the rules refuse never becomes the recorded answer, however it reaches the kernel. It is
+    /// deliberately NOT the whole defence — a silent skip returns the markdown byte-identical, which a caller
+    /// scores as a successful apply and follows by committing the answer away (Charter #203). That is why
+    /// <see cref="ApplyToFile"/> refuses LOUDLY, before any write, with
+    /// <see cref="MalformedAnswerException"/>.
+    /// </remarks>
     public static string Apply(string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>> answersById)
     {
         if (string.IsNullOrEmpty(markdown) || answersById is null || answersById.Count == 0)
@@ -98,6 +107,13 @@ public static class QuestionResolution
     ///   <see cref="Apply"/> would splice the answer into BOTH — a silent double-write. This throws
     ///   <see cref="DuplicateQuestionIdException"/> BEFORE writing anything, so the plan is left untouched and
     ///   the caller can preserve the queued answers and report a clear error.</item>
+    ///   <item><b>Control-character refusal.</b> An answer value carrying a character
+    ///   <see cref="AnswerRules.IsForbidden"/> refuses is not writable into a plan (Charter #202): a bare CR
+    ///   written here reaches every flatten of this plan for good, and writing a CLEANED value would make the
+    ///   plan and the reviewer's decision disagree about the answer's text with the difference recorded
+    ///   nowhere. This throws <see cref="MalformedAnswerException"/> BEFORE writing, so both callers preserve
+    ///   the answers and return <c>ReviewExitCodes.ApplyFailed</c> rather than reporting a byte-identical
+    ///   no-op as a successful apply and committing the decision away.</item>
     ///   <item><b>Concurrent-edit precondition.</b> The atomic rename prevents a torn read, not a lost update
     ///   versus an external editor (the drafting agent's own <c>Edit</c>/<c>Write</c>, or a second
     ///   <c>resolve</c>/<c>poll --apply</c>). This captures the content read at the start and, just before the
@@ -113,6 +129,19 @@ public static class QuestionResolution
         }
 
         var markdown = File.ReadAllText(planPath);
+
+        // Refuse an UNWRITABLE answer BEFORE any write (Charter #202). Apply would skip it silently, which
+        // returns the plan byte-identical -- and a byte-identical write is what both callers score as a
+        // successful apply before committing the answer out of the store and the sidecar (Charter #203).
+        // Ordered by id so a batch carrying two unwritable answers always names the same one first: a refusal
+        // a caller cannot reproduce is a refusal they cannot fix.
+        foreach (var entry in answersById.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            if (AnswerRules.Malformation(entry.Value) is { } malformation)
+            {
+                throw new MalformedAnswerException(entry.Key, malformation);
+            }
+        }
 
         // Refuse a duplicate-id plan BEFORE any write: applying an answer to two blocks sharing an id is a
         // silent double-write, so this is a review-time error, not a resolution to guess at.
@@ -471,6 +500,13 @@ public static class QuestionResolution
 
         var id = ReadId(obj);
         if (id is null || !answersById.TryGetValue(id, out var values))
+        {
+            return null;
+        }
+
+        // A value the character rule refuses never becomes the recorded answer (Charter #202). ApplyToFile
+        // refuses the whole batch before this is reached; this is the guarantee for any other caller.
+        if (AnswerRules.Malformation(values) is not null)
         {
             return null;
         }

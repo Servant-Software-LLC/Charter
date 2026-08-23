@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace Charter.Core;
 
@@ -112,6 +113,106 @@ public static class AnswerRules
     }
 
     /// <summary>
+    /// <b>The ONE character rule an answer value must satisfy</b> (Charter #202): it may carry
+    /// <c>U+000A</c> and nothing else that <see cref="char.IsControl(char)"/> is true of, and neither
+    /// <c>U+2028</c> nor <c>U+2029</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The defect.</b> An answer arrives JSON-ESCAPED inside a <c>:::question</c> body, so
+    /// <see cref="HandoffMarkdown.Emit"/>'s source normalization — which folds every CR and CRLF in the plan's
+    /// own text — never sees it as a character; it becomes one only after the JSON decode, which happens
+    /// later. A raw carriage return therefore reached the flatten as <c>Answered: alpha&lt;CR&gt;beta</c>: a
+    /// line terminator where the reviewer meant a character, inside plain CommonMark handed to a consumer.
+    /// </para>
+    /// <para>
+    /// <b>U+000A is the one carve-out, and it is earned.</b> The renderer draws a <c>free-text</c> question as
+    /// a <c>&lt;textarea&gt;</c>, so a reviewer writing two sentences on two lines is using the affordance the
+    /// product gave them; refusing their answer would be a worse bug than the one this closes. It is also
+    /// SAFE in a way no other line break is: <see cref="HandoffMarkdown.Emit"/> joins blocks with a blank
+    /// line, so extra newlines can never carry a reader out of the question they belong to, and
+    /// <c>charter verify</c>'s lead scan already walks back to that blank line rather than one line up.
+    /// </para>
+    /// <para>
+    /// <b>Why the rule is a CATEGORY and not the carriage return alone.</b> A rule naming <c>\r</c> would be
+    /// re-litigated the first time somebody pasted a form feed. Two harms decide the boundary, and every
+    /// member of the set commits at least one:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description><b>Contested line status.</b> Readers DISAGREE about whether the character ends a
+    ///     line — CommonMark ends one on a lone CR, <c>string.Split('\n')</c> does not,
+    ///     <c>ReviewBaseStatus</c> collapses it, <c>charter verify</c> refuses to. A document carrying one has
+    ///     no single answer to <i>how many lines is this</i>, which is precisely why <c>verify</c> declines to
+    ///     diagnose a hash mismatch over a lone CR: normalising it would bless a real content change as a
+    ///     line-ending rewrite. CR, VT, FF and NEL all sit here, and so do U+2028/U+2029 — line terminators to
+    ///     JavaScript and to <c>string.ReplaceLineEndings</c> while being <c>Zl</c>/<c>Zp</c> rather than
+    ///     <c>Cc</c>, which is exactly why they must be named alongside the category rather than assumed
+    ///     inside it.</description></item>
+    ///   <item><description><b>Invisibility.</b> The character is not something the reviewer saw. A TAB
+    ///     collapses to a space wherever the plan is rendered, so the plan and the flatten look identical
+    ///     while differing, and it silently defeats the <see cref="StringComparer.Ordinal"/> membership test
+    ///     the option rules are built on. NUL, ESC and DEL are worse: an ESC is the start of an ANSI escape
+    ///     sequence in anything that <c>cat</c>s the handed-off <c>plan.md</c>. A review artifact whose bytes
+    ///     say something other than what the human approved is not a review artifact.</description></item>
+    /// </list>
+    /// <para>
+    /// <b>Where it deliberately stops.</b> NBSP (<c>Zs</c>) and the zero-width format characters
+    /// (<c>Cf</c> — including the bidi overrides) are NOT refused. They occur in honest human text: NBSP in
+    /// "10 km", the bidi controls throughout right-to-left prose, and refusing them would refuse real answers
+    /// from real reviewers. The bidi-override display hazard is real and strictly WIDER than answers — it
+    /// applies to every string the plan carries — so it belongs to whoever settles that for the format, not
+    /// to a fix for this.
+    /// </para>
+    /// </remarks>
+    public static bool IsForbidden(char value)
+        => value != '\n' && (char.IsControl(value) || value is '\u2028' or '\u2029');
+
+    /// <summary>
+    /// Why <paramref name="values"/> cannot be carried as an answer, or <see langword="null"/> when every one
+    /// of them is writable. The sentence names the first offending character by code point and echoes the
+    /// value with its control characters ESCAPED — never raw, because this text is printed to a console and to
+    /// an HTTP response body, and echoing the character being complained about would tear the line explaining
+    /// it.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so that all three gates on an answer's way into a plan read ONE predicate: the review server's
+    /// answer route (refusing at submit), <see cref="Check"/> (refusing an <c>--answers</c> entry), and
+    /// <see cref="QuestionResolution.ApplyToFile"/> (refusing the write, which is the only one a queue
+    /// rehydrated from a pre-#202 sidecar can still reach). A second implementation of the rule would let the
+    /// three disagree about the same value.
+    /// </remarks>
+    public static string? Malformation(IReadOnlyList<string>? values)
+    {
+        if (values is null)
+        {
+            return null;
+        }
+
+        foreach (var value in values)
+        {
+            if (value is null)
+            {
+                continue;
+            }
+
+            foreach (var character in value)
+            {
+                if (IsForbidden(character))
+                {
+                    return $"the value \"{Escape(value)}\" contains {Name(character)}. An answer is emitted "
+                        + "into a LINE-ORIENTED document, so the only line break it may carry is U+000A: "
+                        + "readers disagree about whether any other one ends a line -- which is what makes "
+                        + "\"do these two files differ only in line endings?\" unanswerable -- and every "
+                        + "remaining control character is invisible in the plan the reviewer approved. Remove "
+                        + "it, or use U+000A if a line break was meant.";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// The answer a <c>:::question</c> will actually flatten with: the <c>--answers</c> entry when the file
     /// carries this id AND that entry passes <see cref="Check(HeadlessQuestion, IReadOnlyList{string})"/>,
     /// else the answer recorded INLINE in the plan.
@@ -217,6 +318,16 @@ public static class AnswerRules
                 + "an empty one can only ever delete a decision that was already recorded.");
         }
 
+        // FIRST among the value's own rules (Charter #202). A value carrying a control character also breaks
+        // the blank rule (`["\r"]` is whitespace) and the membership rule (`"Post\rgres"` is not an option),
+        // and both of those sentences are wrong about the cause -- while the membership one would echo the RAW
+        // character into a line printed to a console. Reporting the character first gives the caller the
+        // actionable sentence and keeps the report printable.
+        if (Malformation(supplied) is { } malformation)
+        {
+            return Reject(malformation);
+        }
+
         foreach (var value in supplied)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -289,4 +400,48 @@ public static class AnswerRules
     /// <summary>Values as a readable, deterministic list for a stderr line.</summary>
     private static string Quote(IReadOnlyList<string> values)
         => string.Join(", ", values.Select(value => $"\"{value}\""));
+
+    /// <summary>
+    /// What to call <paramref name="character"/> in a message. The code point is always present — it is the
+    /// only unambiguous handle, and it is what a caller greps their generator for — with a name in front of it
+    /// for the five a human actually meets. Everything else keeps the code point alone rather than inviting a
+    /// lookup table of sixty-odd control names nobody will read.
+    /// </summary>
+    private static string Name(char character) => character switch
+    {
+        '\t' => "a tab (U+0009)",
+        '\f' => "a form feed (U+000C)",
+        '\r' => "a carriage return (U+000D)",
+        '\u2028' => "a line separator (U+2028)",
+        '\u2029' => "a paragraph separator (U+2029)",
+        _ => $"a control character (U+{(int)character:X4})",
+    };
+
+    /// <summary>
+    /// <paramref name="value"/> with every line break and control character rendered as an escape, so the
+    /// echo occupies one line and carries no character that can move a terminal's cursor. U+000A is escaped
+    /// too even though it is permitted: this text is a single reported line, and a legal newline in the value
+    /// would still break it in half.
+    /// </summary>
+    private static string Escape(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            builder.Append(character switch
+            {
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                '\f' => "\\f",
+                '\v' => "\\v",
+                '\0' => "\\0",
+                _ => char.IsControl(character) || character is '\u2028' or '\u2029'
+                    ? $"\\u{(int)character:X4}"
+                    : character.ToString(),
+            });
+        }
+
+        return builder.ToString();
+    }
 }
