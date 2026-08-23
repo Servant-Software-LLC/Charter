@@ -9,8 +9,8 @@ namespace Charter.Core.Tests;
 /// <c>:::question</c> carries its decision INLINE (<c>QuestionSpec.Answer</c>), not in an external answers
 /// dict. Before the fix, <see cref="HandoffMarkdown.EmitQuestion"/> read only the external dict, so a
 /// resolved <c>.charter.md</c> flattened as ALL-QUESTIONS-OPEN and every human decision was silently lost.
-/// The fix: when the dict lacks the id, fall back to the inline <c>answer</c>. The external dict, when it
-/// does carry the id, still takes precedence.
+/// The fix: when the dict lacks the id, fall back to the inline <c>answer</c>. When it DOES carry the id, it
+/// may fill an unanswered question — but since Charter #186 it may never replace an answered one.
 ///
 /// Class trait (exact literal for the coverage guardrail): [Trait("Category","HandoffInlineAnswer")].
 /// </summary>
@@ -76,26 +76,36 @@ public class HandoffInlineAnswerTests
     }
 
     [Fact]
-    public void Emit_ExternalDict_TakesPrecedenceOverInlineAnswer()
+    public void Emit_ExternalDict_MayNotReplaceTheInlineAnswer()
     {
-        // When BOTH are present, the external answers dict wins (the freshly-drained answer is authoritative
-        // over whatever was previously written inline).
+        // REWRITTEN, not extended (Charter #186). This test used to assert the opposite — "the external
+        // answers dict wins, the freshly-drained answer is authoritative" — and that premise was the defect:
+        // nothing about an out-of-band file makes it fresher than the plan, and a channel that can silently
+        // replace a recorded decision makes the living document's durability claim false. "DynamoDB" is a
+        // perfectly legal option here; it is the REPLACEMENT that is refused, and the flatten keeps saying
+        // what the plan says.
         var answers = new Dictionary<string, IReadOnlyList<string>> { ["db"] = new[] { "DynamoDB" } };
 
         var output = HandoffMarkdown.Emit(ResolvedQuestionDoc, answers);
 
-        Assert.Contains("Answered:", output);
-
-        // Precedence is asserted on the ANSWERED LINE itself, not on the whole output: since Charter #48/C3 the
-        // question's `options` are preserved beneath an answered question too (they are the rationale — the
-        // REJECTED option is what lets the breakdown guard against reaching for it), so "Postgres" legitimately
-        // still appears in the document as an OPTION. What must not happen is Postgres surviving as the ANSWER.
         var answered = AnsweredLine(output);
-        Assert.Contains("DynamoDB", answered);
-        Assert.DoesNotContain("Postgres", answered);
+        Assert.Contains("Postgres", answered);
+        Assert.DoesNotContain("DynamoDB", answered);
 
-        // ...and the rejected option is still on the record, exactly once, as an option.
+        // ...and the un-chosen option is still on the record, as an option (Charter #48/C3).
         Assert.Contains("options: `Postgres`, `DynamoDB`", output);
+    }
+
+    [Fact]
+    public void Emit_ExternalDict_StillFillsAQuestionThePlanLeftOpen()
+    {
+        // The half of the old precedence rule that survives, and the one `--answers` exists for: a question
+        // with no inline decision takes the supplied one.
+        var answers = new Dictionary<string, IReadOnlyList<string>> { ["db"] = new[] { "DynamoDB" } };
+
+        var output = HandoffMarkdown.Emit(OpenQuestionDoc, answers);
+
+        Assert.Contains("DynamoDB", AnsweredLine(output));
     }
 
     /// <summary>The single <c>**Q: … — Answered: …**</c> line of a flattened handoff.</summary>

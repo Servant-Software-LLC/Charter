@@ -298,8 +298,21 @@ public sealed record HeadlessQuestion(
     int SourceLine,
     string? Recommended = null)
 {
-    /// <summary>True when the question carries a non-empty answer — the on-disk resolved marker.</summary>
-    public bool Answered => Answer.Count > 0;
+    /// <summary>
+    /// True when the question carries an answer that records a DECISION — at least one value, none of them
+    /// blank. The predicate is <see cref="AnswerRules.IsDecision"/>, shared with the renderer's
+    /// resolved-question display and the flatten's Answered/Open branch, because a field read in three places
+    /// that means three things is the defect one level up.
+    /// </summary>
+    /// <remarks>
+    /// It used to be <c>Answer.Count &gt; 0</c> — counting elements, not content — so <c>[""]</c> reported the
+    /// question answered and any strict gate built on it certified a blank decision as a made one
+    /// (Charter #188). Narrowing it changes what a published field MEANS, which is a
+    /// <see cref="HeadlessRecord.Schema"/> bump by the constant's own rule — except that schema 2 has not
+    /// shipped: it was raised from 1 by Charter #173 AFTER 0.24.0 was released, so no consumer has ever seen
+    /// a schema-2 record and this rides the same 2 rather than forcing a 3.
+    /// </remarks>
+    public bool Answered => AnswerRules.IsDecision(Answer);
 }
 
 /// <summary>What Charter itself noticed about the plan — the "machine-generated review notes" of Charter #7.</summary>

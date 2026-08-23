@@ -130,7 +130,7 @@ The rows worth reading twice are `options: []`, `recommended`, `sourceLine` and 
 | `recommended: null` | The author **considered a lean and declined to give one**. | "no lean was possible" |
 | `recommended` **key absent** | The producing Charter predates the field (< #142). Never emitted by a current build, which always writes the key. | "the author declined a lean" |
 | `sourceLine: null` on a note | The note is **document-wide** (a missing marker, a duplicate id). | "Charter could not find the line" |
-| `answered: false` | **No inline `answer` array with a non-empty value**, at the moment the record was built. | "unresolved at handoff" — an `--answers` file supplied to `charter handoff` is not visible here at all |
+| `answered: false` | **No inline `answer` that records a DECISION**, at the moment the record was built — the key is absent, the array is empty, or *any* value in it is blank. `[""]` is **not** an answer. | "unresolved at handoff" — an `--answers` file supplied to `charter handoff` is not visible here at all |
 | `notes: []` | Charter raised no diagnostic **of a kind it knows**. | "the plan is clean" — a *newer* Charter may know kinds this one did not |
 
 ### `notes[].kind` — the tokens, and the rule for one you do not know
@@ -153,6 +153,13 @@ The last two arrived in `schema` 2 and are the reason it is 2. Before them, `not
 "Charter noticed nothing" — `charter handoff` printed both lints to stderr with no matching note kind — so
 the query *"did Charter raise diagnostics nobody read"* was silently unanswerable. Adding them changes what
 an existing field means, which is a bump by the record's own rule.
+
+**`answered` also narrowed inside `schema` 2** (#188). It used to count array ELEMENTS, so `[""]` reported
+`"answered": true` and the flattened plan emitted `Answered:` with nothing after it — a blank certified as a
+decision. It now means *the array records a decision*: at least one value, none of them blank. That is
+another change of an existing field's meaning, and it would have forced a `schema` 3 had 2 already shipped —
+but 2 was raised **after** 0.24.0 was released, so **no consumer has ever seen a schema-2 record** and both
+changes ride the same number. Do not read that as licence to change a meaning under a released version.
 
 These are **not** auto-generated review comments — synthesizing review prose is your job, not Charter's.
 

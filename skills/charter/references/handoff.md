@@ -67,9 +67,43 @@ the `charter-format` skill. Reach for `handoff` when you're feeding the headless
 `--answers` is **optional**. A `:::question` already resolved **inline** — its `answer` filled in by
 `charter poll --apply` / `charter resolve` during review — hands off as **Answered** on its own, because
 `handoff` reads the inline answer. `--answers` is for questions **not** already answered inline: supply it
-to resolve them (a matching `id` in `--answers` takes precedence over an inline answer). Omit it, and any
-question with no inline answer hands off as an **open question** — a legitimate, common case when the human
-hasn't decided yet.
+to resolve them. Omit it, and any question with no inline answer hands off as an **open question** — a
+legitimate, common case when the human hasn't decided yet.
+
+### What an `--answers` entry may do — and what it may not
+
+**It may only ADD information.** It fills a question the plan left open, and it may re-state a recorded
+answer verbatim (so a generator that supplies its whole answer set every run keeps working once a question
+gets answered inline). **It may never replace a decision the plan already records**, and an empty value is
+not a way to un-answer one.
+
+A violating entry is **rejected**: `charter handoff` exits **1**, writes **nothing**, and names every
+violation on stderr. Five rules, each of which used to pass silently (#186, #188):
+
+| Rejected | Because |
+|---|---|
+| a value that is not one of a `single`/`multi` question's `options` | the flattened plan would assert an answer that is not in its own options list, printed on the very next line |
+| the wrong number of values for the `mode` (`single`/`bool`/`number`/`free-text` take exactly one; `multi` takes one or more) | the mode is the question's declared shape |
+| a `bool` value that is not `true`/`false`, or a `number` value that is not a number | same rule; those two modes declare a value domain too |
+| `[]` or `null` | "this question was not answered here" is already spelled by **omitting the id**, so an empty value could only ever delete a decision |
+| `[""]` or any blank value | a blank string is what a mis-written `jq` produces, not a decision — it would flatten as `Answered:` with nothing after it |
+| a value that differs from an `answer` the plan already records | a recorded decision is the living document's durable half; change it in the `.charter.md`, not from outside |
+
+**Two asymmetries, on purpose.**
+
+- **An INLINE `answer` is never checked against `options`; a supplied one is.** The rendered form appends a
+  "Something else" write-in to every select (#109), so a *reviewer's* answer may legitimately fall outside
+  the options and `charter-format` states plainly that you must not validate `answer ⊆ options`. An
+  `--answers` file is **not a reviewer at a page** — it is a machine input with no human behind it, and the
+  flatten already tells a delegated agent to *choose one of the options above*. If you genuinely need a
+  write-in, record it **inline**, where every other decision lives.
+- **A `free-text` question can only be checked for SHAPE.** It declares no `options`, so there is no set to
+  test against and the checkable facts reduce to *one value, not blank*. The rule is *a supplied answer must
+  be something the question's declared shape can accept*; `free-text` declares less shape than `single`.
+
+If you need to change a recorded decision, change it where it lives: re-answer in review and fold it in with
+`charter poll --apply` / `charter resolve`, or edit the `.charter.md`. Both write atomically and both refuse
+a plan they would corrupt.
 
 ### The `--answers` JSON shape
 
@@ -98,9 +132,10 @@ For each `:::question`, `handoff` emits **two** plain-markdown lines: a status l
 
 The **status** line is one of:
 
-- **Answered** (a matching `id` in `--answers`, or an `answer` already filled in inline) → an
-  **"Answered:"** line carrying the chosen value(s).
-- **Open, `target: human`** (no inline `answer` and no matching `--answers` id) → an
+- **Answered** (an `answer` filled in inline, or an accepted `--answers` entry) → an **"Answered:"** line
+  carrying the chosen value(s). "Answered" means the values **record a decision** — at least one, none of
+  them blank. `[""]` is not an answer and flattens as **open** (#188).
+- **Open, `target: human`** (no inline `answer` and no accepted `--answers` entry) → an
   **"Open question (unresolved)"** line. Guardrails sees an unresolved decision it can surface for a human.
 - **Open, `target: agent`** → a **"Delegated decision — you must settle this before building:"** line, the
   metadata line, and a `_Decide: …_` instruction naming the mode's actual action and the author's lean:
@@ -235,7 +270,17 @@ answer already block on their own account.
 |---|---|---|
 | **0** | The handoff was written and nothing is outstanding. | Proceed. |
 | **2** | *(only with `--fail-if-needs-human`)* The handoff **was still written** AND something needs a human. An **escalation, not a failure**. | Read stderr, then the file. Settle the items and re-run. |
-| **1** | Verb error — plan not found, unreadable `--answers`. **Nothing was written.** | Fix the invocation. |
+| **1** | Verb error — plan not found, unreadable `--answers`, or an **`--answers` entry rejected** against its question's `mode`, `options` or already-recorded answer. **Nothing was written.** | Fix the invocation. |
+
+> **Why a rejected answer is `1` and not `2`.** It is not a plan defect; it is a bad **invocation** — the
+> same class as the unparseable answers file that has always exited `1` here, and drawing the line at "is it
+> syntactically JSON" would be arbitrary. Every `2` in this pipeline means *the output exists, go read it*,
+> and every "write it anyway" variant of this rule would produce a `plan.md` that silently differs from the
+> resolution you asked for, with the difference living only on stderr.
+>
+> The cost is stated rather than hidden: a refusal leaves a **previous** run's `plan.md` in place, and the
+> `plan-sha256` stamp cannot expose that (same plan, different answers file). Closing it needs a hash of the
+> answers beside it — Charter #187's chain-of-custody manifest.
 
 > **NOTE ON `2`.** A `2` here means the same thing it means in `charter headless` and in **Guardrails** —
 > *the output exists, go read it*. Guardrails' `BreakdownCommand` comments its own `2` as "a 2 means READ
@@ -271,7 +316,8 @@ run. That is the security posture working; the flattened `.md` is Guardrails' in
 2. `charter render` to check, `charter review` to get in-browser feedback — drain it with `charter poll`
    and fold answers inline via `poll --apply` / `charter resolve` (`references/review-loop.md`); revise
    until approved.
-3. *(Optional)* Build `answers.json` for any `:::question` not already resolved inline (or to override one).
+3. *(Optional)* Build `answers.json` for any `:::question` **not already resolved inline**. It cannot
+   override one — see *What an `--answers` entry may do*.
 4. Optionally `charter export plan.charter.md -o plan.html` for a shareable offline snapshot.
 5. `charter handoff plan.charter.md -o plan.md [--answers answers.json]` → hand `plan.md` to the headless
    Guardrails `plan-breakdown` path. (The interactive `/plan-breakdown` skips this and reads the

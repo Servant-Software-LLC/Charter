@@ -1,14 +1,14 @@
 # The machine consumer — strict handoff and the record contract
 
-**Status:** design of record · **Rev 1**, 2026-08-22 (adversarial pass applied — three of the first four
+**Status:** design of record · **Rev 2**, 2026-08-23 (§9 added: the answers file is no longer trusted, and
+`answered` no longer counts elements) · Rev 1, 2026-08-22 (adversarial pass applied — three of the first four
 decisions were reversed)
 **Closes:** #172 (`charter handoff` has no strict mode) · #173 (the `.headless.json` contract, and two
-naming collisions)
+naming collisions) · **#186** (an `--answers` file overwrites or erases a recorded answer with no validation)
+· **#188** (`answered` counts array elements, not content)
 **Filed in support of:** Guardrails #496 — an epic to drive a complete Charter → Guardrails pipeline with
 no human in the loop, and prove afterwards that the run was proper rather than merely green.
-**Split out, deliberately NOT closed here:** #186 (an `--answers` file overwrites or erases a recorded
-answer with no validation) · #187 (the chain-of-custody manifest) · #188 (`answered` counts array elements,
-not content).
+**Split out, deliberately NOT closed here:** #187 (the chain-of-custody manifest).
 **Filed reciprocally:** Guardrails #500.
 
 ---
@@ -129,10 +129,11 @@ same container, not that they call the same method, so a future re-fork fails ho
   `PlanInventory.NeedsHuman` is the record's rule and `HandoffGate.Evaluate` is the gate's. They are
   deliberately different booleans (§4.1), so safety comes from their never disagreeing about *which
   questions the plan has*, which a copied walk would eventually get wrong.
-- **The answer merge is shared too.** `HandoffGate.ResolvedAnswer` is called by the gate *and* by
+- **The answer merge is shared too.** One function is called by the gate *and* by
   `HandoffMarkdown.EmitQuestion`. A gate that computed "answered" differently from the emitter would certify
-  a document other than the one written — the same failure, one level up. It preserves today's behaviour
-  verbatim, #186 included, which makes #186 a one-place change rather than two.
+  a document other than the one written — the same failure, one level up. In Rev 1 this was
+  `HandoffGate.ResolvedAnswer` and it preserved today's behaviour verbatim, #186 included; **Rev 2 moved it to
+  `AnswerRules.Merge`** (§9.4) and the one-place change is what #186 then cost.
 
 ### 4.1 Where the gate is stricter than the record, and why
 
@@ -242,11 +243,144 @@ so `charter-format-version: 1.0` reads identically to an unstamped plan. The rec
 
 ## 8. What this does NOT do
 
-- `Answered => Answer.Count > 0` still counts elements rather than content, so `[""]` certifies as a
-  decision (**#188**). It changes a published field's meaning in three readers and is its own schema bump.
-- An `--answers` file still overrides an inline answer unconditionally, with no validation against `mode` or
-  `options`, and an empty value still re-opens a settled question (**#186**). Preserved verbatim, and now
-  behind ONE shared function (§4).
 - No chain-of-custody manifest (**#187**). Its in-band half is §5.2; the manifest is not.
 - `charter headless` still has no `--answers`, so the record still describes *the plan on disk* while the
   handoff describes *the plan plus a file* (**#187** again).
+
+*(Rev 1 also listed #186 and #188 here. Rev 2 closes both — see §9.)*
+
+---
+
+# Rev 2 — the answers file is an assertion, not an instruction
+
+## 9. What Rev 1 left trusted, and should not have
+
+Rev 1 put the answer merge behind one function and preserved its behaviour **verbatim**, on the stated
+grounds that fixing it would then be a one-place change. This is that change. Two defects, one code path,
+one absence: **nothing validated what an answers file contained, and nothing checked that an answer was more
+than an array with something in it.**
+
+Reproduced on the released 0.24.0, on a plan whose `db` question carries `options: ["Postgres","MySQL"]` and
+a human's inline `answer: ["Postgres"]`:
+
+| Invocation | 0.24.0 emitted | Exit |
+|---|---|---|
+| `--answers '{"db":["Cassandra"]}'` | `Answered: Cassandra`, with `options: Postgres, MySQL` on the next line | `0` |
+| `--answers '{"db":[]}'` (and `null`) | `> **Open question (unresolved):**` — the human's decision gone | `0` |
+| `--answers '{"db":[""]}'` | `Answered:` with nothing after it — **even under `--fail-if-needs-human`** | `0` |
+
+### 9.1 An answers file may FILL, never REPLACE (the load-bearing decision)
+
+**An `--answers` entry may settle a question the plan left open, and may re-state an `answer` the plan
+already records — verbatim. It may never replace one.**
+
+The alternative on the table was #187's: allow the override and **record its source** (`inline` vs
+`answers-file`) in a chain-of-custody manifest. That was rejected as the fix, and the reasoning matters
+because #187 is still open and should build on this rather than re-propose it:
+
+- **Recording makes an override auditable, not safe.** The flattened plan still asserts `Cassandra`,
+  `plan-breakdown` still reads it as settled, and the audit lives in a **side file the consumer may never
+  open** — precisely the out-of-band-signalling failure §5.2 exists to fight. *An audit trail is the right
+  answer for something you must allow; it is the wrong answer for something you should not do.*
+- **The living-document model is the thing being protected.** Its whole claim is that a resolved question
+  carries its answer inline and that answer is DURABLE. A channel that can quietly replace it makes "durable"
+  false, and no amount of recording makes it true again.
+- **Refusing costs a caller nothing they cannot recover.** The honest way to change a recorded decision is to
+  change it where it lives: re-answer in review and fold it in with `poll --apply` / `resolve` (atomic,
+  staleness-checked, duplicate-id-refusing), or edit the `.charter.md`.
+
+**Re-stating an identical value is accepted**, and that clause is what keeps the rule usable: a generator
+that supplies its whole answer set on every run must not break the day one of those questions gets answered
+inline. The rule is therefore *an answers file may only ADD information* — monotone, and safe to apply twice.
+
+**What #187 should take from this.** `answerSource` remains worth recording; it is now a fact with exactly
+two values (`inline`, `answers-file`) and an invariant — **it can never mean "the file overrode the plan"**.
+That is a strictly simpler thing to record than the three-way "which one won" it would have been.
+
+### 9.2 An empty or null value is an ERROR, not an erasure
+
+"This question was not answered here" is **already** expressible by omitting the id — and omission has a
+defined meaning (fall back to the inline answer, else open). So an explicit `[]` has no honest meaning left,
+and reading it as an erasure is exactly what let a generator delete a decision it could not make itself.
+`ReadAnswers` maps JSON `null` to an empty array, so both spellings land on the same rule.
+
+### 9.3 A violation fails the RUN, at exit 1, with nothing written
+
+**Every violation is named on stderr, `charter handoff` exits `1`, and no handoff is written.** Four
+reasons, in the order they decided it:
+
+1. **It is a bad invocation, not a plan defect.** An unreadable or unparseable `--answers` file has always
+   exited `1` here with nothing written. A file that parses as JSON but asserts a value the plan's own schema
+   forbids is the same class — it is not a valid answers file *for this plan*. Drawing the line at *"is it
+   syntactically JSON"* would be arbitrary.
+2. **It does not invert the `2` vocabulary** (§2.1). Every `2` in this pipeline means *the output exists, go
+   read it*; `1` already means the opposite and means it correctly. Nothing is being redefined.
+3. **Every "write it anyway" variant produces a document that silently differs from the resolution the caller
+   asked for**, with the difference living only on stderr. That is the out-of-band failure §5.2 exists to
+   fight, one level up.
+4. **Whole-run, not per-question.** A per-question skip yields a partially-applied handoff — internally
+   consistent, `0`-able without the flag, and indistinguishable from a complete one to a consumer that only
+   reads the file.
+
+**The residual hazard, stated rather than hidden.** A refusal leaves a **previous** run's `plan.md` in place
+(§2.1's objection to fail-closed), and the `plan-sha256` stamp **cannot** expose it: same plan, different
+answers file, same hash. Closing that needs a hash of the *answers* beside it — which is exactly #187's
+`answersSha256`, and is the second thing this decision hands that issue.
+
+**It composes with `--fail-if-needs-human` by dominating it:** the check runs before the write and before the
+gate, so a rejected value can never be certified. And in-library, a rejected entry falls back to the inline
+answer rather than winning, so a direct caller of `HandoffGate.Evaluate` sees the question as **still open**
+and **blocks** — a rejected answer can never pass the gate, however it reaches it.
+
+### 9.4 The rules, and the two asymmetries they create
+
+`AnswerRules` (Charter.Core) is the one place: `IsDecision` (what counts as an answer at all) and
+`Merge`/`Check` (what an answers file may do). `Merge` replaces `HandoffGate.ResolvedAnswer` because the
+moment *"the dictionary wins"* became *"the dictionary wins IF it passes the rules"*, the rules became part
+of the merge — and the gate/emitter agreement §4 depends on is only provable if both live in one file.
+
+| Mode | Arity | Value rule |
+|---|---|---|
+| `single` | exactly one | must be one of `options` |
+| `multi` | one or more | every value must be in `options` |
+| `bool` | exactly one | `true` or `false` |
+| `number` | exactly one | parses as a number (invariant culture) |
+| `free-text` | exactly one | **shape only** — no `options` exist to test against |
+
+Plus, for every mode: no blank values (§9.5), and no replacing a recorded answer (§9.1).
+
+**Asymmetry 1 — an INLINE `answer` is still never checked against `options`.** `charter-format` states that
+as a rule and it stays true: the renderer appends a "Something else" write-in to every select (#109), so a
+*reviewer's* answer may legitimately fall outside the options and dropping it would lose a real decision. An
+`--answers` file is **not a reviewer at a page** — no human clicked anything, and the flatten already
+instructs a delegated agent to *choose one of the options above*. An agent that genuinely needs a write-in
+records it inline, where every other decision lives. Both halves are now stated in `charter-format`, because
+the contradiction is the first thing a reader will think they have found.
+
+**Asymmetry 2 — `free-text` can only be checked for shape.** It declares no options, so there is no set to
+test a value against. That is not a hole: the rule is *a supplied answer must be something the question's
+DECLARED shape can accept*, and `free-text` declares less shape than `single`. Naming it is the point —
+an unnamed asymmetry is the one a future reader "fixes" by inventing a rule for free-text.
+
+### 9.5 `answered` means a DECISION, and rides the unreleased schema 2
+
+`HeadlessQuestion.Answered` was `Answer.Count > 0` — elements, not content. It is now
+`AnswerRules.IsDecision`: **at least one value, none of them blank.** A blank value ANYWHERE disqualifies the
+array, because a `multi` answer carrying a blank element is a defective answer, not a partial one — the blank
+came from the same producer as the real values.
+
+The predicate is read in **four** places and all four now share it: the record's `answered`, the flatten's
+Answered/Open branch, the rendered page's `data-answered` / "Answered" status, and the missing-lean lint.
+A field read in several places that means several things is the same defect one level up.
+
+**Why no `schema` 3.** Changing what `answered` means flips a consumer's assertion, which is a bump by
+`HeadlessRecord.Schema`'s own rule. But **`schema` 2 has not shipped**: it was raised from 1 by #173 *after*
+0.24.0 was released (the release commit carries `Schema = 1`), so no consumer has ever seen a schema-2
+record and there is nothing in the wild to break. Both meaning changes ride the same 2. `unattended.md` says
+so explicitly, including the warning not to read it as licence to change a meaning under a *released*
+version — which is the exact mistake #142 made.
+
+**The drift test was binding NAMES, not meanings**, and #188 proves that is not enough: `answered` changed
+meaning while every assertion in `HeadlessRecordContractTests` stayed green, because they all check that the
+token appears. It now also binds the one meaning that moved — the doc must carry the `[""]` case, and the
+record must actually report it unanswered, in the same test.

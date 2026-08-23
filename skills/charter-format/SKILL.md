@@ -167,18 +167,29 @@ The body is a JSON object (JSON is a subset of YAML, so the parser stays depende
 | `target` | string | yes | `human` or `agent` — who the resolved answer routes to. |
 | `recommended` | string | no | The option the **authoring agent** would choose. Must equal one of `options` verbatim; a value matching none is ignored. |
 | `rationale` | string | no | Why the agent is asking, or why it leans as it does. Plain text, rendered **inside** the question. |
-| `answer` | array of strings | no | **The open/resolved marker.** Absent or empty ⇒ the question is **open**. Non-empty ⇒ **resolved**, carrying the chosen value(s). |
+| `answer` | array of strings | no | **The open/resolved marker.** Absent, empty, or carrying **any blank value** ⇒ the question is **open**. One or more values, none blank ⇒ **resolved**, carrying the chosen value(s). |
 
 The `answer` shape mirrors a submitted answer's values: a `single`/`bool`/`number` answer is one element, a
 `multi` answer is the selected values, and `free-text` is the text as one element.
+
+**A blank value is not a decision.** `answer: [""]` is an **open** question, not one answered with nothing —
+it is the shape a mis-written generator produces, and reading it as resolved let a blank certify as a made
+decision (#188). One rule, in one place: at least one value, none of them blank.
 
 **An answer value may legitimately fall OUTSIDE `options`.** The renderer appends a "Something else" free-text
 escape hatch to every `single`/`multi` form, because the agent writing the options is the party least
 qualified to know they are exhaustive — it is asking precisely because it does not know. A reviewer can
 therefore answer in their own words, and that answer arrives as an ordinary `answer` element that matches no
 declared option. **Treat it as the decision, not as corruption**: do not validate `answer ⊆ options`, do not
-drop it, and do not "correct" it to the nearest option. Nothing in Charter enforces membership, and the
-renderer already displays such a value as a checked write-in.
+drop it, and do not "correct" it to the nearest option. Nothing in Charter enforces membership on the inline
+field, and the renderer already displays such a value as a checked write-in.
+
+> **The one place membership IS enforced, and why it is not a contradiction.** `charter handoff --answers`
+> takes an out-of-band JSON file, and a value there **must** name a declared option (#186). That file is not a
+> reviewer at a page: nobody clicked a write-in, and the flatten already tells a delegated agent to *choose one
+> of the options above*. The same file may **fill** an unanswered question but may never **replace** an
+> `answer` the plan records — the inline value is the durable one. A write-in belongs **inline**, which is
+> exactly where the review loop puts it.
 
 Note this hatch is **emitted by the renderer, never authored**. Do not add an "Other" string to `options`
 yourself: `charter handoff` emits the option list verbatim into the CommonMark Guardrails consumes, so an
@@ -284,4 +295,5 @@ the argument they rejected with it.
 ````
 
 Interpreting a question: a **resolved** question is a settled decision — fold its `answer` in, keeping the
-`options` as rationale. An **open** question must be surfaced, never silently defaulted.
+`options` as rationale. An **open** question must be surfaced, never silently defaulted. A question whose
+`answer` is present but blank (`[""]`, `[]`) is **open**, not resolved.

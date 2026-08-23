@@ -26,6 +26,7 @@ src/
     ReviewLog*.cs               # the PURE review-record fold (schema + the 8 order-independent rules)
     HeadlessRecord.cs / PlanWalk.cs  # the `headless` forensic record (source map + questions + notes); one joined walk
     QuestionIdentity.cs         # the :::question DECLARED-SHAPE fingerprint (an answer's "anchor", #75/3)
+    AnswerRules.cs              # the ONE answer semantics: IsDecision (#188) + Merge/Check for --answers (#186)
   Charter.Cli/                  # `charter` dotnet tool + native binary (Exe; System.CommandLine + Spectre.Console)
     ReviewExitCodes.cs          # the 0/2/3/4/5 contract shared by `poll` and `resolve` — SSOT
     HeadlessExitCodes.cs        # the SEPARATE 0/2 contract for `headless` — NOT the drain vocabulary
