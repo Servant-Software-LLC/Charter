@@ -147,7 +147,12 @@ window.CharterAnnotate = (function () {
     // Populated by keyChrome as each element is constructed and reset at the top of every render, so a
     // reviewer's focus is put back on the counterpart of what they were on rather than on whatever the
     // document happens to be carrying that name (#200).
-    focusIndex: Object.create(null)
+    focusIndex: Object.create(null),
+    // How many times THIS page has changed the server's pending queue — one per save, per retract, per
+    // edit. It is a clock, not a count: hydrate() reads it before it asks for a snapshot and again when
+    // the snapshot arrives, and a difference means the snapshot is older than what the page already
+    // knows. See hydrate() for why that has to be checked rather than waited out (#209).
+    queueWrites: 0
   };
 
   function newMarks() {
@@ -743,6 +748,7 @@ window.CharterAnnotate = (function () {
       return res.json().then(function (created) {
         if (created && created.id) {
           state.annotations.push(created);
+          state.queueWrites++;   // this page now knows something no earlier snapshot can (#209)
           setStatus('');
           showPanel();
           render();
@@ -769,8 +775,29 @@ window.CharterAnnotate = (function () {
   // These act on the server's PENDING queue only. An annotation the agent has already drained
   // answers 404 — which is not an error but a fact ("already handed off"), surfaced in the panel.
 
+  // A QUEUE READ IS A SNAPSHOT OF A MOMENT, AND THE MOMENT IS WHEN THE SERVER TOOK IT (Charter #209).
+  //
+  // It is authoritative about everything that had happened by then, and says nothing whatever about what
+  // this page did afterwards — so assigning it over `state.annotations` ERASES any note saved while it was
+  // in flight. The window is neither hypothetical nor narrow: hydrate() runs at init, and again on every
+  // `queue` frame (an agent drained), so a save landing between the server reading its queue and the
+  // browser receiving that read is all it takes. #209 is that window measured — a badge showing two notes
+  // counted one again the instant a read taken between them arrived, and STAYED at one, because nothing
+  // renders afterwards to correct it.
+  //
+  // Note what the repair cannot be. Not a wait, on either side: the regression arrives AFTER every signal a
+  // reviewer or a test could observe — after the POST, after its render, after `submitted`. And emphatically
+  // not "wait for one more render", which is the trap this defect's whole family is named for: the late
+  // render IS the damage. The only thing separating a usable snapshot from a harmful one is whether this
+  // page has written past it, and that is a question the page can simply ask.
+  //
+  // So: read the write clock before asking, compare it when the answer lands, and DECLINE a snapshot the
+  // page has moved past. What is given up by declining is knowledge of what LEFT the queue (#124's delivery
+  // axis) until the next read arrives — and the write that caused the decline is itself about to be drained,
+  // which brings one. What is kept is every note the reviewer saved. That trade is not close.
   function hydrate() {
     var url = '/api/annotations?key=' + encodeURIComponent(state.key || '');
+    var taken = state.queueWrites;
     return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
       if (!res.ok) {
         setStatus('Could not load your notes (' + res.status + ').');
@@ -778,9 +805,15 @@ window.CharterAnnotate = (function () {
         return null;
       }
       return res.json().then(function (list) {
+        // Declined out loud, never silently: `stale` is a structural fact a test can assert on, so the
+        // guard cannot rot into a branch nothing ever proves was taken.
+        if (state.queueWrites !== taken) {
+          emit('list-loaded', { count: state.annotations.length, stale: true });
+          return state.annotations;
+        }
         state.annotations = (list && typeof list.length === 'number') ? list : [];
         render();
-        emit('list-loaded', { count: state.annotations.length });
+        emit('list-loaded', { count: state.annotations.length, stale: false });
         return state.annotations;
       }, function () {
         emit('list-error', { reason: 'malformed' });
@@ -849,6 +882,7 @@ window.CharterAnnotate = (function () {
         for (var i = 0; i < state.annotations.length; i++) {
           if (state.annotations[i].id === id) state.annotations[i].note = note;
         }
+        state.queueWrites++;   // an edit is a queue write too: a snapshot older than it carries the old text
         setStatus('');
         render();
         hydrateLog();
@@ -943,6 +977,9 @@ window.CharterAnnotate = (function () {
       if (state.annotations[i].id !== id) kept.push(state.annotations[i]);
     }
     state.annotations = kept;
+    // The mirror of the save case (#209): a snapshot taken before this retract still lists the note, so
+    // applying it would put a withdrawn note back on the page.
+    state.queueWrites++;
   }
 
   // ---- the round hand-off: "Send to agent" ---------------------------------------------------
@@ -1163,9 +1200,14 @@ window.CharterAnnotate = (function () {
       // then re-read the authoritative state behind that confirmation.
       state.round.submitted = true;
       state.awaitingRevision = true;
-      syncSendButton();
+      // ORDER IS LOAD-BEARING (#204). syncSendButton disables this button, and disabling the control a
+      // keyboard reviewer just pressed Enter on has to hand their focus somewhere — which for this gesture
+      // is the status line, because that is where the sentence they now need is written. So the panel is
+      // opened and the sentence written FIRST, and only then is the button taken away. Reversed, the
+      // hand-on would arrive at a `display: none` region with nothing in it.
       showPanel();
       setSentStatus();
+      syncSendButton();
       emit('round-sent', {});
       refreshRound();
       return true;
@@ -1183,7 +1225,14 @@ window.CharterAnnotate = (function () {
     var send = state.ui.send;
     var nothingToSend = pendingCount() === 0;
     var alreadyDelivered = nothingToSend && deliveredCount() > 0;
-    send.disabled = state.round.submitted || nothingToSend;
+    // Charter #204 — handing a round off disables this button, so the reviewer who pressed Enter on it is
+    // dropped to <body> at the very moment the panel writes the sentence they now need. They are handed on
+    // to the region carrying that sentence instead: the status line while it is showing (sendRound writes
+    // it FIRST for exactly this), otherwise the standing hint under the button, which always says why
+    // sending is unavailable, and finally the labelled panel itself.
+    disableChrome(send, state.round.submitted || nothingToSend, function () {
+      return [visibleStatusLine(), state.ui.hint, state.ui.panel];
+    });
     send.setAttribute('data-charter-sent', state.round.submitted ? 'true' : 'false');
     send.setAttribute('data-charter-delivered', alreadyDelivered ? 'true' : 'false');
 
@@ -2084,12 +2133,21 @@ window.CharterAnnotate = (function () {
       moveSelection(ev.key === 'ArrowDown' ? 1 : -1);
     }, false);
     var status = make('div', 'charter-panel-status charter-hidden', 'panel-status');
+    // Programmatically focusable, never a Tab stop — the same shape the panel itself carries (#168). It is
+    // where a reviewer is handed on when the control they just used disables itself, because it is where
+    // the sentence explaining that is written (#204). -1 keeps it out of the sequential order, so nobody
+    // who is not being handed on pays a keystroke for it.
+    status.setAttribute('tabindex', '-1');
 
     // The round hand-off. Disabled until there is queued feedback to send (and again once sent), so the
     // control can never post an empty round or double-hand-off the same one.
     var actions = make('div', 'charter-panel-actions', 'panel-actions');
     var hint = make('span', 'charter-panel-hint', 'panel-hint',
       'Save your notes, then hand them to the agent.');
+    // Focusable only as a hand-on target (#204), for the case where Send is disabled by something OTHER
+    // than the reviewer's own hand-off — a drain emptying the queue under them — and the status line is
+    // therefore not carrying an explanation. This line always is.
+    hint.setAttribute('tabindex', '-1');
     actions.appendChild(hint);
     var send = button('charter-btn charter-btn-primary charter-send', 'send-to-agent', 'Send to agent');
     send.disabled = true;
@@ -2128,6 +2186,14 @@ window.CharterAnnotate = (function () {
     syncSendButton();
     renderStaleQueue();
     return state.ui;
+  }
+
+  // The status line only when it is actually SHOWING something — an empty one is `display: none`, which
+  // cannot take focus, and landing a reviewer on a blank region would announce nothing at all (#204).
+  function visibleStatusLine() {
+    var status = state.ui && state.ui.status;
+    if (!status || String(status.className).indexOf('charter-hidden') >= 0) return null;
+    return (status.textContent || '').trim() ? status : null;
   }
 
   function setStatus(text) {
@@ -2322,6 +2388,70 @@ window.CharterAnnotate = (function () {
 
     if (taken.focus.gone) explain(taken.focus.gone);
     emit('focus-not-restored', { key: taken.focus.key });
+  }
+
+  // ---- a control that disables itself under the reviewer (Charter #204) ----------------
+  //
+  // The third route to #168's end state, and the only one the reviewer causes themselves. #168 fixed the
+  // panel-toggle route (the control HIDES itself); #200 fixed the rebuild route (the control is REMOVED and
+  // replaced). This is the route where the control simply stops being focusable: `disabled` drops focus to
+  // <body> exactly as removal does, and #200's repair is structurally blind to it — its first guard returns
+  // early while the captured element is still in the document, which here it always is. That early return is
+  // right and is not touched.
+  //
+  // The frequency is what makes it worth its own answer. Reset on the zoom bar disables Reset, so EVERY
+  // successful reset drops the reviewer; `−` down to fit disables `−` and Reset together; `+` at the ceiling
+  // disables `+`. And "Send to agent" disables itself at the end of the most deliberate gesture in the
+  // product, at the exact moment the panel writes the sentence the reviewer now needs to read.
+  //
+  // THE CONDITION, and why it cannot steal. This fires only when the element BEING DISABLED is the one that
+  // holds focus at that instant, and it is the one line that decides everything: there is no focus anywhere
+  // else for it to move, so no render — automatic, a teammate's note, a drain, any of them — can pull a
+  // caret out of the plan or out of a half-typed composer. That is a strictly tighter test than #200's,
+  // which had to name a counterpart and check the browser had really dropped to <body> first. Here the
+  // browser has not dropped anything yet: the move happens BEFORE the disable, in the same synchronous turn,
+  // so there is no <body> moment at all rather than one that is repaired afterwards.
+  //
+  // WHERE FOCUS GOES is a real decision, taken per site, and it deliberately differs from #200's ruling for
+  // a vanished anchor ("do not move; disclose the absence"). That case had no landing place the reviewer had
+  // asked for. This one does: the reviewer is standing IN a control group they are operating, and they got
+  // here by their own gesture. Each caller passes an ordered ladder of candidates and the first one that
+  // actually takes focus wins — never a guess that focus() succeeded, which is how a rebuilt-but-disabled
+  // control would silently leave the reviewer on <body> (see landChromeFocus).
+  //
+  //   * the zoom bar hands on to the control that still MEANS something — the opposite direction, which can
+  //     never be disabled at the same time — and failing that to the zoomable block itself, already a tab
+  //     stop with role="group" and a label naming it;
+  //   * Send hands on to the panel STATUS LINE, which is where the sentence explaining the new state is
+  //     written ("Sent. … The conversation continues in your agent's terminal."). That is #168's precedent
+  //     rather than a new rule: a disclosure lands on the region carrying it. sendRound() writes the line
+  //     BEFORE it disables the button precisely so this can be true.
+  //
+  // If no candidate takes focus, nothing is moved and the browser's own outcome stands — #200's ruling,
+  // which applies again the moment there is genuinely nowhere to go.
+  function disableChrome(el, disabled, landing) {
+    if (!el) return;
+    var dropping = !!disabled && !el.disabled && isSdkUi(el) && document.activeElement === el;
+    if (dropping) {
+      var to = handOnFocus(landing);
+      // ...and only now. Setting `disabled` first would let the browser drop focus to <body> in between,
+      // and a repair afterwards is a different (weaker) contract than never dropping it — #198's "no yield
+      // between the teardown and the fix" applied to the one case where the teardown can be reordered.
+      emit(to ? 'focus-handed-on' : 'focus-not-handed-on', { from: uiNameOf(el), to: uiNameOf(to) });
+    }
+    el.disabled = !!disabled;
+  }
+
+  function handOnFocus(landing) {
+    var candidates = (typeof landing === 'function' ? landing() : landing) || [];
+    for (var i = 0; i < candidates.length; i++) {
+      if (landChromeFocus(candidates[i])) return candidates[i];
+    }
+    return null;
+  }
+
+  function uiNameOf(el) {
+    return (el && el.getAttribute) ? (el.getAttribute(UI_ATTR) || '') : '';
   }
 
   // ---- the composer: a near-target, dismissible popover (replaces window.prompt, #41) ---
@@ -3643,10 +3773,23 @@ window.CharterAnnotate = (function () {
   function syncZoomBar(view) {
     if (!view.bar) return;
     var atFit = view.scale <= DIAGRAM_ZOOM.min + 0.001;
+    var atCeiling = view.scale >= view.maxScale - 0.001;
     view.level.textContent = Math.round(view.scale * 100) + '%';
-    view.zoomOut.disabled = atFit;
-    view.reset.disabled = atFit;
-    view.zoomIn.disabled = view.scale >= view.maxScale - 0.001;
+    // Charter #204 — every one of these three can disable the very button the reviewer just pressed, and
+    // pressing Reset does it EVERY time it works. The hand-on ladders below are ordered by what still means
+    // something at the new scale: at fit the only direction left is in, at the ceiling the only direction
+    // left is out, and the two ends can never both be reached at once (ceilingFor floors maxScale at 2), so
+    // the first candidate is always live. The block itself is the backstop — a tab stop with role="group"
+    // and a label that names the diagram, which is where the reviewer actually is.
+    //
+    // Everything legal at the NEW scale is re-enabled before anything is taken away, or a hand-on could be
+    // offered a button that is still disabled and fall through to the backstop for no reason. Reset from
+    // the ceiling is exactly that case: `+` becomes legal again in the very pass that takes `Reset` away.
+    if (!atFit) { view.zoomOut.disabled = false; view.reset.disabled = false; }
+    if (!atCeiling) { view.zoomIn.disabled = false; }
+    disableChrome(view.zoomOut, atFit, function () { return [view.zoomIn, view.el]; });
+    disableChrome(view.reset, atFit, function () { return [view.zoomIn, view.el]; });
+    disableChrome(view.zoomIn, atCeiling, function () { return [view.zoomOut, view.reset, view.el]; });
     // Progressive disclosure: name the gesture that is USEFUL right now, not the whole vocabulary.
     view.hint.textContent = atFit ? 'Ctrl+scroll to zoom' : 'drag or arrow keys to pan';
     pinDiagramChrome(view);
@@ -4168,6 +4311,7 @@ window.CharterAnnotate = (function () {
     state.diagrams = [];
     state.pan = null;
     state.annotations = [];
+    state.queueWrites = 0;
     state.log = { comments: [], diagnostics: [], unreadable: [], selfEmail: null };
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
     state.staleQueue = null;

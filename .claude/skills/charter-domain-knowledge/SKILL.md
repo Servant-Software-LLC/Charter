@@ -362,6 +362,34 @@ than a claim on the caret:
   one the reviewer did not ask for, and a silent relocation tells a screen-reader user where they now are while
   never telling them what became of where they were. This is the next rule, applied to focus.
 
+**A control that DISABLES itself hands the reviewer on** (#204). The third route to the same drop, and the
+only one the reviewer's own gesture causes: `syncZoomBar` disables `Reset` at fit — so *every successful
+Reset* dropped a keyboard reviewer — and `syncSendButton` disables "Send to agent" on hand-off, at the moment
+the panel writes the sentence they now need. #200 is structurally blind to it, and correctly so: its first
+guard returns early while the captured element is still in the document, which a disabled control always is.
+`disableChrome` is now the one place SDK chrome becomes disabled. It fires **only when the element being
+disabled is the one holding focus right now** — which is why it can never steal: there is no focus elsewhere
+for it to touch, so no automatic re-render can move a caret out of the plan or a half-typed composer. And it
+moves focus **before** setting `disabled`, so there is no `<body>` moment to repair rather than one repaired
+after the fact.
+
+Where they land is decided per site and deliberately differs from the vanished-anchor ruling above, because
+the reviewer is standing *in* a control group they are operating and there is somewhere they did ask for:
+the zoom bar hands on to the opposite direction (never disabled at the same moment) and then to the zoomable
+block, which is already a tab stop with `role="group"` and a label; **Send hands on to the panel status
+line**, the region carrying "Sent. … The conversation continues in your agent's terminal" — #168's precedent
+that a disclosure lands on the region that carries it, which is why `sendRound` writes that line *before* it
+disables the button. If no candidate takes focus, nothing moves and the browser's outcome stands. Invisible
+to a mouse tester, and unevenly so: WebKit does not focus a button on click at all.
+
+**A queue read is a snapshot of a moment, and this page may have written past it** (#209). `hydrate()` used
+to assign `GET /api/annotations` straight over its list, so a read whose snapshot the server took *before* a
+save and delivered *after* it erased that note — and nothing re-renders afterwards, so the page stayed wrong.
+The guard is a write clock (`state.queueWrites`, bumped by every save, edit and retract): read it before the
+fetch, compare when the response lands, and decline a snapshot the page has moved past, reporting
+`list-loaded` with `stale: true`. The cost is that delivery state (#124) waits for the next read; the write
+that caused the decline is itself about to be drained, which brings one.
+
 **Absence is DISCLOSED, never left to be inferred** (#170, generalizing #164). Charter has one vocabulary for
 *annotated* (the accent bar) and one for *how many* (the count badge), and **no third state meaning "annotated,
 but not shown here"** — so a marker that correctly disappears reads as breakage unless something says

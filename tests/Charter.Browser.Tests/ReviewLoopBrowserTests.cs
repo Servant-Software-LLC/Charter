@@ -2474,12 +2474,23 @@ public sealed partial class ReviewLoopBrowserTests
     /// Wait until the panel's "Send to agent" control is enabled. Bounded Playwright actionability polling —
     /// never <c>WaitForFunctionAsync</c>, whose in-page <c>eval</c> the served CSP correctly refuses.
     /// </summary>
-    private static async Task WaitForSendEnabledAsync(IPage page, int timeoutMs = 15_000)
+    private static Task WaitForSendEnabledAsync(IPage page, int timeoutMs = ReadinessTimeoutMs)
+        => WaitForSendStateAsync(page, enabled: true, timeoutMs);
+
+    /// <summary>
+    /// ...and the mirror, which #204's tests need: the control is synced from the SERVER's round state
+    /// (<c>GET /api/review</c>) rather than from a local tally, so "it has been taken away" is a round trip
+    /// to wait for and not a fact that is true the instant a drain returns.
+    /// </summary>
+    private static Task WaitForSendDisabledAsync(IPage page, int timeoutMs = ReadinessTimeoutMs)
+        => WaitForSendStateAsync(page, enabled: false, timeoutMs);
+
+    private static async Task WaitForSendStateAsync(IPage page, bool enabled, int timeoutMs)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
         {
-            if (await page.IsEnabledAsync(Ui("send-to-agent")))
+            if (await page.IsEnabledAsync(Ui("send-to-agent")) == enabled)
             {
                 return;
             }
@@ -2487,7 +2498,9 @@ public sealed partial class ReviewLoopBrowserTests
             await Task.Delay(50);
         }
 
-        Assert.Fail("Send to agent never enabled once feedback was queued");
+        Assert.Fail(
+            "Send to agent never became " + (enabled ? "enabled" : "disabled") + " within " + timeoutMs +
+            "ms, so the state change the caller is waiting on never happened.");
     }
 
     /// <summary>The server's own round status (<c>GET /api/review?key=…</c>) — the hand-off's system of record.</summary>
@@ -4414,6 +4427,24 @@ public sealed partial class ReviewLoopBrowserTests
     private const float NavigationTimeoutMs = 90_000;
 
     /// <summary>
+    /// The deadline for a READINESS gate — "the page has finished the round trip I just caused" — as opposed
+    /// to an assertion deadline. One number, one rationale, every such wait in the suite.
+    ///
+    /// <para>It was 15s per call site and that is what gave out. A WebKit leg under full-suite contention was
+    /// measured at 45s over work that is instant standalone, and a Chromium run on a machine sharing its
+    /// cores with a second agent produced <i>"the SDK never emitted the 'submitted' event within 15000ms"</i>
+    /// in a test that then completed in 57s. Neither was the product being wrong; both were the suite
+    /// reporting the runner.</para>
+    ///
+    /// <para>Set equal to <see cref="NavigationTimeoutMs"/>, because it is the same judgement for the same
+    /// reason (#66): a gate that fails randomly gets re-run reflexively and stops being believed, which
+    /// quietly costs us the guard these tests exist to be. And the same limit applies — this relaxes only the
+    /// waits that say "ready now". Every ASSERTION keeps its own tight, explicit deadline, so a genuine hang
+    /// still fails, and every gate using this still fails LOUDLY, naming what it saw, rather than hanging.</para>
+    /// </summary>
+    private const int ReadinessTimeoutMs = 90_000;
+
+    /// <summary>
     /// The suite's single browser-context factory. Everything that navigates goes through here, which is what
     /// makes <see cref="NavigationTimeoutMs"/> a property of the suite rather than of one call site.
     /// </summary>
@@ -4530,8 +4561,11 @@ public sealed partial class ReviewLoopBrowserTests
     /// <c>eval</c>s its predicate inside the page, which the served-page CSP (<c>script-src 'unsafe-inline'</c>,
     /// deliberately NO <c>'unsafe-eval'</c>) correctly refuses. Same bounded-deadline shape as
     /// <see cref="PollForAnswerAsync"/> — never a fixed sleep, and it fails loudly rather than hanging.
+    ///
+    /// <para>A readiness gate, so its deadline is <see cref="ReadinessTimeoutMs"/> and not a local literal —
+    /// see there for the two contention failures that set it.</para>
     /// </summary>
-    private static async Task WaitForEventAsync(IPage page, string type, int timeoutMs = 15_000)
+    private static async Task WaitForEventAsync(IPage page, string type, int timeoutMs = ReadinessTimeoutMs)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
         while (DateTime.UtcNow < deadline)
@@ -4544,7 +4578,16 @@ public sealed partial class ReviewLoopBrowserTests
             await Task.Delay(50);
         }
 
-        Assert.Fail("the SDK never emitted the '" + type + "' event within " + timeoutMs + "ms");
+        // Report the late arrival separately from the timeout. The two together name the cause — a wait too
+        // short for this runner, rather than a page that failed to do the work — which is the distinction a
+        // real investigation of the sibling helper's message lost hours to.
+        var arrived = await CountEventsAsync(page, type) > 0;
+        Assert.Fail(
+            "the SDK never emitted the '" + type + "' event within " + timeoutMs + "ms" +
+            (arrived
+                ? ", and it HAS emitted one since the deadline passed — so this is a wait that was too " +
+                  "short for this runner, not a product failure."
+                : "; it still has not, so the work genuinely never landed."));
     }
 
     /// <summary>

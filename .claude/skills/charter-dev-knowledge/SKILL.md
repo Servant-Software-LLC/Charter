@@ -209,7 +209,27 @@ update run `charter skills install --force` too.
   finding one card where it expected two, on **WebKit, under full-suite load only**, on a branch that had not
   touched that path. Use `SaveComposerAsync` (captures the count, clicks, waits for +1) or
   `WaitForEventCountAsync` directly; `WaitForEventAsync` is safe only for an event that can happen once per
-  page. Four tests had two `submitted` waits and all four were latently racy.
+  page. Four tests had two `submitted` waits and all four were latently racy. **`ready` is the only taped
+  event that fires once per page**; `review-log-loaded`, `list-loaded`, `round-loaded` and `panel-opened` all
+  fire at `init()` AND again on every write or SSE frame, so each is safe only as the first wait after
+  `ready`. Same family one notch finer (#209): a test seeding N notes and waiting for a `markers-rendered`
+  increment of **one** is satisfied by the FIRST note's render — `SeedNotesAsync` waits `+count`.
+- **NOT every "the page shows fewer than I saved" failure is a wait, and #209 is the one that is not.**
+  It presented exactly like the family above — `A_railed_badge_does_not_ride_away…` failing on macOS CI with
+  `Expected: "2" Actual: "1"` after seeding two notes — and it is a PRODUCT race: `hydrate()` assigned
+  `GET /api/annotations` straight over `state.annotations`, so a queue read whose snapshot was taken between
+  the two POSTs erased the second note when it landed. **The regression arrives after every signal a test
+  could wait for** (after the POST, after its render, after `submitted`), and nothing re-renders afterwards,
+  so the page sits wrong indefinitely and a re-run "fixes" it. The tell that separates the two: a wait bug
+  shows a value that is still catching up; this one shows a value that has gone BACKWARDS. The guard is a
+  write clock — `state.queueWrites`, bumped by every save/edit/retract, read before the fetch and compared
+  when it lands; a snapshot the page has written past is declined and `list-loaded` reports `stale: true`.
+  **Reproduce a race like this rather than waiting for it**: `HoldFirstQueueReadAsync`
+  (`tests/Charter.Browser.Tests/StaleQueueReadTests.cs`) holds the page's own load-time queue read at the
+  Playwright route boundary, lets the REAL server answer it at a chosen moment and delivers that genuine,
+  genuinely-stale response later — every byte the server's, only the timing the test's, deterministic on
+  every runner and both engines. Assert the symptom FIRST and the guard's own `stale` flag last, or the
+  pre-fix failure is a statement about the fix's instrumentation instead of about the vanished note.
 - **An element reference does NOT survive an `await` inside a page probe, because every `render()` sweeps the
   SDK's chrome away and builds it again (#198).** `renderMarkers` opens with `clearMarkers()`, which *removes*
   every `.charter-annotation-badge` and every `.charter-badge-rail` from the document. One saved note starts
@@ -235,7 +255,7 @@ update run `charter skills install --force` too.
   awaiting the SDK's own `reviewLog()` at the probe's yield point (`window.__charterProbeReentry`), and proves
   the sweep happened by stamping the badge first — so it can never pass vacuously.
 - **A focus rule is only asserted by a real `Tab`/`Enter` and a live `document.activeElement` read (#168,
-  #200).** Three cheap reads are green while the defect is fully present: `tabIndex >= 0` (true of plenty of
+  #200, #204).** Three cheap reads are green while the defect is fully present: `tabIndex >= 0` (true of plenty of
   things Tab never reaches), an element handle captured before the event (`renderMarkers` rebuilds, so it is
   detached afterwards — the #198 trap, one layer up), and calling `.focus()` from the test to get focus where
   the assertion wants it, which asserts the browser rather than the product. **And the re-render has to be
@@ -245,6 +265,19 @@ update run `charter skills install --force` too.
   already been made — no extra wait is needed or trustworthy. Every #200 test pairs its positive rule with an
   **anti-steal** control (focus something the render does not rebuild — a `.table-scroll` region, the open
   composer — and assert it did not move); without that half, "always restore focus" passes everything.
+  **Focus reaches `<body>` by THREE routes and each needed its own answer** — the control hides itself (#168,
+  the panel toggle), the control is rebuilt away (#200, `render()`), and the control *disables* itself under
+  the reviewer (#204, `syncZoomBar`/`syncSendButton`). #200 is structurally blind to the third: its first
+  guard returns early while the captured element is still in the document, which for a disabled control it
+  always is. `disableChrome(el, disabled, landing)` is now the ONE place SDK chrome becomes disabled; it
+  fires only when `document.activeElement === el`, and it moves focus **before** setting `disabled`, so
+  there is no `<body>` moment to repair. That condition is what makes it un-stealable — there is no focus
+  anywhere else for it to touch — so it needs no "was this the reviewer's gesture?" test. Where focus goes
+  is decided per site and deliberately differs from #200's "do not move, disclose the absence": the zoom bar
+  hands on to the opposite direction (never disabled at the same time) then to the zoomable block; Send
+  hands on to the panel status line, which is why `sendRound` writes that line BEFORE it disables the
+  button. In `syncZoomBar`, re-enable everything legal at the new scale **before** disabling anything, or a
+  reset from the ceiling offers `+` while it is still disabled.
 - **`document.elementFromPoint` is VIEWPORT-relative, and `scrollIntoView` scrolls EVERY scrollable ancestor.**
   Both halves bite in the same test. A badge below the fold hit-tests as a miss however correct it is, so a
   probe has to bring it into view first — but doing that *between* two readings of a scrolled block is what
