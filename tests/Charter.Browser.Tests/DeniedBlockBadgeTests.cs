@@ -334,6 +334,134 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+    // ---- the probe's own honesty (Charter #198) -------------------------------------------------------------
+
+    /// <summary>
+    /// Charter #198 — the probe must measure the badge <b>the page is showing</b>, not a reference it captured
+    /// before it yielded to the event loop.
+    ///
+    /// <para><b>The defect this pins.</b> Saving one note starts more than one render. The POST's own
+    /// <c>render()</c> runs before <c>submitted</c> is emitted, but <c>hydrateLog()</c> and the
+    /// <c>review-log</c> SSE frame that the same write triggers each call <c>render()</c> again, at a time
+    /// nothing in the test controls. Every one of those passes runs <c>clearMarkers()</c>, which
+    /// <b>removes every badge element from the document</b> and builds new ones. The probe used to locate its
+    /// badge, <c>await</c> two animation frames for the scroll to settle, and only then measure — so a render
+    /// landing in that window left it holding a <b>detached</b> element. A detached element still carries its
+    /// text, so the probe reported a badge reading "1" with a <c>0x0</c> box at <c>(0,0)</c>, an
+    /// <c>elementFromPoint</c> hit of <c>HTML.charter-reserved</c> (the element at the origin) and an
+    /// <b>empty</b> computed <c>user-select</c> — which is the whole of the ubuntu-only failure in #198,
+    /// field for field.</para>
+    ///
+    /// <para><b>Why this reproduces on every platform and the CI failure did not.</b> The window is a real
+    /// race, so whether a render falls inside it depends on how long <c>/api/review-log</c> takes to answer
+    /// and on how fast the runner produces animation frames — both of which are slower on a cold Linux
+    /// runner, and neither of which a test should be betting on. The re-entrancy seam below removes the bet:
+    /// it drives the SDK's own <c>reviewLog()</c> — the same call the SSE frame makes — at exactly the
+    /// instant the probe yields, so the sweep is guaranteed rather than likely.</para>
+    ///
+    /// <para><b>The anti-vacuity half.</b> The badge is stamped before the probe runs and the stamp is looked
+    /// for afterwards: if the live badge still carries it, no sweep happened, the instrument measured nothing,
+    /// and this test says so instead of passing. That check is asserted BEFORE the placement assertions, so a
+    /// vacuous run can never be mistaken for a green one.</para>
+    ///
+    /// <para>Both badge shapes are covered, because they are placed by different code: an <c>LI</c> is badged
+    /// in place, while a <c>TABLE</c> is badged from a sibling rail whose offset <c>positionRailBadge</c>
+    /// MEASURES from two live rects — a rail rebuilt mid-probe has to come back correctly placed too.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_badge_is_measured_as_the_page_shows_it_even_when_a_render_lands_mid_probe()
+    {
+        var planPath = NewPlanPath("badge-reentrant");
+        await File.WriteAllTextAsync(planPath, BadgeGatePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await OpenBadgeGateAsync(page, server, session);
+
+            var liAnchor = await AnchorIdAsync(page, "body > ul > li:nth-child(2)");
+            Assert.False(
+                string.IsNullOrEmpty(liAnchor),
+                "fixture drift: a plain list's rows no longer carry their own sub-anchors");
+            var tableAnchor = await RequireAnchorIdAsync(page, RailedBlocks.Single(b => b.Tag == "TABLE"));
+
+            await SeedNotesAsync(page, liAnchor, 1, "a note on the row");
+            await SeedNotesAsync(page, tableAnchor, 1, "a note on the table");
+
+            // The seam: the SDK's own re-read of the folded review log — the call both `hydrateLog()` and the
+            // `review-log` SSE frame make — awaited at the probe's yield point. It ends in `render()`, so
+            // every badge on the page is swept and rebuilt while the probe is between locating and measuring.
+            await page.EvaluateAsync(
+                "() => { window.__charterProbeReentry = function () {" +
+                "  return window.CharterAnnotate.reviewLog(); }; return null; }");
+
+            await AssertBadgeSurvivesAMidProbeRenderAsync(page, liAnchor, "LI", rail: false);
+            await AssertBadgeSurvivesAMidProbeRenderAsync(page, tableAnchor, "TABLE", rail: true);
+
+            await page.EvaluateAsync("() => { delete window.__charterProbeReentry; return null; }");
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            Cleanup(planPath);
+        }
+    }
+
+    /// <summary>
+    /// Stamp the badge, probe it while a render sweeps the page, prove the stamp is gone (so the sweep really
+    /// happened) and only then assert the measurement.
+    /// </summary>
+    private static async Task AssertBadgeSurvivesAMidProbeRenderAsync(
+        IPage page, string anchorId, string label, bool rail)
+    {
+        const string stamp = "data-charter-probe-generation";
+
+        var stamped = await page.EvaluateAsync<bool>(
+            "([id, attr]) => { const b = document.querySelector(" +
+            "  '[data-charter-ui=\"badge\"][data-anchor-id=\"' + id + '\"]');" +
+            "  if (!b) return false; b.setAttribute(attr, 'before'); return true; }",
+            new[] { anchorId, stamp });
+        Assert.True(
+            stamped,
+            "Charter #198 — " + label + " carries a note and has no badge to measure before the probe even " +
+                "starts, so this test cannot say anything about a render landing mid-probe");
+
+        var probe = await ProbeBadgeAsync(page, anchorId);
+
+        // ANTI-VACUITY, and asserted first: if the badge still carries the stamp then no render swept the page
+        // during the probe, the seam did nothing, and a green result below would be worth nothing.
+        var swept = await page.EvaluateAsync<bool>(
+            "([id, attr]) => { const b = document.querySelector(" +
+            "  '[data-charter-ui=\"badge\"][data-anchor-id=\"' + id + '\"]');" +
+            "  return !!b && !b.hasAttribute(attr); }",
+            new[] { anchorId, stamp });
+        Assert.True(
+            swept,
+            "the re-entrancy seam did not replace " + label + "'s badge, so this test measured an ordinary " +
+                "probe and proves nothing about Charter #198");
+
+        AssertBadgeIsRealAndPlaced(probe, label, expected: 1);
+        Assert.Equal(rail, probe.RailPresent);
+        if (rail)
+        {
+            Assert.True(
+                probe.RailIsPreviousSibling,
+                "Charter #198 — " + label + "'s rail was rebuilt mid-probe and is no longer the previous " +
+                    "sibling of the block it names: " + probe);
+        }
+    }
+
     // ---- the scroll invariant ------------------------------------------------------------------------------
 
     /// <summary>
@@ -1203,6 +1331,30 @@ public sealed partial class ReviewLoopBrowserTests
     /// <para>The badge is located WITHOUT assuming where it lives — by its anchor id first, then inside the
     /// block, then in the preceding rail — so the probe cannot be the thing that decides the shape it is
     /// supposed to be measuring.</para>
+    ///
+    /// <para><b>Charter #198 — the badge is located TWICE, and the second locate is the one that is
+    /// measured.</b> This probe has to yield (the scroll needs frames to settle), and every <c>render()</c>
+    /// in the SDK begins with <c>clearMarkers()</c>, which REMOVES every badge element and builds new ones.
+    /// One saved note starts several renders — the POST's own, <c>hydrateLog()</c>'s, and the one the
+    /// <c>review-log</c> SSE frame triggers when the same write lands in <c>.review/</c> — and the later ones
+    /// arrive whenever the server and the runner get to them. A single locate before the yield therefore left
+    /// the probe measuring a DETACHED element, which still reports its text but a <c>0x0</c> box at
+    /// <c>(0,0)</c>, an <c>elementFromPoint</c> of whatever sits at the origin, and an EMPTY computed style.
+    /// That is the ubuntu-only failure in #198, field for field. Everything from the second locate to the
+    /// <c>return</c> is one synchronous run with no <c>await</c> in it, so nothing can sweep the page between
+    /// resolving the badge and measuring it — the race is removed rather than waited out.</para>
+    ///
+    /// <para><b>Why this cannot hide a real failure.</b> It changes WHICH element is measured, never WHETHER a
+    /// measurement is accepted. There is no retry, no bounded wait and no tolerance: a badge the SDK never
+    /// created is still absent at the second locate and still reported as <c>hasBadge: false</c>; a badge
+    /// that is present and genuinely has no box is still measured as <c>0x0</c> and still fails. And it does
+    /// not wait on presence — the FIRST locate is unchanged, so a probe called before the product has badged
+    /// anything returns "no badge" immediately instead of yielding in the hope one turns up.</para>
+    ///
+    /// <para><c>getBoundingClientRect</c> forces a synchronous layout, so an attached element can never report
+    /// an "unflushed" box: detachment (or <c>display: none</c>, which keeps a real computed style) is the only
+    /// thing that produces <c>0x0 at (0,0)</c>. That is what rules the alternative reading of #198 — a badge
+    /// genuinely not laid out on Linux — out rather than assuming it away.</para>
     /// </summary>
     private const string BadgeProbeBody =
         "const frame = () => new Promise(r => requestAnimationFrame(() => r()));" +
@@ -1212,22 +1364,42 @@ public sealed partial class ReviewLoopBrowserTests
         "  blockRect: null, hitsSelf: false, hitPath: '', railPresent: false, railIsPreviousSibling: false," +
         "  railHeight: -1, underPanel: false, cssTop: '', cssBottom: '', cssPosition: '', userSelect: ''," +
         "  blockPath: '', containerPath: '' };" +
-        "const block = document.getElementById(id) ||" +
-        "  document.querySelector('[data-anchor=\"' + id + '\"], [data-charter-anchor=\"' + id + '\"]');" +
-        "if (!block) return JSON.stringify(none);" +
-        // The box a reviewer actually sees. A wide <table>'s own rect runs past the edge of its scroll region,
-        // so containment measured against it would be satisfied by a badge nobody can see.
-        "const container = block.closest('.table-scroll') || block;" +
-        "let badge = document.querySelector('[data-charter-ui=\"badge\"][data-anchor-id=\"' + id + '\"]');" +
-        "if (!badge) badge = block.querySelector('[data-charter-ui=\"badge\"]');" +
-        "if (!badge) { const prev = container.previousElementSibling;" +
-        "  if (prev) badge = prev.querySelector('[data-charter-ui=\"badge\"]'); }" +
-        "if (!badge) return JSON.stringify(Object.assign({}, none, { found: true," +
-        "  blockPath: path(block), containerPath: path(container)," +
-        "  blockRect: rect(block.getBoundingClientRect())," +
-        "  containerRect: rect(container.getBoundingClientRect()) }));" +
-        "badge.scrollIntoView({ block: 'center' });" +
+        // Resolve block, container and badge from the LIVE document, with no await anywhere inside — so what
+        // it returns is a coherent snapshot of one moment rather than three references of different ages.
+        // The container is the box a reviewer actually sees: a wide <table>'s own rect runs past the edge of
+        // its scroll region, so containment measured against it would be satisfied by a badge nobody can see.
+        "const locate = () => {" +
+        "  const block = document.getElementById(id) ||" +
+        "    document.querySelector('[data-anchor=\"' + id + '\"], [data-charter-anchor=\"' + id + '\"]');" +
+        "  if (!block) return null;" +
+        "  const container = block.closest('.table-scroll') || block;" +
+        "  let badge = document.querySelector('[data-charter-ui=\"badge\"][data-anchor-id=\"' + id + '\"]');" +
+        "  if (!badge) badge = block.querySelector('[data-charter-ui=\"badge\"]');" +
+        "  if (!badge) { const prev = container.previousElementSibling;" +
+        "    if (prev) badge = prev.querySelector('[data-charter-ui=\"badge\"]'); }" +
+        "  return { block: block, container: container, badge: badge };" +
+        "};" +
+        "const missing = found => JSON.stringify(Object.assign({}, none, { found: true," +
+        "  blockPath: path(found.block), containerPath: path(found.container)," +
+        "  blockRect: rect(found.block.getBoundingClientRect())," +
+        "  containerRect: rect(found.container.getBoundingClientRect()) }));" +
+        "const first = locate();" +
+        "if (!first) return JSON.stringify(none);" +
+        // Absence is answered from the FIRST locate, before any yield: "the badge is not there" must never be
+        // something this probe waits for, or a genuinely unbadged block would be given time to grow one.
+        "if (!first.badge) return missing(first);" +
+        "first.badge.scrollIntoView({ block: 'center' });" +
         "await frame(); await frame();" +
+        // A test seam, and the only reason it exists: a re-render landing HERE is the #198 race, and
+        // A_badge_is_measured_as_the_page_shows_it_even_when_a_render_lands_mid_probe drives the SDK's own
+        // reviewLog() through it so the sweep is guaranteed on every platform instead of being waited for on
+        // an unlucky one. Nothing sets it in a normal run.
+        "if (window.__charterProbeReentry) await window.__charterProbeReentry();" +
+        // ---- from here to the return there is no await: one synchronous measurement of one live badge ----
+        "const live = locate();" +
+        "if (!live) return JSON.stringify(none);" +
+        "if (!live.badge) return missing(live);" +
+        "const block = live.block, container = live.container, badge = live.badge;" +
         "const b = badge.getBoundingClientRect();" +
         "const cx = b.left + (b.width / 2), cy = b.top + (b.height / 2);" +
         "const hit = document.elementFromPoint(cx, cy);" +
@@ -1321,6 +1493,12 @@ public sealed partial class ReviewLoopBrowserTests
     /// </summary>
     private static async Task SeedNotesAsync(IPage page, string anchorId, int count, string notePrefix)
     {
+        // The markers are what every assertion reads, so the wait below is for a render caused by THESE
+        // notes — the count before the first one, plus one. Charter #198's prior art restated: an
+        // "at least one has happened" wait over a tap that accumulates for the page's whole life is
+        // satisfied by the render that ran on load, so it is not a wait at all.
+        var markersBefore = await CountEventsAsync(page, "markers-rendered");
+
         for (var i = 0; i < count; i++)
         {
             var before = await CountEventsAsync(page, "submitted");
@@ -1331,9 +1509,7 @@ public sealed partial class ReviewLoopBrowserTests
             await WaitForEventCountAsync(page, "submitted", before + 1);
         }
 
-        // The markers are what every assertion reads, and they are painted by a later render() pass than the
-        // one that acknowledged the submit.
-        await WaitForEventCountAsync(page, "markers-rendered", 1, atLeast: true);
+        await WaitForEventCountAsync(page, "markers-rendered", markersBefore + 1, atLeast: true);
     }
 
     private static async Task WaitForEventCountAsync(

@@ -188,6 +188,30 @@ update run `charter skills install --force` too.
   touched that path. Use `SaveComposerAsync` (captures the count, clicks, waits for +1) or
   `WaitForEventCountAsync` directly; `WaitForEventAsync` is safe only for an event that can happen once per
   page. Four tests had two `submitted` waits and all four were latently racy.
+- **An element reference does NOT survive an `await` inside a page probe, because every `render()` sweeps the
+  SDK's chrome away and builds it again (#198).** `renderMarkers` opens with `clearMarkers()`, which *removes*
+  every `.charter-annotation-badge` and every `.charter-badge-rail` from the document. One saved note starts
+  several renders — the POST's own (synchronous, before `emit('submitted')`), `hydrateLog()`'s when its fetch
+  lands, and the one the `review-log` SSE frame triggers when that same write reaches `.review/` — so a probe
+  that locates an element, `await`s two animation frames for a scroll to settle, and *then* measures can be
+  measuring a **detached** node. `hydrateLog()`'s fetch is guaranteed to be in flight when a test observes
+  `submitted`, so this is a real race on every platform; it only *lands* where the runner is slow enough
+  (ubuntu, first attempt, cold caches — a re-run passed twice). **Know the signature**: a detached element
+  reports its `textContent` normally but `getBoundingClientRect()` of `0x0 at (0,0)`, an `elementFromPoint`
+  hit of whatever sits at the origin (`HTML.charter-reserved`), `closest()` of null, and — the field that
+  tells it apart from `display: none`, which keeps a real computed style — an **empty** `getComputedStyle`.
+  `getBoundingClientRect` forces layout, so an *attached* element can never report an "unflushed" box; 0×0 at
+  the origin is never a timing artefact of layout, only of detachment. **The fix is structural, never a
+  wait**: re-resolve every element AFTER the last `await` and keep the whole measurement synchronous, so
+  nothing can sweep the page between resolving and measuring (`BadgeProbeBody`'s `locate()`, called twice, and
+  the same shape in `AssertTheBadgeDoesNotSwallowTheTableHeaderAsync`). Absence is still answered from the
+  FIRST locate, so the probe never waits for a badge to turn up. Note which way each site fails: the badge
+  probe went red in the safe direction, but the header-occlusion rule measured a detached badge's overlap as
+  **zero** and went **green** over a badge nobody could see — a `display: none` mutation passed it. Any rule
+  phrased as "the chrome covers little of X" needs a non-zero-area premise asserted alongside it.
+  `A_badge_is_measured_as_the_page_shows_it_even_when_a_render_lands_mid_probe` reproduces this on every OS by
+  awaiting the SDK's own `reviewLog()` at the probe's yield point (`window.__charterProbeReentry`), and proves
+  the sweep happened by stamping the badge first — so it can never pass vacuously.
 - **`document.elementFromPoint` is VIEWPORT-relative, and `scrollIntoView` scrolls EVERY scrollable ancestor.**
   Both halves bite in the same test. A badge below the fold hit-tests as a miss however correct it is, so a
   probe has to bring it into view first — but doing that *between* two readings of a scrolled block is what
