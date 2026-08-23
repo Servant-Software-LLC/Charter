@@ -79,6 +79,25 @@ dotnet publish src/Charter.Cli -c Release -r osx-arm64 --self-contained true `
 pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
 ```
 
+**CI runs the browser suite on TWO engines and so must you before claiming green** (`.github/workflows/ci.yml`).
+The default leg is Chromium — `dotnet test Charter.sln` covers it. The second leg re-runs the browser project
+alone under WebKit:
+
+```powershell
+pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps webkit
+$env:CHARTER_BROWSER = 'webkit'
+dotnet test tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj -c Release --no-build
+```
+
+**One skip on the WebKit leg is CORRECT and is allow-listed in CI** — `Railed_badges_survive_forced_colors`
+(#164). Playwright emulates forced-colors on Chromium ONLY; WebKit rejects the emulation, so running it there
+would measure an ordinary context and **pass while proving nothing**, which is worse than skipping. So a local
+WebKit leg reporting `Skipped: 1` is green — and if you quote a WebKit result anywhere, **state why the skip is
+there**, or the next reader reasonably reads it as a failure. CI's gate is a name allow-list, not a count: any
+*other* skipped name fails the job, as does a run that is not successful or reports no passes at all. Do not
+"fix" the skip by dropping the emulation assert — that assert is what stops the test going vacuous on
+Chromium, where it genuinely runs.
+
 ## Testing lessons (the expensive ones)
 
 ### 1. The browser-test blind spot
@@ -386,10 +405,14 @@ update run `charter skills install --force` too.
   `02-architecture-b-living-document.md` (dual handoff), `03-git-mediated-team-review.md` (per-author JSONL
   logs, the fold rules, §5.0 solo primacy; **normative**, and its §9 build order says which steps exist).
 - Distribution + CI: `.github/workflows/`, mirrored from Guardrails' validated pipeline.
-- **Release state and the master test baseline are single-sourced in `charter-domain-knowledge`'s Status
-  block** — don't restate them here. The dev-side consequence is §3's trap sharpened: `v0.7.0` is **published**
-  while `<Version>` still reads `0.7.0`, so a local build reports a version already on NuGet and "csproj agrees
-  with `charter --version`" proves nothing about whether your binary matches the repo. Bump `<Version>` before
+- **Release state is single-sourced in `charter-domain-knowledge`'s Status block** — don't restate it here.
+  This bullet used to, and went seventeen releases stale doing it (#191); state the TRAP, never the numbers.
+  The dev-side consequence is §3's trap sharpened: **a tag is published while `<Version>` still reads the same
+  number**, because `<Version>` is bumped when a release is cut, not as work lands. So a local build routinely
+  reports a version already on NuGet, and *"csproj agrees with `charter --version`"* proves **nothing** about
+  whether your binary matches the repo — `git describe --tags` is what answers that. Bump `<Version>` before
   the next tag.
+- **There is no master test baseline to quote, by design** (#191). A test count is the output of a run and
+  differs per CI leg, so no document states one; run both legs (*Commands*, above) and read what they print.
 - Product model, review-loop semantics, solo primacy, and the agent-facing consumption contract (poll exit
   codes, `drainError`, `reviewSubmitted`, `anchorStatus`): skill `charter-domain-knowledge`.

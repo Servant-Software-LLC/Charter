@@ -782,37 +782,64 @@ is confined to `:::question`, where reliability matters; `:::custom-html` is the
 | **Strict handoff, the delegated flatten, the provenance stamps, the one question-body parse, the manifest** | `docs/plans/04-machine-consumer-contract.md`; predicate in `src/Charter.Core/HandoffGate.cs` |
 | **The `.manifest.json` CONTRACT** a machine may assert on (stable core, absence semantics, the hash recipe) | `skills/charter/references/handoff.md`, bound by `HandoffManifestContractTests` |
 | Build / test / package / distribution / testing lessons | skill `charter-dev-knowledge` |
+| **Release state, what shipped when, the test count** | `git describe --tags` · `git log` · GitHub releases · the run itself — **never a document.** See the rule under *Status* (#191) |
 
-## Status (update as milestones complete)
+## Status
 
-- **`v0.7.0` IS RELEASED** — GitHub release, remote tag, and NuGet all carry it. (An earlier attempt was cut
-  and unwound mid-test-phase to take more fixes; nothing published then, so the same number was re-used. That
-  is why a stale note may claim it is pending — it isn't.)
-- **Master is AHEAD of v0.7.0 and `<Version>` has not been bumped yet.** `src/Charter.Cli/Charter.Cli.csproj`
-  still says `0.7.0`, so a local build reports a version already published. Everything in the *"Also landed"*
-  bullet below is **unreleased** and heading for the next tag — bump `<Version>` before cutting it.
-- **Master baseline (`dc725b7`):** **755** tests green, 0 warnings — Core 405 · Server 244 · Cli 81 ·
-  Browser 25.
-- **Shipped in v0.7.0:** the #68 table scroll wrapper; team review steps 1–4 + the `.review/` tracked-gate; the
-  #67 quarantine + `--keep-annotations`; #56, #66, #48, #60, #61, #63. (`git log v0.7.0` is the history.)
-- **Also landed — merged to master but NOT YET RELEASED:** panel/drain anchor parity (#78); an unrecognised
-  annotation `kind` refused with 400 rather than coerced to `element` (#79); the three #75 quarantine
-  follow-ups (panel surfacing, answer-staleness refusal + `--apply-stale-answers`, `.stale-*.json` retention) —
-  PR #82. The unattended `charter headless` verb (#7) — PR #83. Pan/zoom for an oversized `:::diagram` (#51),
-  SDK-only — PR #84. The #74 review-log staleness resolution (`base` + `baseStatus`) — PR #80. The #5 layout
-  regression gate — PR #86. The #87 reachable scroll affordances for `:::diff`, code blocks, an unknown
-  directive's body and `:::custom-html` — PR #89.
-- **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9):
+### Read the rule before the facts (#191)
+
+**A Status block is where facts with a shelf life come to rot.** This one carried a version seventeen
+releases old and a matching stale test count — in the file **every** agent working in this repo loads to get
+its bearings, in the section whose numbers an agent will quote back with confidence, under a SELF-UPDATING
+banner nobody had cause to distrust. Writing today's numbers in only resets the clock. So the section is now
+written to a rule, and **the rule is what to preserve here, not the facts under it**:
+
+> **State a fact here only if a test BINDS it, or if its shelf life is longer than the gap between edits to
+> this file. Every other fact NAMES its authority instead of quoting it.**
+
+The two facts that rotted get **opposite** rulings, because they fail differently:
+
+- **The version is STATED, because it is BOUND.** It has exactly one authority — `<Version>` in
+  `src/Charter.Cli/Charter.Cli.csproj`, reaching the runtime as `CharterVersion.Current` — so the binding is
+  one assertion, and it fires *exactly* when the fact goes wrong (a version bump) and at no other time. Same
+  shape as #155 binding `charter-format`'s version range to `CharterFormat.Version` and #173's
+  `HeadlessRecordContractTests` binding the record's field set to its documentation.
+- **The test COUNT is NOT stated, and must not come back.** There is no authority a document can cite: it is
+  the *output of a run*, and it differs per CI leg (the whole solution vs the WebKit browser-only one). A test
+  pinning it would fail on every PR that adds a test — a gate whose only signal is *"somebody wrote a test"*,
+  which teaches people to bump the number without reading it. And it decides nothing: no work in this repo
+  goes differently at a count in the low thousands than at one a hundred higher. It reads as calibration and
+  is decoration. Its authority is **the run itself** plus `.github/workflows/ci.yml`; the commands are in
+  `charter-dev-knowledge`.
+
+**`StatusVersionDriftTests`** (`tests/Charter.Cli.Tests/`) enforces both halves plus the rule's own survival:
+the stated version must equal the built tool's, **no second version may appear in this section**, and a test
+count may not be re-added. Placed beside `DocumentedCommandsTests` / `AgentsGuidanceTests`, the other guards
+holding Charter's prose to what the code does.
+
+### The facts
+
+- **Version: `0.24.0`** — what `<Version>` says and what a local build reports. Bound, per above.
+- **Master is routinely AHEAD of the newest tag while reporting its number, and that is normal.**
+  `<Version>` is bumped when a release is *cut*, not as work lands — so a local build can report a version
+  already published, and the delta is unreleased work heading for the next tag. Which side of it you are on is
+  a question for git, never for this file: **`git describe --tags`** (a `-N-g<sha>` suffix means N commits
+  past the tag). Bump `<Version>` when cutting the next release.
+- **What shipped in which release, and what is in flight** — `git log <tag>..HEAD`, the GitHub releases, and
+  `gh issue list --repo Servant-Software-LLC/Charter --state open`. Deliberately **not** enumerated here: the
+  old block's hand-copied "shipped in" / "also landed" / "known-open" / "pending externally" lists were the
+  worst of the rot — by the time they were read, every issue they named as open or pending was closed.
+- **Team review — built vs NOT built** (`docs/plans/03-git-mediated-team-review.md` §9). This one *is* stated,
+  because it is coarse, it moves once per milestone rather than once per commit, and "the verb does not exist"
+  is the fact an agent most needs before it plans against one:
   - **Built:** 1 (record + fold), 2 (writer), 3 (server-side fold + panel), 4 (server-less `poll` read path),
-    7 (the two-author browser test — `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
+    6 (agent voice — the `charter reply` verb, `ReviewLogWriter.AppendReply`, and reply-vs-edit guidance in the
+    `charter` skill), 7 (the two-author browser test —
+    `Review_panel_shows_this_authors_committed_comment_and_a_teammates_log`).
   - **Step 5 is only PARTLY built.** The read-only git *plumbing* exists (`GitCommand`, `GitTracking`) and
     serves the §5.0 tracked-gate. The §5.1 **warnings do not exist**: no behind-upstream/stale-plan warning at
     `charter review` start, no uncommitted-records reminder at session end, **no `charter review verify` verb**,
     no orphan diff (an orphan shows its `quote`, never a diff).
-  - **Step 6 (agent voice) is not built.** `ReviewOpKind.Reply` and `Reopen` are understood by the fold and by
-    `ReviewLogWriter.NewId`, but **nothing appends either** — no `AppendReply`, no API route, no CLI verb. A
-    `reopen` can only reach a log from outside Charter.
-- **Known-open follow-ups:** #46 (annotation lifecycle v2). (#5 and #87 are CLOSED — both landed above.)
-- **Pending externally** — Guardrails' interactive direct-ingestion of `.charter.md` (Guardrails #390–393,
-  their team; Charter's producer side is complete); macOS signing (#9); v2 features (#1–#6).
+  - **`reopen` still has no writer.** `ReviewOpKind.Reopen` is understood by the fold, but nothing appends one
+    — no API route, no CLI verb — so a `reopen` can only reach a log from outside Charter.
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).
