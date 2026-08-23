@@ -178,7 +178,10 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   `:::comparison` rows, and `:::diff` lines — nothing else.** `CharterMarkdown.SubAnchors` is the single
   descent that defines the sub-block half, and `AnchorAssignment` walks the same union, so an id the renderer
   emits is always one `SourceMap` registers. A nested list inside an `<li>`, a list inside `:::note`/`:::warn`,
-  and a `<tr>` are **not** anchors: none of the three is ever stamped.
+  and a `<tr>` are **not** anchors: none of the three is ever stamped. **Every entry in that set is
+  TOP-LEVEL**, sub-anchors included — a `:::diff` nested inside a `::::note` renders its lines with no `id`
+  and no `data-anchor` at all (#208), so the whole card degrades outward to the callout's anchor like any
+  other nested block.
   **One carve-out, and it is the SDK's, not the renderer's: a `:::question` is not annotatable at all.**
   `form.question` is in the SDK's `UNANCHORABLE` list — a rendered question is native controls, and a note
   competing with the answer the block exists to collect would be worse than no note — so `closestAnchored`
@@ -961,6 +964,8 @@ holding Charter's prose to what the code does.
   model descend honestly means excising the nested span from the enclosing block's `RawContent`, and
   `Block.Id` is a hash of `RawContent`, so every containing block re-ids and **every annotation on it
   orphans**. Design of record: `docs/plans/04-machine-consumer-contract.md` §11.
-  **Still open from the same family:** a nested `:::diff` makes `charter render` **crash** (exit 1,
-  `KeyNotFoundException` out of `AnchorAssignment.SubIdForLine`) — see §11.8; it needs its own issue.
+  **The last of that family is CLOSED (#208):** a nested `:::diff` used to make `charter render` crash
+  (exit 1, `KeyNotFoundException` out of `AnchorAssignment.SubIdForLine`). It now **renders without
+  sub-anchors** — #166 one level down — while the strict-handoff gate still refuses the shape. `render` is
+  total; refusal lives at the gate that has evidence behind it. See §11.8.
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

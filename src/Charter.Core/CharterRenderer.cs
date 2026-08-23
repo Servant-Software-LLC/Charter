@@ -501,10 +501,19 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// straight past the region to that line's own <c>id</c>/<c>data-anchor</c>. The region therefore carries
     /// neither, and <see cref="SourceMap"/> — built from the markdown — never sees it at all.
     /// </para>
+    /// <para>
+    /// A NESTED <c>:::diff</c> renders WITHOUT sub-anchors (Charter #208). See <see cref="HasAnchorSlot"/> for
+    /// why the anchors go rather than the render.
+    /// </para>
     /// </summary>
     private void WriteDiff(HtmlRenderer renderer, CustomContainer obj)
     {
         renderer.EnsureLine();
+
+        // Asked ONCE, and it governs the card and its lines together: a nested container's own id is already
+        // absent (the anchor pass never stamped one), so anchoring its lines would claim a precision the block
+        // holding them does not have.
+        var anchored = HasAnchorSlot(obj);
 
         if (renderer.EnableHtmlForBlock)
         {
@@ -518,18 +527,23 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         // line — the same anchor SourceMap.Build registers via the same assignment, so a note on one line
         // round-trips to that line and survives edits to the others (invariant 2), and two identical diff
         // lines are discriminated (-2) rather than aliased. The add/del/context class makes added vs. removed
-        // lines distinguishable in the markup.
+        // lines distinguishable in the markup, and it is written whether or not the block is anchored — it is
+        // what makes an added line legible as added, which no anchor is needed for.
         foreach (var (raw, _, line, cssClass) in CharterMarkdown.DiffLines(obj, _markdown))
         {
-            var anchor = _assignment.SubIdForLine(line);
             if (renderer.EnableHtmlForBlock)
             {
                 renderer.Write("<div class=\"diff-line ");
                 renderer.Write(cssClass);
-                renderer.Write("\" data-anchor=\"");
-                renderer.WriteEscape(anchor);
-                renderer.Write("\" id=\"");
-                renderer.WriteEscape(anchor);
+                if (anchored)
+                {
+                    var anchor = _assignment.SubIdForLine(line);
+                    renderer.Write("\" data-anchor=\"");
+                    renderer.WriteEscape(anchor);
+                    renderer.Write("\" id=\"");
+                    renderer.WriteEscape(anchor);
+                }
+
                 renderer.Write("\">");
             }
 
@@ -970,6 +984,41 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     /// </summary>
     private static string JoinAnswer(IReadOnlyList<string> answer, string separator)
         => answer.Count == 0 ? string.Empty : string.Join(separator, answer);
+
+    /// <summary>
+    /// True when <paramref name="obj"/> occupies an anchor slot — i.e. when <see cref="AnchorAssignment"/>
+    /// walked it and therefore holds ids for it and its sub-elements. That is exactly "is it a TOP-LEVEL node",
+    /// because <c>AnchorAssignment.Build</c>'s slot walk and the renderer's anchor pass are both
+    /// <c>foreach (var node in document)</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Charter #208.</b> <c>WriteDiff</c> is reached wherever Markdig parsed a <c>:::diff</c> — including
+    /// inside a <c>::::note</c>, a list item or a blockquote, which the renderer descends through — but it read
+    /// each line's sub-anchor out of the top-level-only assignment, so a nested diff's lines were never
+    /// registered and <c>SubIdForLine</c> threw. That surfaced as <c>charter render</c> exiting 1 with
+    /// <i>"The given key '14' was not present in the dictionary"</i>, immediately after the #203 warning had
+    /// correctly named the block.
+    /// </para>
+    /// <para>
+    /// <b>Why the anchors go and the render stays.</b> Dropping them is #166 applied one level down: a nested
+    /// block carries no anchor of its own, and a note on one resolves OUTWARD to the enclosing block. The
+    /// unanchored <c>.diff-line</c>s, the anchor-invisible <c>.diff-scroll</c> and the id-less <c>.diff</c> card
+    /// are all transparent to <c>closestAnchored</c>, so an Alt+click inside a nested diff climbs to
+    /// <c>div.note</c> — a real anchor with a real source line — with no SDK change. Refusing the plan instead
+    /// was rejected: the shape is ALREADY refused where refusing helps (#203's strict-handoff gate blocks it,
+    /// because its <c>+</c>/<c>-</c> lines flatten as bullet markers), and <c>render</c>/<c>review</c> are how an
+    /// author READS the plan they have to fix — a render that aborts takes the warning's own remedy away.
+    /// </para>
+    /// <para>
+    /// <b>Structural, never a dictionary probe.</b> A <c>TryGetValue</c> guard would answer the same question
+    /// for a nested block and MASK a genuine assignment/renderer divergence on a top-level one, which is the
+    /// misattribution class this whole model exists to prevent. Every other writer here is already null-tolerant
+    /// through <see cref="WriteId"/>, so this only brings the diff's per-line anchors into line with the card
+    /// they sit in.
+    /// </para>
+    /// </remarks>
+    private static bool HasAnchorSlot(CustomContainer obj) => obj.Parent is MarkdownDocument;
 
     /// <summary>Write an <c>id="…"</c> attribute when the block carries a stable id.</summary>
     private static void WriteId(HtmlRenderer renderer, string? id)

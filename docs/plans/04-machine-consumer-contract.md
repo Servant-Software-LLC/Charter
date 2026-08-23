@@ -907,17 +907,47 @@ requires excising the nested span from the enclosing container's `RawContent` �
 `RawContent`, so **every containing block re-ids and every annotation on it orphans**. That re-id is the
 actual cost. It is not merely "a format decision".
 
-### 11.8 Known limit, found while implementing this and NOT fixed here
+### 11.8 A nested `:::diff` crashed the renderer — found here, fixed in #208
 
-**A nested `:::diff` crashes the renderer.** `charter render` on a plan with a `:::diff` inside a `::::note`
-(or a blockquote) exits `1` with *"The given key '13' was not present in the dictionary"* —
+**What it was.** `charter render` on a plan with a `:::diff` inside a `::::note` (or a list item, or a
+blockquote) exited `1` with *"The given key '13' was not present in the dictionary"* —
 `CharterContainerRenderer.WriteDiff` reads each line's sub-anchor from `AnchorAssignment`, whose slot walk is
-top-level-only, so a nested diff's lines were never registered. It predates this change and is a bug against
-the already-settled rule that a nested block carries no anchor (#166), rather than a new format question.
+top-level-only, so a nested diff's lines were never registered. It predated this revision and was a bug
+against the already-settled rule that a nested block carries no anchor (#166), rather than a new format
+question. It was stated rather than fixed here because this revision's scope is *report, do not descend*.
 
-It is stated rather than fixed because the scope of this revision is *report, do not descend*, and because a
-crash is a loud failure rather than a silent one — the nested-directive warning now fires **before** the
-render aborts, so the author is told the real cause. It needs its own issue.
+**How it was settled: RENDER IT, WITHOUT SUB-ANCHORS.** A nested `:::diff` now draws its card, its scroll
+region and every `diff-line` with its add/del/context class, and carries **no `id` and no `data-anchor`
+anywhere inside it** — `WriteDiff` asks `HasAnchorSlot(obj)` (`obj.Parent is MarkdownDocument`, the same walk
+`AnchorAssignment.Build` performs) once, and skips the lookup rather than probing the dictionary. That is
+#166 applied one level down: the block carries no anchor of its own, and a note on it resolves **outward** to
+the enclosing block, which no SDK change is needed for — the unanchored lines, the anchor-invisible
+`.diff-scroll` and the id-less `.diff` card are all transparent to `closestAnchored`.
+
+**Why not refuse the plan.** Both options were defensible and the deciding argument is about *where a refusal
+helps*. The shape is **already refused** where refusal has evidence behind it: §11.4's strict-handoff gate
+blocks a nested `:::diff`, because its `+`/`-` lines are eaten as CommonMark bullet markers in the flatten.
+`render` and `review` are how an author **reads** the plan they have to fix, and #203's warning already names
+the block by line — so aborting the render takes away the remedy the warning just prescribed, and does it to
+the one verb that has no downstream consumer to protect. `render` stays **total**.
+
+**The sweep, recorded because the fact is worth having.** `AnchorAssignment` has exactly two readers
+(`IdForLine`, `SubIdForLine`) and exactly **four** call sites in `src/`. Three sit inside a
+`foreach (var node in document)` top-level walk — `CharterRenderer.RenderBody`'s anchor pass (both its block
+id and its `:::comparison`/list sub-anchor stamping), `SourceMap.Build`, and `PlanWalk` — so each looks up
+only slots the same walk registered and none can throw. `WriteDiff` was the **only** reader inside
+`CharterContainerRenderer`, which is the only class here whose methods run at arbitrary nesting depth.
+**`WriteDiff` was alone.** Every other container writer (`WriteDiagram`, `WriteCustomHtml`, `WriteQuestion`,
+`WriteUnknown`) reads its id from `obj.TryGetAttributes()?.Id` through the null-tolerant `WriteId`, so each
+already degraded to "no id" when nested; the fix brings the diff's per-line anchors into line with the card
+they sit in.
+
+**The guard is structural, never a dictionary probe.** A `TryGetValue` would answer the same for a nested
+block and **mask** a genuine assignment/renderer divergence on a top-level one — the misattribution class the
+whole anchor model exists to prevent. Pinned by `NestedDiffAnchorTests` (Core: the three live nestings, each
+paired with the top-level twin that shares its diff body, plus the #184-shaped assertion that
+`SourceMap.Anchors` still equals exactly the top-level block ids) and `NestedDiffRenderTests` (CLI: `render`
+and `export` exit 0, #203's warning still fires with nothing after it, and strict handoff still blocks).
 
 # Rev 6 — the flatten carries its references, and the joins have a checker
 

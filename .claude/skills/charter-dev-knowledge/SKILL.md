@@ -386,11 +386,19 @@ update run `charter skills install --force` too.
   Do NOT make the model, `AnchorAssignment`, `SourceMap` or the flatten descend: `Block.Id` is a hash of
   `RawContent`, so excising a nested span re-ids every containing block and orphans every annotation on it.
   Design of record: `docs/plans/04-machine-consumer-contract.md` §11.
-- **A nested `:::diff` CRASHES the renderer, and it is not fixed** (#203 §11.8). `charter render` on a
-  `:::diff` inside a `::::note` or a blockquote exits 1 with *"The given key '13' was not present in the
-  dictionary"*: `WriteDiff` reads each line's sub-anchor from `AnchorAssignment`, whose slot walk is
-  top-level-only, so a nested diff's lines were never registered. The nested-directive warning fires first, so
-  the author is told the real cause — but the verb still fails. Needs its own issue.
+- **A CONTAINER WRITER RUNS AT ANY DEPTH, so it may never read a top-level-only map — and `WriteDiff` was
+  the only one that did** (#208, §11.8). It read each `:::diff` line's sub-anchor from `AnchorAssignment`,
+  whose slot walk is `foreach (var node in document)`, so a `:::diff` inside a `::::note`/list item/blockquote
+  exited 1 with *"The given key '13' was not present in the dictionary"* — #203's warning naming the real
+  cause, then a crash that took away the render the author needed to fix it. It now renders **without
+  sub-anchors** (#166 one level down: no anchor of its own, notes resolve outward to the enclosing block) and
+  `render` stays **total**; the shape is still refused by the strict-handoff gate, which is where refusing has
+  evidence behind it. **The sweep is worth keeping:** `AnchorAssignment` has four call sites in `src/`, and
+  the other three (`RenderBody`'s anchor pass, `SourceMap.Build`, `PlanWalk`) are all inside a top-level walk,
+  so they look up only what they registered. Every other container writer takes its id from
+  `obj.TryGetAttributes()?.Id` through the null-tolerant `WriteId` and already degraded to "no id". **The
+  guard is structural (`obj.Parent is MarkdownDocument`), never a `TryGetValue`** — a dictionary probe answers
+  the same for a nested block and MASKS a real assignment/renderer divergence on a top-level one.
 - **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
   handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener
