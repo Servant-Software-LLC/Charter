@@ -178,6 +178,34 @@ public class HeadlessRecordContractTests
     }
 
     [Fact]
+    public void TheMeaningOfAnswered_IsBoundToTheDoc_NotJustItsName()
+    {
+        // This file bound the record's field SET. Charter #188 proved that is not enough on its own: the
+        // meaning of `answered` changed -- from "the array has elements" to "the array records a decision" --
+        // while every assertion here stayed green, because they all check that the TOKEN appears somewhere.
+        // A consumer's `answered === true` assertion flips on that change with nobody at fault, which is the
+        // same failure mode `recommended` had in #142 and the reason this file exists.
+        //
+        // So the one meaning that moved is bound BEHAVIOURALLY and DOCUMENTALLY in one test: the record must
+        // report a blank answer as unanswered, and the doc must carry that exact case. Deleting either half
+        // fails.
+        const string blankAnswer =
+            "---\ncharter-format-version: 1\n---\n\n# Plan\n\n:::question\n"
+            + "{\"id\":\"db\",\"title\":\"Which database?\",\"mode\":\"single\",\"target\":\"human\","
+            + "\"options\":[\"Postgres\",\"MySQL\"],\"answer\":[\"\"]}\n:::\n";
+
+        Assert.False(
+            Record(blankAnswer).RootElement.GetProperty("questions")[0].GetProperty("answered").GetBoolean(),
+            "a blank value is not a decision -- `answered` counts content, not elements (Charter #188).");
+
+        Assert.True(
+            ReadDoc().Contains("[\"\"]", StringComparison.Ordinal),
+            "unattended.md does not state that a blank answer reads as UNANSWERED. The absence table is where "
+                + "a consumer learns what `answered: false` means, and the rule narrowed under a schema number "
+                + "that had not shipped -- which is exactly the window in which the doc must catch up.");
+    }
+
+    [Fact]
     public void PlanFormatVersion_DistinguishesAMissingMarkerFromANonIntegerOne()
     {
         // A bare int could not: CharterFormat reports no version for BOTH, so `charter-format-version: 1.0`

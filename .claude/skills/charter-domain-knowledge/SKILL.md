@@ -62,7 +62,8 @@ it is for teams. Check it against §5.0 before designing it.
   fact that there is **no** `:::annotated-code` or `:::file-tree` (they have no renderer). Cite it; never fork
   it. A drift test binds the skill's catalog to `BlockKind` ∪ `QuestionSpec`, so a fork breaks the build.
 - **`:::question` is the elicitation block**: a validated JSON body (`id`, `title`, `mode`, `options`,
-  `target`, optional `answer` — whose presence marks it resolved) rendered as a native HTML `<form>`. The gap
+  `target`, optional `answer` — which marks it resolved when it holds at least one value and none of them is
+  blank; `[""]` is OPEN, #188) rendered as a native HTML `<form>`. The gap
   it fills is in *base markdown* (CommonMark has no input primitive), not in visual-plan, which already elicits
   via `question-form`.
 - **Session:** keyed by canonicalized artifact path; holds queued prompts + annotations. Loopback-only,
@@ -520,9 +521,46 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   `::::question` read fine in the record while the flatten deleted its id/title/target, and an unterminated
   container flattened perfectly while the record escalated it. `QuestionBodyParityTests` asserts the two
   verbs reach the same verdict, not that they call the same method.
-- **Known-open, deliberately split:** #186 (`--answers` overrides/erases an inline answer with no
-  validation), #187 (the chain-of-custody manifest; `headless` still has no `--answers`), #188 (`answered`
-  counts array elements, so `[""]` certifies as a decision).
+- **An `--answers` entry may FILL, never REPLACE** (#186). It settles a question the plan left open and may
+  re-state a recorded `answer` verbatim — *an answers file may only ADD information* — but it may never
+  overwrite one, and `[]`/`null` is a rejection rather than an erasure ("no answer" is already spelled by
+  **omitting the id**). Values are checked against the question's `mode` and `options`. A violation is a bad
+  **invocation**: `charter handoff` exits **1**, writes **nothing**, and names every violation on stderr —
+  the same class as the unreadable-`--answers` `1` it already returned, and deliberately not a `2` (a `2`
+  would mean "the output exists, go read it" about a document that silently differs from what was asked for).
+  One kernel: **`AnswerRules`** (`Merge` + `Check`), which replaced `HandoffGate.ResolvedAnswer` because the
+  rules became part of the merge.
+  - **Validation is a function of WHO SUPPLIED the value, not of WHERE IT LANDS.** A human at a review page
+    holds authority to exceed the declared `options` (the "Something else" write-in, #109 — `charter-format`
+    forbids validating it away); an **invocation does not**. That is why an inline `answer` is never
+    membership-checked and an `--answers` value is: one rule, two suppliers, and the next channel someone
+    adds takes its rule from who is behind it.
+  - **Separately** (a different axis — the *question's* declared schema, not the answer's provenance): a
+    **`free-text`** question can only be checked for SHAPE (one value, not blank), because it declares no
+    options to test against. Do not hunt for one rule behind both.
+  - **Chose refuse-the-override over #187's record-the-source.** Recording makes an override auditable, not
+    safe: the flatten would still assert the overriding value in a side file nobody has to read. The residual
+    hazard — a refusal leaves the PREVIOUS run's `plan.md`, and `plan-sha256` cannot expose that (same plan,
+    different answers file) — is #187's `answersSha256` to close.
+  - **What `answerSource` can and cannot say**, so the withdrawn reading does not get re-invented in #187:
+    it does **NOT** distinguish *a human decided this* from *the automation supplied this* — `inline`
+    conflates a reviewer's folded-in answer, the drafting agent's own edit, and any other writer, and
+    `handoff` never reads the review log. It carries **which hash reproduces the decision**: `inline` ⇒
+    `planSha256` covers it; `answers-file` ⇒ reproducing it also needs `answersSha256`.
+- **"Answered" means a DECISION, and it is ONE predicate** (#188): `AnswerRules.IsDecision` — at least one
+  value, **none of them blank**. It used to be `Count > 0` in **three independent implementations** (the
+  record's property, the gate's inline test, the flatten's inline test) plus the renderer and the
+  missing-lean lint, so `[""]` flattened as `Answered:` with nothing after it and any strict gate built on it
+  certified a blank as a made decision. Fixing only the record's property would have produced three artifacts
+  giving three answers about one plan — pinned by
+  `BlankAnswerTests.TheRecord_TheGate_AndTheFlatten_GiveONEAnswerForOnePlan`, which asserts the three
+  VERDICTS, not that they call the same method.
+  - **It rode the UNRELEASED `schema` 2.** Narrowing a published field's meaning is a bump by
+    `HeadlessRecord.Schema`'s own rule — except 2 was raised from 1 by #173 *after* 0.24.0 shipped (the
+    release commit carries `Schema = 1`), so no consumer has ever seen a schema-2 record. Not licence to do
+    this under a *released* version; that is the mistake #142 made.
+- **Known-open, deliberately split:** #187 (the chain-of-custody manifest; `headless` still has no
+  `--answers`, so the record describes *the plan on disk* while the handoff describes *the plan plus a file*).
 
 ## Git-mediated team review (the durable half)
 

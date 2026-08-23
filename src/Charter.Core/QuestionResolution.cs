@@ -275,9 +275,12 @@ public static class QuestionResolution
                 continue;
             }
 
-            // An answered question has a decision on record; a lean would change nothing about it.
+            // An answered question has a decision on record; a lean would change nothing about it. "Answered"
+            // is AnswerRules.IsDecision — a blank value is not a decision, so a question carrying one still
+            // needs the lean it never got (Charter #188).
             if (root.TryGetPropertyValue("answer", out var answerNode)
-                && answerNode is JsonArray answered && answered.Count > 0)
+                && answerNode is JsonArray answered
+                && AnswerRules.IsDecision(AnswerStrings(answered)))
             {
                 continue;
             }
@@ -533,6 +536,22 @@ public static class QuestionResolution
         }
 
         return -1;
+    }
+
+    /// <summary>
+    /// An <c>answer</c> array's string elements, with any non-string element read as blank. A value that is
+    /// not a string is not a decision either, and this lint must never throw on a body the schema parse has
+    /// not yet judged.
+    /// </summary>
+    private static IReadOnlyList<string> AnswerStrings(JsonArray answer)
+    {
+        var values = new List<string>(answer.Count);
+        foreach (var node in answer)
+        {
+            values.Add(node is JsonValue value && value.TryGetValue<string>(out var text) ? text : string.Empty);
+        }
+
+        return values;
     }
 
     /// <summary>The string <c>id</c> of a question block's JSON body, or <c>null</c> when it is unreadable.</summary>

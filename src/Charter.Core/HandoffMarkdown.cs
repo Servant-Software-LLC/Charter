@@ -452,12 +452,14 @@ public static class HandoffMarkdown
             return $"> **Malformed question (could not parse): {error}**";
         }
 
-        // Migration-bridge faithfulness (DA blocker 1): the external answers dict wins when it carries this id,
-        // else fall back to the answer carried INLINE in the resolved :::question (spec.Answer). Without the
-        // fallback, a resolved .charter.md flattens as all-questions-open and every human decision is lost.
+        // Migration-bridge faithfulness (DA blocker 1): the external answers dict wins when it carries this id
+        // AND that entry passes AnswerRules, else fall back to the answer carried INLINE in the resolved
+        // :::question (spec.Answer). Without the fallback, a resolved .charter.md flattens as
+        // all-questions-open and every human decision is lost; without the rules, an out-of-band file could
+        // assert a value the question's own options forbid, or erase a decision a human made (Charter #186).
         // Shared with HandoffGate so a --fail-if-needs-human verdict can never describe a different document
         // from the one this emits (Charter #172).
-        var resolved = HandoffGate.ResolvedAnswer(spec.Id, spec.Answer, answers);
+        var resolved = AnswerRules.Merge(spec, answers);
 
         var metadata = QuestionMetadataLine(spec);
 
@@ -475,7 +477,10 @@ public static class HandoffMarkdown
             ? "_Why: " + Inline(spec.Rationale) + "_"
             : null;
 
-        if (resolved.Count > 0)
+        // A DECISION, not merely a non-empty array: `[""]` used to flatten as "Answered:" with nothing after
+        // it, which is what a mis-written generator produces and what a strict gate then certified
+        // (Charter #188). Same predicate as the record's `answered` and the rendered page's status.
+        if (AnswerRules.IsDecision(resolved))
         {
             var answered = $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}";
             return why is null ? answered : answered + "\n" + why;

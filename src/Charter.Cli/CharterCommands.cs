@@ -454,7 +454,13 @@ internal static class CharterCommands
         };
         var answersOption = new Option<string?>("--answers")
         {
-            Description = "Optional path to a JSON file mapping question id -> answer value(s), resolving open questions.",
+            Description =
+                "Optional path to a JSON file mapping question id -> answer value(s), resolving open questions. "
+                + "An entry is REJECTED -- exit 1, NOTHING written, every violation named on stderr -- when its "
+                + "value is not one of a select question's `options`, is the wrong count for the question's "
+                + "`mode`, is empty/null (omit the id instead; an empty value is not a way to un-answer a "
+                + "question) or blank, or would REPLACE a decision the plan already records inline. It may fill "
+                + "an unanswered question and may re-state a recorded answer verbatim; it may not overwrite one.",
         };
         var failIfNeedsHumanOption = new Option<bool>("--fail-if-needs-human")
         {
@@ -474,7 +480,8 @@ internal static class CharterCommands
                 + "Exit codes: 0 the handoff was written and nothing is outstanding; "
                 + HeadlessExitCodes.NeedsHuman + " (only with --fail-if-needs-human) the handoff WAS STILL "
                 + "WRITTEN and something needs a human -- read stderr, then the file; 1 a verb error (plan not "
-                + "found, unreadable --answers) and NOTHING was written. "
+                + "found, unreadable --answers, or an --answers entry REJECTED against its question's mode, "
+                + "options or already-recorded answer) and NOTHING was written. "
                 + ExitCodeVocabularyNote)
         {
             inputArgument,
@@ -524,6 +531,20 @@ internal static class CharterCommands
             WarnOnDuplicateQuestionIds("handoff", markdown);
             WarnOnMissingRecommendation("handoff", markdown);
             WarnOnUntrackedDeferrals("handoff", markdown);
+
+            // BEFORE the write, never after (Charter #186). An --answers entry naming a value this plan's own
+            // schema forbids is not a plan defect, it is a bad INVOCATION -- the same class as the unparseable
+            // answers file above, which has always exited 1 with nothing written; drawing the line at "is it
+            // syntactically JSON" would be arbitrary. It is deliberately NOT the escalation code: every exit 2
+            // in this pipeline means "the output exists, go read it", and writing a handoff here would produce
+            // a plan.md that silently differs from the resolution the caller asked for, with the difference
+            // living only on stderr -- the out-of-band-signalling failure the in-band stamp exists to fight.
+            var rejected = AnswerRules.CheckAll(markdown, answers);
+            if (rejected.Count > 0)
+            {
+                return ReportRejectedAnswers(rejected, answersPath!);
+            }
+
             string handoffMarkdown = HandoffMarkdown.Emit(markdown, answers);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -569,6 +590,35 @@ internal static class CharterCommands
         "NOTE ON 2: a 2 here means the same thing it means in `charter headless` and in Guardrails -- the "
         + "output exists, go read it. The OUTLIER is Charter's own `poll`/`resolve` 2, which means a queue was "
         + "found and it was empty. Do not read one vocabulary as the other.";
+
+    /// <summary>
+    /// Name every rejected <c>--answers</c> entry on STDERR and return the verb-error code (Charter #186).
+    /// EVERY violation is listed, never just the first: a pipeline fixing an answers file one exit code at a
+    /// time is a pipeline running many times to learn what it could have learned once. ASCII only, for the
+    /// same reason as the gate's report.
+    /// </summary>
+    /// <remarks>
+    /// The residual hazard is stated rather than hidden: refusing to write leaves a PREVIOUS run's handoff in
+    /// place, and the in-band <c>plan-sha256</c> stamp cannot expose it (same plan, different answers file).
+    /// Closing that needs a hash of the ANSWERS beside it, which is Charter #187's manifest, not this.
+    /// </remarks>
+    private static int ReportRejectedAnswers(IReadOnlyList<AnswerRejection> rejected, string answersPath)
+    {
+        string entries = rejected.Count == 1 ? "entry" : "entries";
+        Console.Error.WriteLine(
+            $"charter handoff: {rejected.Count} --answers {entries} REJECTED -- exit 1. NOTHING was written. "
+                + "An answers file may FILL an unanswered :::question and may re-state a recorded answer "
+                + "verbatim; it may never replace one, and an empty value is not a way to un-answer a "
+                + $"question. Fix {answersPath}, or record the decision inline in the plan and drop the id.");
+
+        foreach (AnswerRejection rejection in rejected)
+        {
+            string where = rejection.SourceLine is { } line ? $" (line {line})" : string.Empty;
+            Console.Error.WriteLine($"  rejected-answer '{rejection.QuestionId}'{where} -- {rejection.Reason}");
+        }
+
+        return 1;
+    }
 
     /// <summary>
     /// Name every blocking item on STDERR (stdout keeps its single written-file line) and return the

@@ -136,7 +136,7 @@ public static class HandoffGate
 
         foreach (var question in inventory.Questions)
         {
-            if (ResolvedAnswer(question.Id, question.Answer, answers).Count > 0)
+            if (AnswerRules.IsDecision(AnswerRules.Merge(question, answers)))
             {
                 continue;
             }
@@ -160,23 +160,6 @@ public static class HandoffGate
 
         return new HandoffGateResult(blockers, UnmatchedAnswerIds(inventory, answers));
     }
-
-    /// <summary>
-    /// The answer a <c>:::question</c> will actually flatten with: the <c>--answers</c> entry when the file
-    /// carries this id, else the answer recorded INLINE in the plan.
-    /// </summary>
-    /// <remarks>
-    /// Shared with <see cref="HandoffMarkdown"/>'s emitter on purpose. A gate that computed "answered"
-    /// differently from the emitter would certify a document other than the one written — the exact failure
-    /// this flag exists to prevent, one level up. Note that it preserves TODAY's behaviour verbatim, including
-    /// the external file winning unconditionally and an empty value re-opening a settled question; changing
-    /// that is Charter #186, and it is a one-place change now rather than two.
-    /// </remarks>
-    internal static IReadOnlyList<string> ResolvedAnswer(
-        string questionId,
-        IReadOnlyList<string> inlineAnswer,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
-        => answers is not null && answers.TryGetValue(questionId, out var values) ? values : inlineAnswer;
 
     /// <summary>
     /// True when a delegated question gives the agent something to decide WITH — a declared option set, or the

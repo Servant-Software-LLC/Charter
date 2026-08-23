@@ -520,9 +520,12 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         // is rendered through exactly the same path as an inline answer — same pre-selection, same write-in
         // handling, same escaping — and additionally marked as pending, because "saved" and "delivered to the
         // agent" are different facts and a reviewer must not be told the second when only the first is true.
+        // "Answered" is AnswerRules.IsDecision, not a element count: a blank value is not a decision, and a
+        // page that says "Answered" over an empty choice tells a reviewer something false (Charter #188). The
+        // predicate is shared with the forensic record and the flatten so the three cannot disagree.
         var pending = PendingAnswerFor(spec.Id);
         var effectiveAnswer = pending ?? spec.Answer;
-        var answered = effectiveAnswer.Count > 0;
+        var answered = AnswerRules.IsDecision(effectiveAnswer);
 
         renderer.Write("<form class=\"question");
         if (answered)

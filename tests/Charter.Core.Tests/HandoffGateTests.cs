@@ -173,19 +173,40 @@ public class HandoffGateTests
     {
         // A gate that computed "answered" differently from the emitter would certify a document other than the
         // one written -- the exact failure the flag exists to prevent, one level up. Both read
-        // HandoffGate.ResolvedAnswer, so this holds for the shapes that make the two rules differ: an answers
-        // file OVERRIDING an inline answer, and an empty value RE-OPENING one (both Charter #186 behaviours,
-        // preserved verbatim here rather than fixed).
-        const string plan =
+        // AnswerRules.Merge + AnswerRules.IsDecision, so this holds for the shapes that make the two rules
+        // differ. The shapes CHANGED with Charter #186/#188 and the test was rewritten with them: it used to
+        // assert that an answers file overriding an inline answer and an empty value re-opening one were both
+        // honoured by BOTH sides -- true, agreeing, and wrong.
+        const string answeredPlan =
             "# Plan\n\n:::question\n{\"id\":\"db\",\"title\":\"Which database?\",\"mode\":\"single\","
             + "\"target\":\"human\",\"options\":[\"Postgres\",\"MySQL\"],\"answer\":[\"Postgres\"]}\n:::\n";
 
-        var overridden = HandoffGate.Evaluate(plan, Answers(("db", ["MySQL"])));
+        // A refused override: neither side lets the supplied value replace the recorded decision.
+        var overridden = HandoffGate.Evaluate(answeredPlan, Answers(("db", ["MySQL"])));
         Assert.False(overridden.NeedsHuman);
-        Assert.Contains("Answered: MySQL", HandoffMarkdown.Emit(plan, Answers(("db", ["MySQL"]))), StringComparison.Ordinal);
+        Assert.Contains(
+            "Answered: Postgres",
+            HandoffMarkdown.Emit(answeredPlan, Answers(("db", ["MySQL"]))),
+            StringComparison.Ordinal);
 
-        var erased = HandoffGate.Evaluate(plan, Answers(("db", [])));
-        Assert.True(erased.NeedsHuman);
-        Assert.Contains("Open question (unresolved)", HandoffMarkdown.Emit(plan, Answers(("db", []))), StringComparison.Ordinal);
+        // A refused erasure: neither side re-opens a settled question because the file said `[]`.
+        var erased = HandoffGate.Evaluate(answeredPlan, Answers(("db", [])));
+        Assert.False(erased.NeedsHuman);
+        Assert.Contains(
+            "Answered: Postgres",
+            HandoffMarkdown.Emit(answeredPlan, Answers(("db", []))),
+            StringComparison.Ordinal);
+
+        // A refused fill: the value is not an option, so the question stays open on BOTH sides.
+        const string openPlan =
+            "# Plan\n\n:::question\n{\"id\":\"db\",\"title\":\"Which database?\",\"mode\":\"single\","
+            + "\"target\":\"human\",\"options\":[\"Postgres\",\"MySQL\"]}\n:::\n";
+
+        var refusedFill = HandoffGate.Evaluate(openPlan, Answers(("db", ["Cassandra"])));
+        Assert.True(refusedFill.NeedsHuman);
+        Assert.Contains(
+            "Open question (unresolved)",
+            HandoffMarkdown.Emit(openPlan, Answers(("db", ["Cassandra"]))),
+            StringComparison.Ordinal);
     }
 }
