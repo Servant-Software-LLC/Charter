@@ -75,9 +75,112 @@ public sealed class HandoffManifest
     /// </summary>
     private const int NeedsHumanExitCode = 2;
 
+    /// <summary>
+    /// The JSON key names, shared by the writer below and by <see cref="Read"/> (Charter #192).
+    /// </summary>
+    /// <remarks>
+    /// Constants rather than literals at both ends for one reason: a renamed key must break the READER at
+    /// compile time, not at run time in a consumer's pipeline. A writer and a reader that each spell the
+    /// contract out for themselves is the same defect class as the two question-body parses (§3) one artifact
+    /// down. Only the keys `verify` actually joins on are named; the rest stay literals at the writer, because
+    /// a constant nothing reads twice is noise.
+    /// </remarks>
+    private static class Keys
+    {
+        public const string Schema = "schema";
+        public const string CharterVersion = "charterVersion";
+        public const string PlanSha256 = "planSha256";
+        public const string AnswersSha256 = "answersSha256";
+        public const string HandoffSha256 = "handoffSha256";
+        public const string Gate = "gate";
+        public const string NeedsHuman = "needsHuman";
+        public const string Questions = "questions";
+        public const string Id = "id";
+        public const string Answered = "answered";
+    }
+
     private readonly JsonObject _json;
 
     private HandoffManifest(JsonObject json) => _json = json;
+
+    /// <summary>
+    /// The facts a READER may join on, parsed out of a manifest's JSON (Charter #192) — the stable core of
+    /// §10.1, minus the fields nothing joins.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT the whole file. The three file-NAME fields are declared non-contract (they are bare
+    /// names, and effectively every Guardrails handoff is called <c>plan.md</c>), <c>blockers[]</c> ordering is
+    /// non-contract, and <c>gate.exitCode</c> is derived inside one <c>Serialize</c> call with no I/O between,
+    /// so it cannot disagree with what produced it. Parsing a field a verifier will not use only creates a
+    /// place for it to reject a manifest it should have accepted.
+    /// </remarks>
+    public sealed record Facts(
+        int Schema,
+        string? CharterVersion,
+        string PlanSha256,
+        string? AnswersSha256,
+        string HandoffSha256,
+        bool NeedsHuman,
+        IReadOnlyList<QuestionFact> Questions);
+
+    /// <summary>One manifest question, reduced to what a cross-check against the handoff can actually test.</summary>
+    /// <param name="Id">The question's id, as the flatten's metadata line spells it.</param>
+    /// <param name="Answered">
+    /// Whether the MERGED answer records a decision. Narrower than the forensic record's <c>answered</c>,
+    /// which describes the plan's own inline answer (§10.7).
+    /// </param>
+    public sealed record QuestionFact(string Id, bool Answered);
+
+    /// <summary>
+    /// Parse a manifest's JSON into the facts a verifier joins on.
+    /// </summary>
+    /// <remarks>
+    /// An unknown <c>schema</c> is NOT rejected here — it is surfaced on <see cref="Facts.Schema"/> so the
+    /// caller can say "this file is newer than I am" rather than "this file is broken". Those are different
+    /// answers and a verifier owes the user the right one.
+    /// </remarks>
+    /// <exception cref="JsonException">The text is not JSON, or is missing a field the joins need.</exception>
+    public static Facts Read(string json)
+    {
+        var root = JsonNode.Parse(json ?? string.Empty) as JsonObject
+            ?? throw new JsonException("the manifest is not a JSON object.");
+
+        var gate = root[Keys.Gate] as JsonObject
+            ?? throw new JsonException($"the manifest has no `{Keys.Gate}` object.");
+
+        var questions = new List<QuestionFact>();
+        foreach (var entry in root[Keys.Questions] as JsonArray ?? [])
+        {
+            if (entry is not JsonObject question)
+            {
+                throw new JsonException($"a `{Keys.Questions}` entry is not an object.");
+            }
+
+            questions.Add(new QuestionFact(
+                RequiredString(question, Keys.Id), RequiredBool(question, Keys.Answered)));
+        }
+
+        return new Facts(
+            RequiredInt(root, Keys.Schema),
+            (root[Keys.CharterVersion] as JsonValue)?.GetValue<string>(),
+            RequiredString(root, Keys.PlanSha256),
+            (root[Keys.AnswersSha256] as JsonValue)?.GetValue<string>(),
+            RequiredString(root, Keys.HandoffSha256),
+            RequiredBool(gate, Keys.NeedsHuman),
+            questions);
+    }
+
+    private static string RequiredString(JsonObject owner, string key)
+        => (owner[key] as JsonValue)?.GetValue<string>()
+            ?? throw new JsonException($"the manifest has no string `{key}`.");
+
+    private static int RequiredInt(JsonObject owner, string key)
+        => (owner[key] as JsonValue)?.GetValue<int>()
+            ?? throw new JsonException($"the manifest has no integer `{key}`.");
+
+    private static bool RequiredBool(JsonObject owner, string key)
+        => (owner[key] as JsonValue)?.GetValue<bool>()
+            ?? throw new JsonException($"the manifest has no boolean `{key}`.");
 
     /// <summary>
     /// Build the manifest for one run.
@@ -162,14 +265,14 @@ public sealed class HandoffManifest
         {
             questionArray.Add(new JsonObject
             {
-                ["id"] = question.Id,
+                [Keys.Id] = question.Id,
                 ["title"] = question.Title,
 
                 // A line in the PLAN. It is here because questions[] is not a map: duplicate ids are a gate
                 // blocker, but the plan still carries two blocks and both are emitted, and this is what tells
                 // them apart.
                 ["sourceLine"] = question.SourceLine,
-                ["answered"] = question.Answered,
+                [Keys.Answered] = question.Answered,
                 ["answer"] = ToJsonArray(question.Answer),
 
                 // `inline` | `answers-file` | null. TWO values and no more: Charter #186 shipped REFUSAL of an
@@ -205,16 +308,16 @@ public sealed class HandoffManifest
 
         return new JsonObject
         {
-            ["schema"] = Schema,
-            ["charterVersion"] = charterVersion,
+            [Keys.Schema] = Schema,
+            [Keys.CharterVersion] = charterVersion,
 
             ["plan"] = files.Plan,
-            ["planSha256"] = PlanHash.Sha256Hex(markdown),
+            [Keys.PlanSha256] = PlanHash.Sha256Hex(markdown),
 
             // null + null means NO --answers was passed. That is NOT the same as an empty answers file, which
             // is a file and hashes to the hash of its text -- `{}` produces a real hex here.
             ["answers"] = files.Answers is null ? null : JsonValue.Create(files.Answers),
-            ["answersSha256"] = answers is null ? null : JsonValue.Create(answers.Sha256),
+            [Keys.AnswersSha256] = answers is null ? null : JsonValue.Create(answers.Sha256),
 
             ["handoff"] = files.Handoff,
 
@@ -223,7 +326,7 @@ public sealed class HandoffManifest
             // downstream records the source plan's hash (Guardrails #505), so this is the only tamper detector
             // Charter can offer, and a mismatch means tampering OR a line-ending rewrite in transit, which the
             // hash alone cannot separate. The in-band stamps are the CRLF-immune half of the same question.
-            ["handoffSha256"] = PlanHash.Sha256Hex(handoffMarkdown),
+            [Keys.HandoffSha256] = PlanHash.Sha256Hex(handoffMarkdown),
 
             // Emitted so `> 0` is a ONE-FIELD detection. A :::question whose body will not parse is absent from
             // questions[] entirely -- Charter has no id to list it under -- so without this a plan with a broken
@@ -231,10 +334,10 @@ public sealed class HandoffManifest
             // DELETED that question's id, title and target from the document this file vouches for.
             ["malformedQuestions"] = gate.MalformedQuestions,
 
-            ["gate"] = new JsonObject
+            [Keys.Gate] = new JsonObject
             {
                 ["flagPassed"] = failIfNeedsHumanPassed,
-                ["needsHuman"] = gate.NeedsHuman,
+                [Keys.NeedsHuman] = gate.NeedsHuman,
 
                 // Derived, never passed in, so the manifest and $? cannot disagree -- the same discipline that
                 // keeps the forensic record's needsHuman equal to `charter headless`'s exit code. A gate verdict
@@ -249,7 +352,7 @@ public sealed class HandoffManifest
                 ["unmatchedAnswerIds"] = unmatched,
             },
 
-            ["questions"] = questionArray,
+            [Keys.Questions] = questionArray,
         };
     }
 

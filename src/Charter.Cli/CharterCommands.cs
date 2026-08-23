@@ -77,6 +77,17 @@ internal static class CharterCommands
             // `render`; only entered for the `handoff` verb so the banner / --version behavior above stays as-is.
             ("handoff", BuildHandoffRoot),
 
+            // `charter verify <handoff.md>`: recompute the chain-of-custody joins between a flattened plan and the
+            // manifest `handoff --manifest` wrote beside it (Charter #192) -- the manifest's planSha256 against the
+            // in-band plan stamp, its answersSha256 against the answers stamp, its handoffSha256 against the file as
+            // it now stands, and its questions[] against the ids and Answered/Open states the document actually
+            // carries. READ-ONLY: no writing, no network, no clock. Exit 0 every join holds and no escalation is
+            // recorded, 2 a join disagreed or the manifest records gate.needsHuman, 1 it could not answer. It cannot
+            // detect INCORRECTNESS -- both files are writable by the same party -- and its help says so at length.
+            // Parsed with System.CommandLine, parallel to `render`; only entered for the `verify` verb so the banner
+            // / --version behavior above stays exactly as-is.
+            ("verify", BuildVerifyRoot),
+
             // `charter convert <input.md> -o <out.charter.md>`: the mechanical Markdown -> .charter.md SEED transform.
             // Via Charter.Core.MarkdownConvert, pass every existing block through unchanged and promote an allow-listed
             // "open questions" section's list items into open :::question blocks, then stamp the charter-format-version
@@ -698,6 +709,49 @@ internal static class CharterCommands
         };
     }
 
+    // Builds the root command hosting the `verify` subcommand wired to VerifyCommand (Charter #192).
+    private static RootCommand BuildVerifyRoot()
+    {
+        var inputArgument = new Argument<string>("handoff")
+        {
+            Description =
+                "Path to the flattened CommonMark `charter handoff -o` wrote. The manifest is FOUND from it, "
+                    + "by replacing the final extension with `.manifest.json` -- pass the handoff, not the "
+                    + "manifest, and not the .charter.md plan.",
+        };
+
+        var verify = new Command(
+            "verify",
+            "Recompute the chain-of-custody joins between a flattened plan and the manifest beside it. "
+                + "READ-ONLY: writes nothing, opens no network connection, reads no clock. Checks the "
+                + "manifest's planSha256 against the handoff's in-band plan stamp, its answersSha256 against "
+                + "the answers stamp, its handoffSha256 against this file as it now stands, and its "
+                + "questions[] against the ids and Answered/Open states the document actually carries. "
+                + "Exit codes: 0 every join holds and the manifest records no outstanding escalation; "
+                + HeadlessExitCodes.NeedsHuman + " a join disagreed OR the manifest records "
+                + "gate.needsHuman -- read stderr; 1 verify could not answer (handoff unreadable, no manifest "
+                + "beside it, unparseable manifest, a schema this build does not know, or no in-band stamp) "
+                + "-- a 1 is NOT a verdict. "
+                + VerifyCommand.NotProvenNote + " "
+                + "It also cannot find a manifest that was left behind: discovery is co-location plus "
+                + "co-naming, so a handoff copied elsewhere without its manifest returns 1 forever, which is "
+                + "a fact about where the file is and not evidence about the run. "
+                + "NOT THIS VERB: the review-side checks (a stale plan, uncommitted comments) are `charter "
+                + "review verify`, which is not built yet. "
+                + ExitCodeVocabularyNote)
+        {
+            inputArgument,
+        };
+
+        verify.SetAction(parseResult => RunVerb(
+            "verify", () => VerifyCommand.Execute(parseResult.GetValue(inputArgument)!)));
+
+        return new RootCommand("Charter — visual, reviewable plans your agent drafts, annotated in place.")
+        {
+            verify,
+        };
+    }
+
     /// <summary>
     /// The one sentence every verb whose help mentions an exit <c>2</c> appends, so a pipeline author reading
     /// ANY of them meets the same warning. Charter #173 asked for the opposite note — it assumed Charter's 2
@@ -718,7 +772,15 @@ internal static class CharterCommands
     /// <c>-o ../gr/plan.md</c> ⇒ <c>../gr/plan.manifest.json</c>, so the manifest always lands beside the
     /// handoff it describes.
     /// </summary>
-    private static string DeriveManifestPath(string outputPath)
+    /// <remarks>
+    /// <b>This is now a CONTRACT, not a convention</b> (Charter #192). It used to be an implementation detail
+    /// of one flag — nothing but <c>handoff</c> ever computed the name, so changing it would only have changed
+    /// where a file landed. <c>charter verify</c> uses the same function to FIND that file from the handoff
+    /// alone, so the derivation is the discovery rule: change it and every already-written pair stops being
+    /// discoverable. One function, shared, for the same reason <see cref="HeadlessCommand.SamePath"/> is —
+    /// a second copy is a second chance for the two ends to disagree.
+    /// </remarks>
+    internal static string DeriveManifestPath(string outputPath)
     {
         string full = Path.GetFullPath(outputPath);
         return Path.Combine(

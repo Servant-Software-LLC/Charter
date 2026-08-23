@@ -1097,6 +1097,17 @@ with the file.
 **Answer VALUES are deliberately NOT checked** — it would mean prose-parsing arbitrary user text — **and the
 report says so**, so nobody over-reads a green.
 
+**A metadata line with no lead above it is a NOTE, never a finding**, and this was added during implementation
+rather than designed. A question is recognised by the metadata line **opening a line** *and* carrying one of
+the three lead markers (Answered / Open / Delegated) above it. Both halves are needed, because **no literal in
+a rendered plan is proof of anything** — a plan documenting Charter spells these literals, and
+`:::custom-html` passes anything through verbatim. Requiring the lead keeps the phantom out of the id set;
+requiring line-start means a mid-sentence mention produces no output at all. And it is reported as a note
+because Charter's standing rule is that **a lint which cannot tell a defect from legitimate content never
+touches an exit code** (`WarnOnVersionMarker`, `WarnOnDuplicateQuestionIds`, `WarnOnMissingRecommendation`).
+Excluding it is safe in the other direction too: real tampering that strips a question's lead line **also**
+removes that id from the handoff's set, which *is* a finding.
+
 **`gate.exitCode` is deliberately NOT checked**, despite being on the issue's list. `HandoffManifest.Serialize`
 derives it from `flagPassed`/`needsHuman` inside the same call with no I/O between, so it cannot fail on any
 manifest Charter wrote — it fires only on hand-edited files, whose editor would fix it. Implementing it would
@@ -1116,7 +1127,14 @@ the field.
 - **Normalise `\r\n` ↔ `\n` only — never collapse a lone `\r`.** `ReviewBaseStatus`'s form does collapse it,
   and a lone `\r` can be **plan content** (a question answer containing one flattens as `Answered: line1␍line2`
   — filed as #202). Copying that form would bless a content change as a line-ending rewrite. For a
-  CR-carrying original the branch **declines to diagnose** rather than falsely reassure.
+  CR-carrying file the branch **declines to diagnose** rather than falsely reassure.
+  - **#202's premise was confirmed, and the rule turned out to be broader than the hash.** The answer arrives
+    **JSON-escaped** in the `:::question` body, so `Emit`'s source normalisation never sees it as a character
+    and the flatten genuinely carries `Answered: alpha␍beta`. The first cut of the **question scan** split
+    lines with the `ReviewBaseStatus` form and therefore tore that Answered line in two, leaving the metadata
+    line with `beta` above it — which reported an **untouched, honest pair** as `questions MISMATCH`.
+    Reproduced against the real binary before it shipped. *So the rule is not "do not collapse a lone `\r`
+    when hashing"; it is "a lone `\r` is not a line break in a flattened plan", and it binds every reader.*
 - **Bound the claim.** `File.ReadAllText` strips a BOM and decodes UTF-16, so a match under normalisation also
   covers re-encoding. Report what was computed and no more.
 - **The trailing-newline case is diagnosed separately.** `Emit` output has no trailing newline while

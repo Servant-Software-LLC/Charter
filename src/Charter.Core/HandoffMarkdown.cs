@@ -170,6 +170,100 @@ public static class HandoffMarkdown
     public const string NoAnswersFile = "none";
 
     /// <summary>
+    /// The two in-band provenance stamps read back off a flattened plan (Charter #192).
+    /// </summary>
+    /// <param name="PlanSha256">The <c>plan-sha256</c> hex.</param>
+    /// <param name="AnswersStamp">
+    /// The <c>answers-sha256</c> stamp's RAW token — a hex, or <see cref="NoAnswersFile"/> — or null when the
+    /// line is absent entirely. Three states, not two: an absent line means a producer that predates
+    /// Charter #187, which is not the same claim as <c>none</c> ("this run merged no answers file").
+    /// </param>
+    public sealed record HandoffStamps(string PlanSha256, string? AnswersStamp);
+
+    /// <summary>
+    /// Read the provenance stamps back off <paramref name="handoff"/>, or null when the plan stamp is not
+    /// there — which means this is not a flattened plan Charter wrote, or is one from before Charter #172.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Anchored to the TAIL, and via the producer's own constants.</b> <c>references/handoff.md</c> promises
+    /// the plan stamp is the LAST line, so that is where this looks — a document-wide search would happily find
+    /// a stamp quoted in a plan's own prose (this repo's documentation flattens exactly that way) and vouch for
+    /// the wrong hash.
+    /// </para>
+    /// <para>
+    /// <b>The answers stamp is the previous NON-EMPTY line, not the previous line.</b> <see cref="Emit"/> joins
+    /// its parts with a blank line between them, so the two stamps are separated by one — reading
+    /// "immediately above" finds nothing and reports a #187-era handoff as pre-#187.
+    /// </para>
+    /// </remarks>
+    public static HandoffStamps? ReadStamps(string handoff)
+    {
+        var lines = (handoff ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+
+        var last = LastNonEmpty(lines, lines.Length - 1);
+        if (last < 0 || StampValue(lines[last], StampPrefix) is not { } planSha256)
+        {
+            return null;
+        }
+
+        var previous = LastNonEmpty(lines, last - 1);
+        var answersStamp = previous < 0 ? null : StampValue(lines[previous], AnswersStampPrefix);
+
+        return new HandoffStamps(planSha256, answersStamp);
+    }
+
+    /// <summary>The index of the last non-blank line at or before <paramref name="from"/>, or -1.</summary>
+    private static int LastNonEmpty(string[] lines, int from)
+    {
+        for (var i = from; i >= 0; i--)
+        {
+            if (lines[i].Trim().Length > 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The value carried by <c>&lt;!-- {prefix}{value} --&gt;</c>, or null when the line is not that
+    /// stamp.</summary>
+    private static string? StampValue(string line, string prefix)
+    {
+        var trimmed = line.Trim();
+        var opening = "<!-- " + prefix;
+        return trimmed.StartsWith(opening, StringComparison.Ordinal)
+            && trimmed.EndsWith(" -->", StringComparison.Ordinal)
+                ? trimmed[opening.Length..^" -->".Length]
+                : null;
+    }
+
+    /// <summary>
+    /// The opening of the metadata line every emitted <c>:::question</c> carries, up to and including the
+    /// backtick that opens the id. A reader locates a question's id by scanning for this and taking the text to
+    /// the next backtick.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so <c>charter verify</c> cross-checks the manifest against the handoff using the PRODUCER's own
+    /// literal rather than a re-typed one (Charter #192). It deliberately does NOT re-run <see cref="Emit"/>:
+    /// a verifier that re-derives the flatten agrees with itself, not with the file on disk.
+    /// </remarks>
+    public const string QuestionIdMarker = "_Question — id: `";
+
+    /// <summary>The literal that marks an emitted question as ANSWERED, on the line above its metadata line.</summary>
+    public const string AnsweredMarker = "** — Answered: ";
+
+    /// <summary>The literal that marks an emitted question as OPEN and needing a person.</summary>
+    public const string OpenQuestionMarker = "**Open question (unresolved):**";
+
+    /// <summary>The literal that marks an emitted question as OPEN and delegated to the reading agent.</summary>
+    public const string DelegatedDecisionMarker = "**Delegated decision — you must settle this before building:**";
+
+    /// <summary>
     /// The leading block of link reference definitions — one line per definition, in source order — or null
     /// when the plan declares none (Charter #175).
     /// </summary>
@@ -683,7 +777,7 @@ public static class HandoffMarkdown
         // (Charter #188). Same predicate as the record's `answered` and the rendered page's status.
         if (AnswerRules.IsDecision(resolved))
         {
-            var answered = $"**Q: {spec.Title}** — Answered: {string.Join(", ", resolved)}\n{metadata}";
+            var answered = $"**Q: {spec.Title}{AnsweredMarker}{string.Join(", ", resolved)}\n{metadata}";
             return why is null ? answered : answered + "\n" + why;
         }
 
@@ -693,9 +787,9 @@ public static class HandoffMarkdown
         // settle, which is exactly wrong for a block whose `target` says the reader settles it.
         var delegated = string.Equals(QuestionSpec.Token(spec.Target), "agent", StringComparison.Ordinal);
         var lead = delegated
-            ? $"> **Delegated decision — you must settle this before building:** {spec.Title}\n> {metadata}"
+            ? $"> {DelegatedDecisionMarker} {spec.Title}\n> {metadata}"
                 + $"\n> _{DecisionInstruction(spec)}_"
-            : $"> **Open question (unresolved):** {spec.Title}\n> {metadata}";
+            : $"> {OpenQuestionMarker} {spec.Title}\n> {metadata}";
 
         return why is null ? lead : lead + "\n> " + why;
     }
@@ -767,7 +861,7 @@ public static class HandoffMarkdown
     private static string QuestionMetadataLine(QuestionSpec spec)
     {
         var builder = new StringBuilder()
-            .Append("_Question — id: `").Append(spec.Id).Append('`')
+            .Append(QuestionIdMarker).Append(spec.Id).Append('`')
             .Append("; mode: `").Append(QuestionSpec.Token(spec.Mode)).Append('`')
             .Append("; target: `").Append(QuestionSpec.Token(spec.Target)).Append('`');
 
