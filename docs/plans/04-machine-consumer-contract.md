@@ -1,13 +1,15 @@
 # The machine consumer — strict handoff and the record contract
 
-**Status:** design of record · **Rev 3**, 2026-08-23 (§10 added: the chain-of-custody manifest, and the
-in-band stamp gains a second line) · Rev 2, 2026-08-23 (§9 added: the answers file is no longer trusted, and
-`answered` no longer counts elements) · Rev 1, 2026-08-22 (adversarial pass applied — three of the first four
-decisions were reversed)
+**Status:** design of record · **Rev 5**, 2026-08-23 (§11 added: a directive the renderer draws and the block
+model cannot see — and the answer-destruction it was hiding) · Rev 3, 2026-08-23 (§10 added: the
+chain-of-custody manifest, and the in-band stamp gains a second line) · Rev 2, 2026-08-23 (§9 added: the
+answers file is no longer trusted, and `answered` no longer counts elements) · Rev 1, 2026-08-22 (adversarial
+pass applied — three of the first four decisions were reversed)
 **Closes:** #172 (`charter handoff` has no strict mode) · #173 (the `.headless.json` contract, and two
 naming collisions) · **#186** (an `--answers` file overwrites or erases a recorded answer with no validation)
 · **#188** (`answered` counts array elements, not content) · **#187** (no verb produces the handoff CommonMark
-and a record of what was decided from one resolution pass)
+and a record of what was decided from one resolution pass) · **#203** (a nested `:::question` renders as an
+answerable form but is invisible to the block model)
 **Filed in support of:** Guardrails #496 — an epic to drive a complete Charter → Guardrails pipeline with
 no human in the loop, and prove afterwards that the run was proper rather than merely green.
 **Filed reciprocally:** Guardrails #500 (nothing branches on `target`) · Guardrails #505 (nothing downstream
@@ -702,3 +704,212 @@ neither existed.
   `--manifest`, a `1` no longer promises that *nothing* was written. A handoff with no manifest is an honest
   degraded state; a manifest describing a file that does not exist is a lie. Both are written
   temp-file-then-`File.Move(overwrite: true)`, so neither is ever observed half-written.
+
+---
+
+# Rev 5 — a directive the renderer draws and the block model cannot see
+
+## 11. The divergence, and the destruction behind it
+
+§3.1 closed with a deferral: *"Still top-level-only, deliberately… For `:::question` that is a real defect
+with a needs-human consequence — filed as **#203**, and a format/anchor-model decision rather than a code
+fix."* This is that decision.
+
+`CharterContainerRenderer` renders a container wherever Markdig parsed it. `BlockDocument.Parse` yields
+top-level nodes only. Where those two disagree, Charter draws something a reviewer can act on and no
+downstream contract can see.
+
+### 11.0 What the adversarial pass found that #203 did not
+
+**#203 says the answer is "silently not applied". It is worse: the answer is drained, reported applied, and
+destroyed.** Reproduced end to end before anything was fixed, on a plan whose `:::question` sits inside a
+`::::note`:
+
+| Step | What happens |
+|---|---|
+| the reviewer answers the form the page really shows them | the answer lands in the store and the sidecar |
+| `ReviewServer` stamps a `questionFingerprint` | `QuestionIdentity.FingerprintOf` finds no such question ⇒ **null** |
+| `AnswerApplication.FindStale` | exempts a null fingerprint as *"no evidence, proceed"* |
+| `QuestionResolution.Apply` | matches no block, returns **byte-identical** markdown |
+| `ApplyToFile` | therefore **succeeds** |
+| `CommitAnswersAsync` | **deletes the answer from the store and the sidecar** |
+| `poll --apply` | exits **0**, stderr **empty** |
+
+Observed directly: the sidecar went from holding `q-nested → ["Postgres"]` to being deleted, and an
+immediately following plain `poll` reported `"answers": []` at exit `2` — *"a queue was found and it was
+empty"*. Every observable signal said the run had succeeded.
+
+**That is fixed FIRST and independently of the rest**, because §11.6's degrade removes the reviewer's only
+currently-noticeable symptom of it. A reviewer who no longer sees a form no longer submits an answer to
+destroy — but an answer already queued, or a question an agent deletes between submit and drain, still is.
+
+### 11.1 An answer whose question the model cannot see is REFUSED
+
+**Exit `5`, answers preserved, ids named on stderr**, from `charter poll --apply` and `charter resolve`
+alike. That is already what a `5` means (`ReviewExitCodes`: *the inline apply did not happen — it either
+FAILED or was REFUSED; either way the answers are preserved, never committed*), so nothing is being
+redefined. It is the treatment #172 gave the `--answers` FILE via `HandoffGate.UnmatchedAnswerIds` (§4.2),
+finally reaching the interactive verbs.
+
+- **Strictly broader than nesting.** Any id the model cannot reach qualifies — a question the drafting agent
+  deleted between submit and drain hits it today, as does a body that stopped parsing, or an id a client
+  invented.
+- **One predicate, derived from the write it guards.** `QuestionResolution.QuestionIds` is *the ids `Apply`
+  can reach*, from the same walk and the same body read `Apply` performs; `FindDuplicateQuestionIds` now folds
+  over it. A separately-derived id set would eventually refuse an answer that would have applied, or apply one
+  it should have refused.
+- **No override, and this is deliberate.** `--apply-stale-answers` means *"the question changed shape, apply
+  it anyway"* — a judgement a human can make, because the write still lands. Here the write cannot land at
+  all, so an override would only re-open the destruction under a flag that reads like consent to something
+  else. The remedies are real: un-nest the block, restore the question, or re-answer against the plan as it
+  now is.
+- **A test that pinned this as a feature was REWRITTEN.**
+  `Resolve_WhenTheQuestionIsGoneEntirely_StillAppliesAndIsANoOp` asserted exit `0` on the reasoning that
+  *"an absent question cannot be mis-answered… so refusing there would be a false alarm with no failure behind
+  it."* The premise is true of the plan and false of the queue. `AnswerApplication.FindStale`'s own remarks
+  carried the same false claim and were corrected in place.
+
+### 11.2 The predicate is "does this render LIVE" — never "is this nested"
+
+The correction that defines everything below. `CharterContainerRenderer.Write` reaches `WriteChildren` for
+**three** kinds only. Verified against the renderer, not inferred:
+
+```
+::::note / ::::warn / ::::comparison      > :::question   live, answerable
+::::diagram / ::::diff / ::::custom-html  > :::question   inert text
+```
+
+Markdig parses all six identically; only the renderer differs. So a structural *"is the parent the
+document?"* test would flag a `:::question` inside `:::custom-html` — which renders as inert prose, asserts
+nothing false, and is **the author's own markup by decree**. That decree lives today only in the SDK's
+opaque-region predicate (`insideOpaqueRegion`, #166/#176); a structural test would be the **first C#-side
+opinion about an opaque region's interior, and the opposite one**. Invariant 3.
+
+So the predicate is: *the container's ancestor chain to the document passes only through child-rendering
+containers (`note`/`warn`/`comparison`) and CommonMark containers (`ListItemBlock`, `QuoteBlock`).*
+
+- **Chain, not immediate parent.** A `:::note` inside a `:::custom-html` is still inert, so a question inside
+  *it* is inert too.
+- **The kind set is single-sourced** as `CharterMarkdown.RendersChildren(BlockKind)`, **read by both** the
+  renderer's dispatch and the lint, so it cannot drift. Bound behaviourally, not by inspection: the test
+  asserts that the lint reports a nesting exactly when the renderer really descends, using an observable
+  independent of the question path (a nested container's fence line survives into the output as text iff its
+  parent wrote the body as text).
+- **Blockquote nesting is in scope** and gets the same treatment — verified to render a live form.
+
+### 11.3 Tiers, derived from ONE question and READ rather than assumed
+
+The tier of a nested kind is decided by: *does this body survive being blockquoted as CommonMark prose?* A
+nested container flattens as part of its parent, so that is literally what a consumer receives.
+
+**These were asserted from mechanism in the design and then read out of a real flatten**
+(`NestedDirectiveFlattenTests`, which parses `HandoffMarkdown.Emit`'s output with a **plain** CommonMark
+pipeline — the consumer's, never Charter's container-aware one, which would re-parse the leak back into a
+live form and answer far too kindly). No tier moved:
+
+| Nested kind | Tier | What the flatten actually did |
+|---|---|---|
+| `question` | **record `needsHuman` + gate blocker** | the JSON body arrives as escaped prose; none of `_Question — id`, `Open question (unresolved)` or `Delegated decision` is emitted |
+| `diff` | **gate blocker** | **confirmed corrupting**: line-initial `+`/`-` are consumed as CommonMark **bullet markers**, so `- REQUIRE_MFA = true` becomes an `<li>` with the marker eaten — a reader sees a line the plan said to DELETE as a requirement, indistinguishable from the added one |
+| unknown `:::foo` | **gate blocker** | unknowable by definition; a misspelled `:::questoin` classifies as one and can hide a `target: human` decision |
+| `comparison` | **warning** | **confirmed intact**: two `<li>`, both readable, emphasis preserved |
+| `diagram` | **warning** | **confirmed intact**: the fenced Mermaid source survives verbatim |
+| `note` / `warn` | **warning** | **confirmed intact**: prose with inline formatting and links |
+| anything inside `custom-html`/`diagram`/`diff`/unknown | **not reported** | never rendered live — §11.2 |
+
+The warning tier loses the block's framing and its anchors. That is a presentation loss, not a corrupted or
+absent fact, which is exactly where the line between "warn" and "block" belongs.
+
+**The record/gate asymmetry is inherited, not invented.** The record escalates on *known* decisions
+(`nested-question`), the gate on *possible* ones (`nested-diff`, `nested-unknown-directive`) — the same split
+§4.1 already draws between a malformed question and an unknown directive.
+
+**§4.1's "would make the flag almost always true" objection does not transfer.** It is a base-rate argument,
+and it is what correctly keeps `unknown-directive` out of `needsHuman`. A correct plan contains **zero**
+nested questions, so the new term is false on every healthy document.
+
+### 11.4 Four note tokens, not two
+
+`HeadlessNoteKind` gains `nested-question`, `nested-diff`, `nested-unknown-directive` and `nested-directive`.
+Four, because `HandoffGate.Evaluate` switches on `note.Kind` and `unattended.md` tells consumers to branch on
+`kind`: **one token cannot carry two tiers without making the gate's verdict unreproducible from the record.**
+`HandoffGate` gains the matching blocker tokens.
+
+`PlanInventory.NeedsHuman` gains a fourth term via a `NestedQuestions` count, mirroring `MalformedQuestions`
+— both are questions the record cannot list, so both are decisions it cannot report on.
+
+**This rides the UNRELEASED `Schema = 2`**, on §9.5's rule and verified the way that section demands rather
+than assumed: `git show v0.24.0:src/Charter.Core/HeadlessRecord.cs` carries `Schema = 1`, so no consumer has
+ever seen a schema-2 record. Same window #188 used. Not a licence to do this under a released version.
+
+### 11.5 The lint rides the existing walk
+
+`PlanInventory.Build` bills itself as ONE walk. A standalone lint would have given it a **fourth**
+`ParseDocument`, with line numbers from a different parse than the anchor assignment beside them. `PlanWalk`
+therefore returns blocks **and** nested directives from a single parse.
+
+`CharterCommands.WarnOnNestedDirectives(verb, markdown)` joins the existing lints on `render` / `review` /
+`handoff` — **try/caught like its siblings**, because `render` must survive input the parse kernels throw on
+and this lint walks deeper into the tree than any of them. `charter export` does not warn, matching the
+existing pattern.
+
+### 11.6 The renderer degrades the question, and the degrade SHIPS IN THE ARTIFACT
+
+A live-nested `:::question` renders as a visible, **non-answerable** placeholder — no `<form>`, no
+`data-question-id` — naming the defect, the question's title, and any **stranded queued answer**. It reuses
+`.question-error`, which already shares a stylesheet rule with `.unknown-directive`, so it costs no styling.
+It carries **no id**, because a nested block has none (#166 stands, and a note on one still resolves
+outward).
+
+**Invariant 1 decides where this lives.** It is a renderer change, not an SDK affordance: *a standalone
+artifact carrying a dead form is a lie standalone.* The export carries the placeholder too, and a test
+asserts it.
+
+**The stranded-answer line is the reviewer's most likely arrival state**: they answered the form a previous
+build drew, the answer is sitting in the review store, and §11.1 now refuses it rather than committing it
+away. Without that sentence the answer simply disappears from the page with no account of it.
+
+**The test-surface problem, and how it was solved.** Every rule in `LayoutRegressionGateTests` starts at
+`document.body.children`, and a nested placeholder is not one — so the degrade would have shipped with
+**zero browser coverage** on the strength of a C# string assertion, which is the blind spot that let #37,
+#38, #57 and #68 through a green suite. Three changes, together:
+
+1. the gate's fixture gains a live-nesting case, so the placeholder is swept by `visit()` for clipping and
+   overlap like any other descendant;
+2. `Assert.Equal(22, layout.Blocks.Count)` moves to **23** — the fixture gained one top-level `::::note`, and
+   the count is exact on purpose, so it had to move deliberately;
+3. a new browser test, `Nested_question_degrades_to_a_visible_non_answerable_placeholder`, asserts what a
+   reviewer meets: the placeholder is present and **painted** (non-zero box), names the defect and the title,
+   and carries no form, no question id, no button and no input. Its second half is the one that matters —
+   *"no form with that id"* is satisfied perfectly by a renderer that stopped emitting questions altogether,
+   so the same page is asserted to still carry a real `q-single` form **with a working submit control**.
+   Proved red by mutation (the predicate forced to `false`), then green.
+
+### 11.7 What this deliberately does NOT do
+
+- **`BlockDocument.Parse`, `PlanWalk`'s block list, `AnchorAssignment`, `SourceMap` and `HandoffMarkdown` do
+  not descend.** The flatten is not made tree-aware, and it is not "fixed" for a shape the format does not
+  support — it is now *reported*, which is the honest treatment.
+- **A nested block gains no anchor.** #166 stands.
+- **`CharterContainerRenderer` still descends for `note`/`warn`/`comparison`.** Nested `:::diagram` and
+  `:::custom-html` render today and `OpaqueRegionAnchorTests` depends on it.
+- **No SDK behaviour changed.** One comment was corrected: `questionRoot`'s *"A real question is a top-level
+  block (or nested in a callout)"* was false the day it was written and is now false in the other direction —
+  a callout-nested question emits no form for the SDK to find.
+
+**Why full support was refused, recorded so it is not re-proposed.** Making the model descend honestly
+requires excising the nested span from the enclosing container's `RawContent` — and `Block.Id` is a hash of
+`RawContent`, so **every containing block re-ids and every annotation on it orphans**. That re-id is the
+actual cost. It is not merely "a format decision".
+
+### 11.8 Known limit, found while implementing this and NOT fixed here
+
+**A nested `:::diff` crashes the renderer.** `charter render` on a plan with a `:::diff` inside a `::::note`
+(or a blockquote) exits `1` with *"The given key '13' was not present in the dictionary"* —
+`CharterContainerRenderer.WriteDiff` reads each line's sub-anchor from `AnchorAssignment`, whose slot walk is
+top-level-only, so a nested diff's lines were never registered. It predates this change and is a bug against
+the already-settled rule that a nested block carries no anchor (#166), rather than a new format question.
+
+It is stated rather than fixed because the scope of this revision is *report, do not descend*, and because a
+crash is a loud failure rather than a silent one — the nested-directive warning now fires **before** the
+render aborts, so the author is told the real cause. It needs its own issue.

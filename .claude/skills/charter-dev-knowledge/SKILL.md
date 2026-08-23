@@ -361,11 +361,21 @@ update run `charter skills install --force` too.
   written — which is exactly co-extensive with the nodes the bootstrap looks for, needs no knowledge of which
   containers swallow their bodies (`:::custom-html`, `:::diff`, `:::question`, an unknown `:::foo`), and
   cannot re-widen #177 because a forged `pre.mermaid` is never written by that method.
-  **The same shape recurs one layer down and is NOT fixed** (#203): `BlockDocument.Parse` is top-level-only
-  too, so a `:::question` nested in a `::::note` renders as a real answerable form while `needsHuman` reads
-  false, `--fail-if-needs-human` exits 0, the flatten emits its raw JSON body as blockquoted prose, and
-  `QuestionResolution.Apply` can never fold the answer back. Fixing it is a format/anchor-model decision
-  (charter-architect), not a code change — check #203 before touching the block model.
+  **The same shape recurs one layer down, and #203 closed it by REPORTING rather than descending.**
+  `BlockDocument.Parse` is still top-level-only, so a container nested inside another is still not a `Block`
+  — but `NestedDirectiveLint` now names every one the renderer draws LIVE, `render`/`review`/`handoff` warn,
+  a nested `:::question` raises `needsHuman`, and a nested `:::question`/`:::diff`/unknown `:::foo` blocks
+  strict handoff. **The predicate is `CharterMarkdown.RendersChildren`, read by BOTH the renderer's dispatch
+  and the lint** — never a structural "is it nested" test, which would flag a `:::question` inside
+  `:::custom-html` (inert prose, and the author's own markup by decree — see the opaque-region bullet above).
+  Do NOT make the model, `AnchorAssignment`, `SourceMap` or the flatten descend: `Block.Id` is a hash of
+  `RawContent`, so excising a nested span re-ids every containing block and orphans every annotation on it.
+  Design of record: `docs/plans/04-machine-consumer-contract.md` §11.
+- **A nested `:::diff` CRASHES the renderer, and it is not fixed** (#203 §11.8). `charter render` on a
+  `:::diff` inside a `::::note` or a blockquote exits 1 with *"The given key '13' was not present in the
+  dictionary"*: `WriteDiff` reads each line's sub-anchor from `AnchorAssignment`, whose slot walk is
+  top-level-only, so a nested diff's lines were never registered. The nested-directive warning fires first, so
+  the author is told the real cause — but the verb still fails. Needs its own issue.
 - **Blink dispatches NO `click` when Space activates an ALREADY-CHECKED radio**
   (`RadioInputType::HandleKeyupEvent` returns early), so a click-based rule is unreachable from the keyboard;
   handle `keyup` instead — and `preventDefault()` there, because Blink re-reads `checked` *after* the listener

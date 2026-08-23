@@ -31,13 +31,22 @@ public class NestedDirectiveLintTests
     // ---- The predicate: live rendering, along the whole chain ---------------------------------------------
 
     /// <summary>
-    /// <b>The anti-drift binding, asserted BEHAVIOURALLY.</b> For every container kind,
-    /// <c>CharterMarkdown.RendersChildren</c> must agree with whether the renderer actually draws a nested
-    /// <c>:::question</c> as a live form — and the lint must report exactly the live ones. Asserting the
-    /// verdicts rather than "they call the same method" is what makes a future re-fork fail however it is
-    /// spelled: the renderer's dispatch reads the predicate, and so does the lint, but this test would catch it
-    /// even if one of them stopped.
+    /// <b>The anti-drift binding, asserted BEHAVIOURALLY.</b> For every container kind, the lint must report a
+    /// nested directive exactly when the renderer really DESCENDS into that container's children.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The ground truth is deliberately independent of the question path (which since #203 degrades, so "is
+    /// there a form?" no longer answers this): a nested <c>:::warn</c>'s FENCE LINE survives into the output as
+    /// text iff the parent wrote its body as <c>ContainerBody</c> rather than walking children. A container that
+    /// descends hands the fence to Markdig, which consumes it, so the literal <c>:::warn</c> can never appear.
+    /// </para>
+    /// <para>
+    /// Asserting the verdicts rather than "they call the same method" is what makes a future re-fork fail
+    /// however it is spelled — the renderer's dispatch reads <c>CharterMarkdown.RendersChildren</c> and so does
+    /// the lint, but this test would catch it even if one of them stopped.
+    /// </para>
+    /// </remarks>
     [Theory]
     [InlineData("note", true)]
     [InlineData("warn", true)]
@@ -48,15 +57,38 @@ public class NestedDirectiveLintTests
     [InlineData("questoin", false)]   // an unknown :::foo — ContainerBody, never children
     public void TheLintReportsExactlyTheNestingsTheRendererDrawsLive(string outerDirective, bool live)
     {
+        var markdown =
+            "# A plan\n\nProse.\n\n::::" + outerDirective + "\nA body.\n\n:::warn\nInner warning.\n:::\n::::\n";
+        var html = CharterRenderer.Render(markdown);
+
+        // Descended => Markdig consumed the fence. Swallowed as body text => the fence is still there.
+        Assert.Equal(live, !html.Contains(":::warn", StringComparison.Ordinal));
+
+        // The lint's verdict must be the same verdict.
+        Assert.Equal(live, NestedDirectiveLint.Find(markdown).Any(d => d.Kind == BlockKind.Warn));
+    }
+
+    /// <summary>
+    /// And the degrade lands on exactly the same set: a nested <c>:::question</c> becomes a visible,
+    /// non-answerable placeholder where the renderer descends, and stays inert prose where it does not.
+    /// </summary>
+    [Theory]
+    [InlineData("note", true)]
+    [InlineData("warn", true)]
+    [InlineData("comparison", true)]
+    [InlineData("diagram", false)]
+    [InlineData("diff", false)]
+    [InlineData("custom-html", false)]
+    [InlineData("questoin", false)]
+    public void TheDegradeLandsOnExactlyTheSameSet(string outerDirective, bool live)
+    {
         var markdown = "# A plan\n\nProse.\n\n::::" + outerDirective + "\nA body.\n\n" + QuestionBody + "\n::::\n";
         var html = CharterRenderer.Render(markdown);
 
-        // What the reviewer is actually shown: a real form with a question id, or inert text.
-        Assert.Equal(live, html.Contains("data-question-id=\"q-nested\"", StringComparison.Ordinal));
+        Assert.Equal(live, html.Contains("cannot be answered here", StringComparison.Ordinal));
 
-        // The lint's verdict must be the same verdict.
-        var found = NestedDirectiveLint.Find(markdown);
-        Assert.Equal(live, found.Any(directive => directive.Kind == BlockKind.Question));
+        // NEVER a live form, either way — that is the whole point of #203 step 3.
+        Assert.DoesNotContain("data-question-id=\"q-nested\"", html, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -85,7 +117,12 @@ public class NestedDirectiveLintTests
     [InlineData(BlockquotePlan)]
     public void ACommonMarkContainerIsALiveLink_SoANestedQuestionIsReported(string markdown)
     {
-        Assert.Contains("data-question-id=\"q-nested\"", CharterRenderer.Render(markdown), StringComparison.Ordinal);
+        var html = CharterRenderer.Render(markdown);
+
+        // The renderer reached the question writer — which only happens on a live link — and degraded it.
+        Assert.Contains("cannot be answered here", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-question-id", html, StringComparison.Ordinal);
+
         Assert.Contains(NestedDirectiveLint.Find(markdown), directive => directive.Kind == BlockKind.Question);
     }
 

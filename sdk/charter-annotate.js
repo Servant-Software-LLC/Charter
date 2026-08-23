@@ -1367,7 +1367,11 @@ window.CharterAnnotate = (function () {
   // Done to an author's own <form>, that is the escape hatch being rewritten by the review chrome, which is
   // the defect Charter #176 is about wearing different clothes. So the same monotone containment rule
   // applies: inside an opaque region it is the author's form, not Charter's. A real question is a top-level
-  // block (or nested in a callout) and is never inside one.
+  // BLOCK and is never inside one. (Charter #203 corrected the parenthetical that used to sit here, "or
+  // nested in a callout": a :::question inside a callout renders no form at all any more. It used to render a
+  // live one that no answer could ever be folded back through, so the renderer now degrades it to a visible,
+  // non-answerable .question-error placeholder carrying no data-question-id — which means it never reaches
+  // this function in the first place. No SDK behaviour changed for it; there is simply nothing to find.)
   function questionRoot(form) {
     if (!form || form.nodeType !== 1 || form.tagName !== 'FORM') return null;
     var root = form.hasAttribute('data-question-id')

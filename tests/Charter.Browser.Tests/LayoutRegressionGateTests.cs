@@ -137,7 +137,19 @@ public sealed partial class ReviewLoopBrowserTests
         ":::\n\n" +
         ":::question\n" +
         "{ this body will not parse\n" +
-        ":::\n";
+        ":::\n\n" +
+        // Charter #203's degrade, IN THE FIXTURE. Without a nesting case the placeholder ships with zero
+        // browser coverage, because it is not a body child and every sweep here starts at document.body's
+        // children. Inside a ::::note it is measured by `visit()` like any other descendant — so it answers
+        // for its own clipping and overlap — and `Nested_question_degrades_to_a_visible_non_answerable_
+        // placeholder` asserts what a reviewer actually meets.
+        "::::note\n" +
+        "A callout that asks something Charter cannot carry.\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-nested\",\"title\":\"Which datastore should the read path use\",\"mode\":\"single\"," +
+        "\"target\":\"human\",\"options\":[\"Postgres\",\"DynamoDB\"]}\n" +
+        ":::\n" +
+        "::::\n";
 
     /// <summary>
     /// The window #68 was reported at. The bundled stylesheet gives <c>body</c> a <c>52rem</c> (832px)
@@ -210,6 +222,16 @@ public sealed partial class ReviewLoopBrowserTests
         "BODY > DIV.question-error",          // :::question — unparseable body
     };
 
+    /// <summary>
+    /// The signatures that must be present INSIDE a block rather than as a body child. Kept separate because
+    /// the sweep above is body-children-only by construction, and a nested placeholder is by definition not one
+    /// — which is exactly how the Charter #203 degrade would otherwise ship with no browser coverage at all.
+    /// </summary>
+    private static readonly string[] RequiredNestedSignatures =
+    {
+        "DIV.note > DIV.question-error",      // :::question — live-nested, degraded (#203)
+    };
+
     private static void AssertTheSweepCoversEveryBlockType(LayoutSnapshot layout, int width)
     {
         var rendered = layout.Blocks.Select(block => block.Path).ToArray();
@@ -223,7 +245,13 @@ public sealed partial class ReviewLoopBrowserTests
 
         // Exact, because a block appearing TWICE where one was expected (or a stray body child gaining an
         // anchor id) changes what every rule below is measured over.
-        Assert.Equal(22, layout.Blocks.Count);
+        //
+        // It moved 22 -> 23 with Charter #203's nesting case: the fixture gained a second top-level ::::note,
+        // the one holding the degraded :::question. The nested placeholder itself is NOT counted here — it is
+        // not a body child — which is exactly why it needs
+        // Nested_question_degrades_to_a_visible_non_answerable_placeholder and RequiredNestedSignatures beside
+        // this sweep rather than inside it.
+        Assert.Equal(23, layout.Blocks.Count);
     }
 
     // ---- check 1 (clipping) + check 2 (shrink below legibility) -------------------------------------------
@@ -829,6 +857,97 @@ public sealed partial class ReviewLoopBrowserTests
         "  });" +
         "}" +
         "return JSON.stringify(bad);";
+
+    // ---- Charter #203: the degrade, as a reviewer meets it -------------------------------------------------
+
+    /// <summary>
+    /// A <c>:::question</c> the renderer draws but the block model cannot see must reach the reviewer as a
+    /// VISIBLE, non-answerable placeholder — never as a form whose every outcome is a lie.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this test exists at all.</b> Everything else in this file starts at <c>document.body.children</c>,
+    /// and a nested placeholder is not one — so the degrade would ship with zero browser coverage on the
+    /// strength of a C# string assertion, which is precisely the blind spot that let #37, #38, #57 and #68
+    /// through a green suite. It is checked here, in the served page, against the same fixture the layout gate
+    /// sweeps.
+    /// </para>
+    /// <para>
+    /// <b>Both halves are load-bearing.</b> "No form with that id" is satisfied perfectly by a renderer that
+    /// stopped emitting questions altogether, so the same page is asserted to still carry a REAL question form
+    /// (<c>q-single</c>) with a working submit control. Without that control the test would go green on a
+    /// catastrophe.
+    /// </para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Nested_question_degrades_to_a_visible_non_answerable_placeholder()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-nested-degrade-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, LayoutGatePlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, "Chromium/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await OpenPlanForReviewAsync(page, server, session);
+
+            // The placeholder is where the fixture says it is, and it is really painted.
+            foreach (var signature in RequiredNestedSignatures)
+            {
+                var parts = signature.Split(" > ", StringSplitOptions.TrimEntries);
+                var selector = string.Join(
+                    " > ", parts.Select(part => part.Replace("DIV.", "div.", StringComparison.Ordinal)));
+
+                var box = await page.EvalOnSelectorAsync<double[]?>(
+                    selector,
+                    "el => { const r = el.getBoundingClientRect();"
+                    + " return [r.width, r.height]; }");
+
+                Assert.True(
+                    box is { Length: 2 } && box[0] > 0 && box[1] > 0,
+                    $"'{signature}' must be present and painted; measured {(box is null ? "nothing" : $"{box[0]}x{box[1]}")}.");
+            }
+
+            // It says what is wrong, and names the question it is standing in for.
+            var text = await page.EvalOnSelectorAsync<string>(
+                "div.note > div.question-error", "el => el.textContent || ''");
+            Assert.Contains("cannot be answered here", text, StringComparison.Ordinal);
+            Assert.Contains("Which datastore should the read path use", text, StringComparison.Ordinal);
+            Assert.Contains("top-level block", text, StringComparison.Ordinal);
+
+            // Non-answerable, structurally: no form, no question id, no control to press.
+            Assert.Equal(0, await page.Locator("form[data-question-id='q-nested']").CountAsync());
+            Assert.Equal(0, await page.Locator("div.question-error [data-question-id]").CountAsync());
+            Assert.Equal(0, await page.Locator("div.question-error button").CountAsync());
+            Assert.Equal(0, await page.Locator("div.question-error input").CountAsync());
+
+            // ANTI-VACUITY: a real question on the same page still renders, with a real submit control — so
+            // none of the above can pass because questions stopped rendering.
+            Assert.Equal(1, await page.Locator("form[data-question-id='q-single']").CountAsync());
+            Assert.Equal(
+                1,
+                await page.Locator("form[data-question-id='q-single'] button.question-submit").CountAsync());
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
 
     // ---- shared setup + small helpers ---------------------------------------------------------------------
 

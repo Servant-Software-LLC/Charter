@@ -238,6 +238,16 @@ file and wants to know it was complete.
 | `malformed-question` | A `:::question` body that will not parse. Its `target` is unknown, **and** the flatten collapses the whole block to `> **Malformed question …**`, deleting its id, title and target from the handed-off document. |
 | `unknown-directive` | An unrecognized `:::foo`. Charter cannot tell a misspelled `:::questoin` from a container the catalog genuinely does not define, so the strict gate resolves toward the human. |
 | `duplicate-question-id` | An answer resolves into every block sharing the id, and `poll --apply` / `resolve` refuse the write. |
+| `nested-question` | A `:::question` inside a container that renders its children (#203). It is drawn on the page but is not a block, so its decision is absent from the flatten entirely and no answer to it can be folded back. |
+| `nested-diff` | A `:::diff` nested the same way. It flattens as blockquoted prose, where line-initial `+` and `-` are read as CommonMark **bullet markers** — an added and a removed line become indistinguishable, so a reader is shown a deleted line as a requirement. |
+| `nested-unknown-directive` | An unrecognized `:::foo` nested the same way — unknowable by definition, and invisible to the block model as well. |
+
+**The three nesting blockers do not all escalate in the record.** Only `nested-question` raises
+`needsHuman`; `nested-diff` and `nested-unknown-directive` are `notes[]` warnings there and blockers only
+here. That is the same record/gate split as `malformed-question` vs `unknown-directive`: **the record
+escalates on known decisions, the gate on possible ones.** A nested `:::comparison`, `:::diagram`,
+`:::note` or `:::warn` blocks nothing — each of those bodies was read out of a real flatten and survives
+blockquoting intact, losing only the block's framing and its anchors.
 
 **The `target: agent` carve-out is narrowed, not absent.** #172 as filed assumed agent questions never
 count, on the grounds that the flattened path branches on `target` — it does not (see the metadata-line note

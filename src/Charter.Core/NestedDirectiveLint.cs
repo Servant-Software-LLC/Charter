@@ -91,6 +91,18 @@ public static class NestedDirectiveLint
         _ => HeadlessNoteKind.NestedDirective,
     };
 
+    /// <summary>
+    /// True when <paramref name="container"/> is what this lint reports: a <c>:::</c> directive the renderer
+    /// draws LIVE and the block model cannot see. Read by <c>CharterContainerRenderer.WriteQuestion</c>, so the
+    /// placeholder it degrades to appears on exactly the containers this lint names (Charter #203).
+    /// </summary>
+    /// <remarks>
+    /// The two conditions are independent and both are needed: a TOP-LEVEL container is a block, however the
+    /// renderer treats it, and a nested one inside an opaque region is inert text nobody can answer.
+    /// </remarks>
+    internal static bool IsLiveNested(CustomContainer container)
+        => container.Parent is not MarkdownDocument && RendersLive(container);
+
     /// <summary>Every live-rendered <c>:::</c> container strictly below <paramref name="parent"/>, depth-first
     /// in document order.</summary>
     private static void CollectNested(ContainerBlock parent, List<NestedDirective> found)
