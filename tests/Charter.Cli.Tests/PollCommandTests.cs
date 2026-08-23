@@ -86,9 +86,85 @@ public class PollCommandTests
         "\n" +
         AnchorMarker + "\n";
 
+    // Charter #203 step 1: a :::question the RENDERER draws as a live, answerable form (a ::::note descends to
+    // its children) but the BLOCK MODEL cannot see, because BlockDocument.Parse walks top-level nodes only. The
+    // reviewer answers it on the page; `QuestionResolution.Apply` then matches nothing.
+    private const string NestedQuestionPlan =
+        "# Nested Question Plan\n\nAn overview paragraph.\n\n" +
+        "::::note\n" +
+        "A callout that asks something.\n\n" +
+        ":::question\n" +
+        "{\"id\":\"q-nested\",\"title\":\"Which store?\",\"mode\":\"single\"," +
+        "\"options\":[\"Postgres\",\"DynamoDB\"],\"target\":\"human\"}\n" +
+        ":::\n" +
+        "::::\n";
+
     private static readonly Regex ReadyUrl = new(@"https?://127\.0\.0\.1:\d+/\?key=[0-9a-f]+", RegexOptions.Compiled);
 
     // ---- No-session + regression --------------------------------------------------------------------------
+
+    /// <summary>
+    /// Charter #203 step 1. An answer whose <c>:::question</c> the block model cannot see is REFUSED — exit 5,
+    /// answers preserved, ids named on stderr — rather than drained, reported applied, and destroyed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>What this test watched happen before the refusal existed</b>, on this exact fixture: the apply exited
+    /// <c>0</c> with an EMPTY stderr, the plan on disk was byte-identical,
+    /// <c>&lt;hash&gt;.review.json</c> went from holding <c>q-nested → ["Postgres"]</c> to being deleted
+    /// outright, and an immediately following plain <c>poll</c> reported <c>"answers": []</c> at exit <c>2</c>
+    /// ("a queue was found and it was empty"). The reviewer's decision was gone, with every observable signal
+    /// saying the run had succeeded.
+    /// </para>
+    /// <para>
+    /// It asserts BOTH halves, because either alone can pass over the bug: the refusal (exit 5 + the ids) and
+    /// the preservation (a following plain poll still reports the answer). A refusal that also dropped the
+    /// answer would satisfy the first half while doing the very damage this closes.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Poll_Apply_AnswerWhoseQuestionTheBlockModelCannotSee_IsRefusedNotDestroyed()
+    {
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(NestedQuestionPlan);
+        Process? review = null;
+        try
+        {
+            (review, var url) = await StartReviewAsync(stateDir, planPath);
+
+            // The reviewer answers the form the page really shows them: the renderer descends into a ::::note,
+            // so this :::question is drawn live with a submit control and a data-question-id.
+            await PostAnswerAsync(url, "q-nested", new[] { "Postgres" });
+
+            var before = await File.ReadAllTextAsync(planPath);
+            var apply = await RunCharterAsync(stateDir, "poll", "--url", url, "--apply");
+
+            Assert.Equal(5, apply.ExitCode);
+            Assert.Contains("q-nested", apply.StdErr, StringComparison.Ordinal);
+            Assert.Contains("does not carry as a block", apply.StdErr, StringComparison.Ordinal);
+
+            // The plan is untouched — which was ALSO true of the destructive path, so it proves nothing alone.
+            Assert.Equal(before, await File.ReadAllTextAsync(planPath));
+
+            // The half that does prove it: the decision is still queued and still reported.
+            var again = await RunCharterAsync(stateDir, "poll", "--url", url);
+            Assert.Equal(0, again.ExitCode);
+            using var envelope = JsonDocument.Parse(again.StdOut.Trim());
+            var answers = envelope.RootElement.GetProperty("answers");
+            Assert.Equal(1, answers.GetArrayLength());
+            Assert.Equal("q-nested", answers[0].GetProperty("questionId").GetString());
+        }
+        finally
+        {
+            if (review is not null)
+            {
+                TryKill(review);
+            }
+
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
 
     [Fact]
     public async Task Poll_NoRunningSession_Exits3_WithCleanStderr_AndSessionNull()

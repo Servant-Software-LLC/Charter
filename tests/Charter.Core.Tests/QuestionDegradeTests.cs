@@ -86,6 +86,89 @@ public class QuestionDegradeTests
         }
     }
 
+    // ---- Charter #203: a LIVE-NESTED question degrades too, for a different reason -------------------------
+
+    private const string NestedQuestion =
+        "A valid paragraph.\n\n::::note\nA callout.\n\n:::question\n"
+        + "{\"id\":\"q-nested\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\","
+        + "\"options\":[\"Postgres\",\"DynamoDB\"]}\n:::\n::::\n";
+
+    /// <summary>
+    /// The body here is perfectly VALID — it degrades because of where it sits, not what it says. The renderer
+    /// would otherwise draw a real form whose every outcome is a lie: no anchor, absent from the handoff and
+    /// the record, and an answer that can never be folded back.
+    /// </summary>
+    [Fact]
+    public void Render_LiveNestedQuestion_DegradesToANonAnswerablePlaceholder()
+    {
+        var html = CharterRenderer.Render(NestedQuestion);
+
+        Assert.Contains("A valid paragraph.", html);
+        Assert.Contains("question-error", html);
+
+        // Non-answerable, structurally: nothing for the SDK to bind a submit to.
+        Assert.DoesNotContain("<form", html);
+        Assert.DoesNotContain("data-question-id", html);
+
+        // It names the defect and the title, so a reviewer is told rather than left to discover it.
+        Assert.Contains("cannot be answered here", html);
+        Assert.Contains("Which store?", html);
+        Assert.Contains("must be a top-level block", html);
+    }
+
+    /// <summary>
+    /// It carries NO id, because a nested block has none — <c>RenderBody</c>'s anchor pass is top-level-only
+    /// and #166 settled that a note on a nested block resolves OUTWARD, to the enclosing callout. Emitting an
+    /// id here would invent an anchor <see cref="SourceMap"/> cannot map to a line.
+    /// </summary>
+    [Fact]
+    public void TheNestedPlaceholderCarriesNoAnchorId()
+    {
+        Assert.Contains("<div class=\"question-error\">", CharterRenderer.Render(NestedQuestion));
+    }
+
+    /// <summary>
+    /// <b>Invariant 1.</b> The degrade ships IN THE ARTIFACT, deliberately — a standalone artifact carrying a
+    /// dead form is a lie standalone, so this can never be a serve-time affordance.
+    /// </summary>
+    [Fact]
+    public void Export_LiveNestedQuestion_CarriesThePlaceholder_NotAForm()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "charter-nested-" + System.Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var html = ArtifactExporter.Export(NestedQuestion, dir);
+
+            Assert.Contains("cannot be answered here", html);
+            Assert.DoesNotContain("<form", html);
+            Assert.DoesNotContain("data-question-id", html);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A TOP-LEVEL question is untouched by any of this — the positive control that stops the degrade being
+    /// green because questions stopped rendering at all.
+    /// </summary>
+    [Fact]
+    public void ATopLevelQuestionStillRendersItsForm()
+    {
+        var html = CharterRenderer.Render(
+            "A valid paragraph.\n\n:::question\n"
+            + "{\"id\":\"q-top\",\"title\":\"Which store?\",\"mode\":\"single\",\"target\":\"human\","
+            + "\"options\":[\"Postgres\",\"DynamoDB\"]}\n:::\n");
+
+        Assert.Contains("data-question-id=\"q-top\"", html);
+
+        // Scoped to the placeholder's own wording, NOT to "question-error": that class name is DECLARED in the
+        // bundled stylesheet the shell inlines, so a whole-document scan for it always finds the CSS rule.
+        Assert.DoesNotContain("cannot be answered here", html);
+    }
+
     [Fact]
     public void Render_PathologicallyDeepNesting_DoesNotThrow()
     {

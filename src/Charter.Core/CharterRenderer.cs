@@ -308,11 +308,26 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
     protected override void Write(HtmlRenderer renderer, CustomContainer obj)
     {
         // Dispatch on the SAME classification the block model uses (CharterMarkdown.ClassifyContainer), so the
-        // renderer and the catalog can never disagree on what a :::directive is. The containers whose markup
-        // diverges from the default callout get a bespoke writer; :::note / :::warn / :::comparison fall through
-        // to the default; and an unrecognized :::foo (BlockKind.Unknown) renders as a visible unknown-directive
-        // element rather than silently masquerading as a note (Charter #22).
-        switch (CharterMarkdown.ClassifyContainer(obj))
+        // renderer and the catalog can never disagree on what a :::directive is.
+        var kind = CharterMarkdown.ClassifyContainer(obj);
+
+        // :::note / :::warn / :::comparison are the ONLY kinds that descend into their children — base.Write
+        // reaches WriteChildren, which is what makes a :::question nested inside one render as a real,
+        // answerable form. That set is READ from CharterMarkdown.RendersChildren rather than restated here,
+        // because NestedDirectiveLint's whole predicate is built on it and a second listing would drift
+        // (Charter #203). Do NOT narrow it: nested :::diagram / :::custom-html render today and
+        // OpaqueRegionAnchorTests depends on it.
+        if (CharterMarkdown.RendersChildren(kind))
+        {
+            base.Write(renderer, obj);
+            return;
+        }
+
+        // Everything below writes ContainerBody(obj) and never walks children, so a directive nested inside one
+        // of these is inert text. An unrecognized :::foo (BlockKind.Unknown) — and any future kind not yet given
+        // a writer — renders as a visible unknown-directive element rather than silently masquerading as a note
+        // (Charter #22).
+        switch (kind)
         {
             case BlockKind.Diagram:
                 WriteDiagram(renderer, obj);
@@ -326,11 +341,8 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
             case BlockKind.CustomHtml:
                 WriteCustomHtml(renderer, obj);
                 break;
-            case BlockKind.Unknown:
-                WriteUnknown(renderer, obj);
-                break;
             default:
-                base.Write(renderer, obj);
+                WriteUnknown(renderer, obj);
                 break;
         }
     }
@@ -554,11 +566,28 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         }
 
         var id = obj.TryGetAttributes()?.Id;
+        var parsed = QuestionSpec.TryParse(ContainerBody(obj), out var spec, out var error) && spec is not null;
+
+        // Charter #203. A :::question nested inside a container that renders its children is DRAWN by this
+        // renderer but is not a Block, so it has no anchor, no source-map entry, no entry in the forensic
+        // record, and QuestionResolution.Apply can never find it. Rendering the form anyway offered a reviewer
+        // a control whose every outcome was a lie: the answer could not be folded back, the flatten carried the
+        // raw JSON body as prose, and `--fail-if-needs-human` exited 0 over the decision.
+        //
+        // It degrades to a visible, NON-ANSWERABLE placeholder — no <form>, no data-question-id — so the SDK
+        // has nothing to bind a submit to and a reviewer is told why instead of being left to discover it.
+        // The placeholder SHIPS IN THE ARTIFACT deliberately (invariant 1): a standalone artifact carrying a
+        // dead form is a lie standalone, so this cannot be a serve-time affordance.
+        if (NestedDirectiveLint.IsLiveNested(obj))
+        {
+            WriteNestedQuestionPlaceholder(renderer, parsed ? spec : null);
+            return;
+        }
 
         // Degrade a malformed/empty :::question to a visible placeholder rather than throwing (which would
         // abort the whole render — and thus the served page / export). The placeholder KEEPS the block's
         // stable id so a reviewer can still annotate it, and every other block still renders.
-        if (!QuestionSpec.TryParse(ContainerBody(obj), out var spec, out var error) || spec is null)
+        if (!parsed || spec is null)
         {
             renderer.Write("<div class=\"question-error\"");
             WriteId(renderer, id);
@@ -709,6 +738,53 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         => _pendingAnswers is not null && _pendingAnswers.TryGetValue(questionId, out var values)
             ? values ?? Array.Empty<string>()
             : null;
+
+    /// <summary>
+    /// The placeholder a live-nested <c>:::question</c> degrades to (Charter #203): visible, named, and
+    /// unanswerable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It carries NO id, because a nested block has none to carry — <c>RenderBody</c>'s anchor pass is
+    /// top-level-only and #166 settled that a note on a nested block resolves outward. It reuses
+    /// <c>question-error</c>, which already shares a stylesheet rule with <c>unknown-directive</c>, so the
+    /// degrade costs no styling and reads as the diagnostic surface it is.
+    /// </para>
+    /// <para>
+    /// It names the STRANDED QUEUED ANSWER when there is one, because that is the state a reviewer is most
+    /// likely to arrive in: they answered the form this build no longer draws, the answer is sitting in the
+    /// review store, and <c>poll --apply</c> / <c>charter resolve</c> now refuse it (exit 5) rather than
+    /// committing it away. Without this line the answer simply vanishes from the page with no account of it.
+    /// </para>
+    /// </remarks>
+    private void WriteNestedQuestionPlaceholder(HtmlRenderer renderer, QuestionSpec? spec)
+    {
+        renderer.Write("<div class=\"question-error\"><strong>This question cannot be answered here.</strong> ");
+
+        if (spec is { Title.Length: > 0 })
+        {
+            renderer.Write("&ldquo;");
+            renderer.WriteEscape(spec.Title);
+            renderer.Write("&rdquo; ");
+        }
+
+        renderer.Write(
+            "is nested inside another container, so Charter draws it but does not treat it as a block: it has "
+            + "no anchor, it is absent from the handoff and from the forensic record, and an answer to it "
+            + "could never be folded back into the plan. A <code>:::</code> directive must be a top-level "
+            + "block.");
+
+        if (spec is not null && PendingAnswerFor(spec.Id) is not null)
+        {
+            renderer.Write(" A saved answer for <code>");
+            renderer.WriteEscape(spec.Id);
+            renderer.Write(
+                "</code> is queued and cannot be applied. It is preserved, not lost — move the question to "
+                + "the top level and answer it there.");
+        }
+
+        renderer.WriteLine("</div>");
+    }
 
     private static void WriteQuestionControls(
         HtmlRenderer renderer, QuestionSpec spec, IReadOnlyList<string> answer)

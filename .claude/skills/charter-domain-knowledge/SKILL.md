@@ -182,7 +182,11 @@ carries its `quote`.** So every ambiguity resolves toward the orphan.
   **One carve-out, and it is the SDK's, not the renderer's: a `:::question` is not annotatable at all.**
   `form.question` is in the SDK's `UNANCHORABLE` list — a rendered question is native controls, and a note
   competing with the answer the block exists to collect would be worse than no note — so `closestAnchored`
-  refuses everything inside one. The renderer still stamps the block's id and
+  refuses everything inside one. **That carve-out is scoped to the FORM, which is why a live-NESTED question
+  needs no SDK change** (#203): it renders as a `.question-error` placeholder, not a `form.question`, so
+  `closestAnchored` simply climbs out of it to the enclosing callout — a nested block's note resolving
+  outward, exactly as #166 settled. There is nothing to refuse, because there is nothing to answer.
+  The renderer still stamps a TOP-LEVEL question block's id and
   `SourceMap` still registers it, so nothing is inconsistent; just do not read "top-level document nodes" as
   "every top-level block can take a note", and do not "fix" the question block to match the sentence.
   **The refusal SPEAKS** (#178): Alt+click inside a question prevents the default (so the same gesture cannot
@@ -528,12 +532,17 @@ back to its markdown, and nothing recorded which decisions were never made.
   `ReviewExitCodes`**, whose `2` means "a queue was found and it was empty". #173 asked for the opposite
   warning; reading Guardrails' source settled it this way.
 - **`needsHuman` is the single escalation fact**, serialized into the record *and* returned as the exit code,
-  so the file and `$?` can never disagree. Exactly three things raise it: an **open `:::question` with
+  so the file and `$?` can never disagree. Exactly four things raise it: an **open `:::question` with
   `target: human`**; a **`:::question` whose body will not parse** (target unknown ⇒ assume the worst, never
-  assume `agent`); **duplicate question ids** (an answer would resolve into both and `poll --apply`/`resolve`
-  refuse the write). A missing/unsupported version marker and an unknown `:::foo` are recorded in `notes` but
-  do **not** escalate — every other verb treats those as warnings that never change an exit code, and widening
-  the rule would make the flag almost always true and therefore worthless.
+  assume `agent`); a **`:::question` nested inside a container that renders its children** (#203 — drawn as a
+  live, answerable form, absent from `questions[]` entirely, and no answer to it can ever be folded back); and
+  **duplicate question ids** (an answer would resolve into both and `poll --apply`/`resolve` refuse the write).
+  A missing/unsupported version marker, an unknown `:::foo` and a nested directive that is *not* a question are
+  recorded in `notes` but do **not** escalate — every other verb treats those as warnings that never change an
+  exit code, and widening the rule would make the flag almost always true and therefore worthless.
+  **That last clause is a BASE-RATE argument, which is exactly why the nested-question term is not a breach of
+  it:** unknown directives occur in ordinary plans, so escalating on them would fire constantly; a correct plan
+  has **zero** nested questions, so the term is false on every healthy document.
 - **Out of scope, deliberately:** auto-generating human-style review comments (#7 says so — that is an agent's
   job). `notes[]` is Charter's OWN diagnostics, the stderr warnings an agent-launched run may never show a
   human, made durable — not synthesized review prose. **All of them**, since `schema` 2: `notes: []` did not
@@ -554,11 +563,17 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
 - **The predicate runs AFTER `--answers` is merged**, which is why it could not reuse `NeedsHuman` (a pure
   function of the plan text, by contract). The two share a `PlanInventory` — one walk — but deliberately
   **not** a verdict.
-- **It is STRICTER than the record in two places.** An open `target: agent` question blocks unless it is
+- **It is STRICTER than the record in three places.** An open `target: agent` question blocks unless it is
   *decidable* (carries `options` or a `recommended`) — because nothing downstream actually branches on
   `target`, so delegating is prose asking the next agent to decide, and a bare free-text one asks it to
-  invent. And an **unknown `:::foo` blocks**, because a misspelled `:::questoin` classifies as one and would
-  otherwise exit 0 from both verbs on a hidden `target: human` decision.
+  invent. An **unknown `:::foo` blocks**, because a misspelled `:::questoin` classifies as one and would
+  otherwise exit 0 from both verbs on a hidden `target: human` decision. And a **nested `:::diff` or nested
+  unknown `:::foo` blocks** (#203) while the record files both as warnings — the same asymmetry, inherited:
+  **the record escalates on KNOWN decisions, the gate on POSSIBLE ones.** The nested `:::diff` blocker was
+  earned by evidence, not analogy: read out of the real flatten, its line-initial `+`/`-` are consumed as
+  CommonMark **bullet markers**, so an added and a removed line become indistinguishable and a reader is shown
+  a deleted line as a requirement. A nested `:::comparison`/`:::diagram`/`:::note`/`:::warn` does **not**
+  block — each of those bodies was read out of the same flatten and survives blockquoting intact.
 - **stderr names each blocker's id/title/target**, and separately reports `--answers` ids matching no
   question — reported, never a veto.
 - **The flatten gained two things** (#172): an open `target: agent` question leads with *"Delegated decision
@@ -875,8 +890,13 @@ holding Charter's prose to what the code does.
     no orphan diff (an orphan shows its `quote`, never a diff).
   - **`reopen` still has no writer.** `ReviewOpKind.Reopen` is understood by the fold, but nothing appends one
     — no API route, no CLI verb — so a `reopen` can only reach a log from outside Charter.
-- **Known-open, and read it before changing the block model:** **#203** — a `:::question` nested inside a
-  `::::note` renders as an answerable form but is invisible to `BlockDocument`, so `needsHuman` reads false,
-  `--fail-if-needs-human` exits 0, the flatten emits its raw JSON body, and the answer can never be folded
-  back. It is a format/anchor-model decision, not a code fix.
+- **#203 is CLOSED, and the way it closed is the part to keep:** Charter **reports** the divergence rather
+  than making the block model descend. A `:::question` nested inside a container that renders its children no
+  longer draws a form at all — it degrades to a visible, non-answerable placeholder — and `needsHuman`,
+  `--fail-if-needs-human` and the three authoring verbs all name it. Full support was **refused**: making the
+  model descend honestly means excising the nested span from the enclosing block's `RawContent`, and
+  `Block.Id` is a hash of `RawContent`, so every containing block re-ids and **every annotation on it
+  orphans**. Design of record: `docs/plans/04-machine-consumer-contract.md` §11.
+  **Still open from the same family:** a nested `:::diff` makes `charter render` **crash** (exit 1,
+  `KeyNotFoundException` out of `AnchorAssignment.SubIdForLine`) — see §11.8; it needs its own issue.
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).

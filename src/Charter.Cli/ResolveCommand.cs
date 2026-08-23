@@ -65,7 +65,8 @@ internal static class ResolveCommand
             return ReviewExitCodes.CleanEmpty;
         }
 
-        if (RefuseStale(session.SourcePath, answers.Items, applyStaleAnswers, planPath))
+        if (RefuseUnmatched(session.SourcePath, answers.Items)
+            || RefuseStale(session.SourcePath, answers.Items, applyStaleAnswers, planPath))
         {
             return ReviewExitCodes.ApplyFailed;
         }
@@ -87,7 +88,8 @@ internal static class ResolveCommand
             return ReviewExitCodes.CleanEmpty;
         }
 
-        if (RefuseStale(canonical, state.Answers, applyStaleAnswers, planPath))
+        if (RefuseUnmatched(canonical, state.Answers)
+            || RefuseStale(canonical, state.Answers, applyStaleAnswers, planPath))
         {
             return ReviewExitCodes.ApplyFailed;
         }
@@ -103,6 +105,32 @@ internal static class ResolveCommand
         ReviewSidecar.WriteState(sidecarPath, canonical, state.Annotations, Array.Empty<Answer>());
         Console.WriteLine($"Resolved {state.Answers.Count} answer(s) into {planPath}");
         return ReviewExitCodes.Drained;
+    }
+
+    /// <summary>
+    /// Whether to refuse this batch because some answer names a <c>:::question</c> the plan does not carry as a
+    /// block (Charter #203), reporting WHY and how to proceed.
+    /// </summary>
+    /// <remarks>
+    /// Checked BEFORE staleness and NOT bypassable by <c>--apply-stale-answers</c>. The inline write would match
+    /// nothing and return the plan byte-identical, which this verb would score as a successful apply and follow
+    /// by clearing the sidecar (or committing the store) — draining the reviewer's decision into nothing while
+    /// printing "Resolved 1 answer(s)". The flag is the human's "apply it anyway" for a question that CHANGED;
+    /// there is nothing to apply anyway to when the question is not a block at all.
+    /// </remarks>
+    private static bool RefuseUnmatched(string sourcePath, IReadOnlyList<Answer> answers)
+    {
+        var unmatched = AnswerApplication.FindUnmatched(sourcePath, answers);
+        if (unmatched.Count == 0)
+        {
+            return false;
+        }
+
+        Console.Error.WriteLine($"charter resolve: {AnswerApplication.UnmatchedAnswerReason(unmatched)}");
+        Console.Error.WriteLine(
+            "charter resolve: the queued answers are preserved. Move the answered :::question to the top level "
+            + "(or restore it), then re-run 'charter resolve'.");
+        return true;
     }
 
     /// <summary>

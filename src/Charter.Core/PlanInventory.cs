@@ -28,6 +28,7 @@ public sealed class PlanInventory
         IReadOnlyList<HeadlessNote> notes,
         int malformedQuestions,
         int unknownDirectives,
+        int nestedQuestions,
         IReadOnlyList<string> duplicateQuestionIds,
         VersionMarkerResult versionMarker)
     {
@@ -35,6 +36,7 @@ public sealed class PlanInventory
         Notes = notes;
         MalformedQuestions = malformedQuestions;
         UnknownDirectives = unknownDirectives;
+        NestedQuestions = nestedQuestions;
         DuplicateQuestionIds = duplicateQuestionIds;
         VersionMarker = versionMarker;
     }
@@ -51,6 +53,12 @@ public sealed class PlanInventory
     /// <summary>How many unrecognized <c>:::foo</c> directives the plan carries.</summary>
     public int UnknownDirectives { get; }
 
+    /// <summary>
+    /// How many <c>:::question</c> blocks render as live, answerable forms while being invisible to the block
+    /// model (Charter #203) — so their decisions are absent from <see cref="Questions"/> entirely.
+    /// </summary>
+    public int NestedQuestions { get; }
+
     /// <summary>The distinct <c>:::question</c> ids carried by more than one block, in first-seen order.</summary>
     public IReadOnlyList<string> DuplicateQuestionIds { get; }
 
@@ -58,13 +66,23 @@ public sealed class PlanInventory
     public VersionMarkerResult VersionMarker { get; }
 
     /// <summary>
-    /// <c>charter headless</c>'s escalation predicate — the record's, unchanged. Exactly three conditions
-    /// raise it; see <see cref="HeadlessRecord.NeedsHuman"/> for why the line is drawn there and nowhere else.
+    /// <c>charter headless</c>'s escalation predicate. Exactly FOUR conditions raise it; see
+    /// <see cref="HeadlessRecord.NeedsHuman"/> for why the line is drawn there and nowhere else.
     /// <see cref="HandoffGate"/> draws a DIFFERENT, stricter line, on purpose.
     /// </summary>
+    /// <remarks>
+    /// <b>The fourth term is <see cref="NestedQuestions"/> (Charter #203)</b>, and it mirrors
+    /// <see cref="MalformedQuestions"/> exactly: both are questions the record cannot list, so both are decisions
+    /// it cannot report on. A nested one is the worse of the two — a human is shown a live form and answers it,
+    /// while the record certifies that nobody is needed. The record's standing reason for filing
+    /// <c>UnknownDirective</c> as a warning ("widening the rule would make the flag almost always true") is a
+    /// BASE-RATE argument and does not transfer: a correct plan has zero nested questions, so this term is false
+    /// on every healthy document.
+    /// </remarks>
     public bool NeedsHuman =>
         Questions.Any(question => question is { Answered: false, Target: "human" })
         || MalformedQuestions > 0
+        || NestedQuestions > 0
         || DuplicateQuestionIds.Count > 0;
 
     /// <summary>Walk <paramref name="markdown"/> once and report everything a judge of it needs.</summary>
@@ -100,9 +118,10 @@ public sealed class PlanInventory
         // One walk of the document, reading its blocks, their start lines and their ASSIGNED anchor ids from
         // the same kernels the renderer and the SourceMap read — so a question's anchorId here is byte-identical
         // to the id the artifact carries and to the key of the record's own sourceMap.
+        var walk = PlanWalk.Walk(markdown);
         var malformedQuestions = 0;
         var unknownDirectives = 0;
-        foreach (var (kind, rawContent, startLine, anchorId) in PlanWalk.Blocks(markdown))
+        foreach (var (kind, rawContent, startLine, anchorId) in walk.Blocks)
         {
             if (kind == BlockKind.Unknown)
             {
@@ -146,13 +165,50 @@ public sealed class PlanInventory
                 spec.Recommended));
         }
 
+        // The nested-directive lint, from the SAME walk — never a second parse (Charter #203).
+        var nestedQuestions = AddNestedDirectiveNotes(walk.NestedDirectives, notes);
+
         // The two lints `handoff` prints that the record had no note kind for (Charter #173). Until they were
         // added, `notes: []` did NOT mean "Charter noticed nothing" — which is precisely the query a post-mortem
         // harness asks of this file, and it was silently wrong.
         AddMissingRecommendationNotes(markdown, questions, notes);
         AddUntrackedDeferralNotes(markdown, notes);
 
-        return new PlanInventory(questions, notes, malformedQuestions, unknownDirectives, duplicates, marker);
+        return new PlanInventory(
+            questions, notes, malformedQuestions, unknownDirectives, nestedQuestions, duplicates, marker);
+    }
+
+    /// <summary>
+    /// Record every live-rendered nested <c>:::</c> directive under its own note kind, and return how many of
+    /// them were <c>:::question</c>s — the count that feeds <see cref="NeedsHuman"/> (Charter #203).
+    /// </summary>
+    /// <remarks>
+    /// The note KIND is what carries the tier, which is why there are four of them and why the mapping lives in
+    /// <see cref="NestedDirectiveLint.NoteKindFor"/> rather than being re-derived here: <see cref="HandoffGate"/>
+    /// switches on <c>note.Kind</c>, so a record and a gate reading different mappings would disagree about the
+    /// same plan.
+    /// </remarks>
+    private static int AddNestedDirectiveNotes(
+        IReadOnlyList<NestedDirective> nested, List<HeadlessNote> notes)
+    {
+        var nestedQuestions = 0;
+        foreach (var directive in nested)
+        {
+            if (directive.Kind == BlockKind.Question)
+            {
+                nestedQuestions++;
+            }
+
+            notes.Add(new HeadlessNote(
+                NestedDirectiveLint.NoteKindFor(directive.Kind),
+                $"A :::{directive.Directive} directive is nested inside a container that renders its children, "
+                    + "so it is DRAWN on the page but is not a block: it has no anchor, no source-map entry and "
+                    + "no entry in this record, the flatten emits its body as blockquoted prose, and an answer "
+                    + "to it can never be folded back. A ::: directive must be a top-level block.",
+                directive.SourceLine));
+        }
+
+        return nestedQuestions;
     }
 
     /// <summary>

@@ -253,16 +253,27 @@ internal static class PollCommand
         // committed) and exits with a distinct code so the reviewer's decision is recoverable, not lost.
         AnswerApplication.ApplyResult? applied = null;
         IReadOnlyList<Answer> staleAnswers = Array.Empty<Answer>();
+        IReadOnlyList<Answer> unmatchedAnswers = Array.Empty<Answer>();
         try
         {
             if (apply && answers.Items.Count > 0)
             {
+                // Charter #203: refuse an answer whose :::question the block model cannot see at all. Checked
+                // FIRST, because it is the case where "the apply succeeded" is not merely unhelpful but false —
+                // Apply matches nothing, returns byte-identical markdown, and the commit then removes the answer
+                // from the store and the sidecar while this verb exits 0. There is no --apply-stale-answers
+                // escape for it: the write cannot land, so forcing it would only destroy the decision again.
+                unmatchedAnswers = AnswerApplication.FindUnmatched(resolution.Session!.SourcePath, answers.Items);
+
                 // Charter #75 item 3: refuse to fold in a decision whose :::question is no longer the one the
                 // reviewer was asked. The agent gets the refusal, not an override — `charter resolve
                 // --apply-stale-answers` is the human's verb for saying "apply it anyway", and an autonomous
                 // loop must not be able to write a stale decision into the plan on its own say-so.
-                staleAnswers = AnswerApplication.FindStale(resolution.Session!.SourcePath, answers.Items);
-                if (staleAnswers.Count == 0)
+                staleAnswers = unmatchedAnswers.Count > 0
+                    ? Array.Empty<Answer>()
+                    : AnswerApplication.FindStale(resolution.Session!.SourcePath, answers.Items);
+
+                if (unmatchedAnswers.Count == 0 && staleAnswers.Count == 0)
                 {
                     applied = await AnswerApplication
                         .ApplyAndCommitAsync(client, resolution.Session!, answers.Items, drainCts.Token)
@@ -313,6 +324,16 @@ internal static class PollCommand
         if (submission is not null && drainError is null)
         {
             await client.AckReviewSubmissionAsync(submission.Sequence, drainCts.Token).ConfigureAwait(false);
+        }
+
+        if (unmatchedAnswers.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"charter poll: refusing --apply: {AnswerApplication.UnmatchedAnswerReason(unmatchedAnswers)}");
+            Console.Error.WriteLine(
+                "charter poll: the queued answers remain in the review store; fix the plan so every answered "
+                + "question is a top-level :::question block, then re-run 'charter poll --apply'.");
+            return ReviewExitCodes.ApplyFailed;
         }
 
         if (staleAnswers.Count > 0)

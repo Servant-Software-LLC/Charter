@@ -289,6 +289,63 @@ internal static class CharterCommands
                 + "is the decision to put in front of the reviewer -- file it, or ask them in a :::question.");
     }
 
+    // The nested-directive lint (Charter #203): a ::: container that the RENDERER draws live but the BLOCK
+    // MODEL cannot see, because BlockDocument.Parse yields top-level nodes only. The reviewer is shown a real
+    // :::question form; needsHuman reads false, the flatten emits its raw JSON body as prose, and no answer to
+    // it can ever be folded back. Warned at author time — on `render`, `review` and `handoff`, exactly where
+    // its siblings warn — because by the time the divergence bites, the reviewer has already answered.
+    //
+    // `charter export` deliberately does not warn, matching the existing pattern: export is the offline
+    // artifact write, not an authoring or hand-off step.
+    private static void WarnOnNestedDirectives(string verb, string markdown)
+    {
+        IReadOnlyList<NestedDirective> nested;
+        try
+        {
+            // try/caught like its siblings: `render` must survive input the parse kernels throw on, and this
+            // one walks deeper into the tree than any of them.
+            nested = NestedDirectiveLint.Find(markdown);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        if (nested.Count == 0)
+        {
+            return;
+        }
+
+        // ASCII only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+        Console.Error.WriteLine(
+            $"charter {verb}: warning: {nested.Count} ::: directive(s) are nested inside a container that "
+                + "renders its children, so they are drawn on the page but are not blocks:");
+        foreach (var directive in nested)
+        {
+            Console.Error.WriteLine(
+                $"  line {directive.SourceLine}: :::{directive.Directive}{NestedConsequence(directive.Kind)}");
+        }
+
+        Console.Error.WriteLine(
+            "  A ::: directive must be a top-level block. Move each one out of its container (prose above or "
+                + "below the callout reads the same), or drop the directive and write its body as prose.");
+    }
+
+    // What each nested kind actually costs, so the warning ranks itself rather than making a reviewer rank it.
+    // The wording follows the tiers PlanInventory and HandoffGate act on, read out of the real flatten.
+    private static string NestedConsequence(BlockKind kind) => kind switch
+    {
+        BlockKind.Question =>
+            " -- DECISION LOST: it renders as an answerable form, but no answer to it can be folded back and "
+                + "the record cannot report it (needs-human).",
+        BlockKind.Diff =>
+            " -- CONTENT CORRUPTED: it flattens as blockquoted prose, where line-initial + and - are read as "
+                + "bullet markers, so added and removed lines become indistinguishable.",
+        BlockKind.Unknown =>
+            " -- UNKNOWABLE: an unrecognized directive here may be a misspelled :::question hiding a decision.",
+        _ => " -- it flattens as blockquoted prose, losing the block's framing and its anchors.",
+    };
+
     // Builds the root command hosting the `render` subcommand wired to Charter.Core.CharterRenderer.
     private static RootCommand BuildRenderRoot()
     {
@@ -324,6 +381,7 @@ internal static class CharterCommands
             WarnOnDuplicateQuestionIds("render", markdown);
             WarnOnMissingRecommendation("render", markdown);
             WarnOnUntrackedDeferrals("render", markdown);
+            WarnOnNestedDirectives("render", markdown);
             string html = CharterRenderer.Render(markdown);
 
             string? outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -563,6 +621,7 @@ internal static class CharterCommands
             WarnOnDuplicateQuestionIds("handoff", markdown);
             WarnOnMissingRecommendation("handoff", markdown);
             WarnOnUntrackedDeferrals("handoff", markdown);
+            WarnOnNestedDirectives("handoff", markdown);
 
             // BEFORE the write, never after (Charter #186). An --answers entry naming a value this plan's own
             // schema forbids is not a plan defect, it is a bad INVOCATION -- the same class as the unparseable
@@ -1083,6 +1142,7 @@ internal static class CharterCommands
             WarnOnDuplicateQuestionIds("review", planMarkdown);
             WarnOnMissingRecommendation("review", planMarkdown);
             WarnOnUntrackedDeferrals("review", planMarkdown);
+            WarnOnNestedDirectives("review", planMarkdown);
 
             // The session confines the served root to the plan's directory and mints a per-session capability
             // key; ReviewServer serves the rendered + SDK-injected plan on a loopback ephemeral port and gates

@@ -74,6 +74,26 @@ Primitives are plain CommonMark. The `:::` directives are the rich, validated bl
 There is **no** `:::file-tree` and **no** `:::annotated-code`. They have no renderer — do not author them,
 and treat any other unknown `:::foo` as an unknown directive, never as a known block.
 
+**A `:::` directive must be a top-level block.** The same rule the list row above states for per-item anchors,
+and for the same reason: Charter's block model is the plan's top-level nodes, in document order, so a directive
+written inside a callout, a list item or a blockquote is **not a block**. It has no anchor and no source-map
+entry, it never appears in the forensic record, and the flatten emits its body — fence lines and all — as
+blockquoted prose belonging to whatever contains it.
+
+For `:::question` that is not cosmetic, and it is the one case Charter now refuses outright: a nested question
+used to render as a real, answerable form whose answer could never be folded back into the plan. It renders as
+a **visible, non-answerable placeholder** instead, `charter headless` reports needs-human over it, and
+`charter handoff --fail-if-needs-human` blocks. A nested `:::diff` blocks too — flattened as prose, its
+line-initial `+` and `-` are read as CommonMark bullet markers, so an added and a removed line become
+indistinguishable. Every other nested directive is a warning: `render`, `review` and `handoff` name it on
+stderr with its line.
+
+Prose above or below a callout reads the same as prose inside one. Put the directive at the top level.
+
+*One exception, and it is not really one: `:::custom-html`, `:::diagram`, `:::diff` and an unknown `:::foo`
+never render their bodies as blocks at all, so a `:::` line inside one of those is just text you wrote — see
+"Widening a fence" below, which is about keeping it that way.*
+
 **Unknown-directive interop rule.** An unknown `:::foo` is flagged as unknown (never silently promoted to a
 note) — but its **body is preserved and parsed through as prose context, never silently dropped**. It is
 ordinary plan content that happened to sit behind a directive the catalog does not define (usually a typo);

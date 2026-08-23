@@ -309,22 +309,31 @@ public static class QuestionResolution
     }
 
     /// <summary>
-    /// The document-unique-question-id lint: the distinct ids carried by more than one <c>:::question</c> block
-    /// in <paramref name="markdown"/>, in first-seen order (empty when every question id is unique). A duplicate
-    /// id is a review-time error because <see cref="Apply"/> would write the same answer into every block that
-    /// carries it — a silent double-write. Ids are read from the raw JSON body exactly as <see cref="Apply"/>
-    /// reads them, so the lint reports precisely the ids that would be double-written.
+    /// <b>The ids <see cref="Apply"/> can actually reach</b>, in document order, duplicates included — the id of
+    /// every <c>:::question</c> the BLOCK MODEL yields whose body parses far enough to carry a string <c>id</c>.
     /// </summary>
-    public static IReadOnlyList<string> FindDuplicateQuestionIds(string markdown)
+    /// <remarks>
+    /// <para>
+    /// This is the answer to <i>"can a decision keyed by this id ever be written into this plan?"</i>, and it is
+    /// deliberately derived from the same walk and the same body read <see cref="Apply"/> performs, so the two can
+    /// never disagree. An id absent from this list is one <see cref="Apply"/> will silently skip — which is a
+    /// no-op in the plan but NOT a no-op for the caller, because <c>poll --apply</c> and <c>charter resolve</c>
+    /// then commit the answer away as applied (Charter #203). Refusing needs to know exactly this set.
+    /// </para>
+    /// <para>
+    /// It is top-level-only, like the block model itself: a <c>:::question</c> nested inside a <c>::::note</c>
+    /// renders as a live, answerable form but is not a <see cref="Block"/>, so its id is not here and an answer
+    /// to it is refused rather than reported applied.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> QuestionIds(string markdown)
     {
         if (string.IsNullOrEmpty(markdown))
         {
             return Array.Empty<string>();
         }
 
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var order = new List<string>();
-
+        var ids = new List<string>();
         foreach (var block in BlockDocument.Parse(markdown).Blocks)
         {
             if (block.Kind != BlockKind.Question)
@@ -332,12 +341,29 @@ public static class QuestionResolution
                 continue;
             }
 
-            var id = ReadQuestionId(block.RawContent);
-            if (id is null)
+            if (ReadQuestionId(block.RawContent) is { } id)
             {
-                continue;
+                ids.Add(id);
             }
+        }
 
+        return ids;
+    }
+
+    /// <summary>
+    /// The document-unique-question-id lint: the distinct ids carried by more than one <c>:::question</c> block
+    /// in <paramref name="markdown"/>, in first-seen order (empty when every question id is unique). A duplicate
+    /// id is a review-time error because <see cref="Apply"/> would write the same answer into every block that
+    /// carries it — a silent double-write. Ids come from <see cref="QuestionIds"/>, so the lint reports precisely
+    /// the ids that would be double-written.
+    /// </summary>
+    public static IReadOnlyList<string> FindDuplicateQuestionIds(string markdown)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var order = new List<string>();
+
+        foreach (var id in QuestionIds(markdown))
+        {
             if (counts.TryGetValue(id, out var seen))
             {
                 counts[id] = seen + 1;
