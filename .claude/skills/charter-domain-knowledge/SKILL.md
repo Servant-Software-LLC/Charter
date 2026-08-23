@@ -530,14 +530,23 @@ clean plan, so the run reports success while Guardrails gets nothing or a stale 
   would mean "the output exists, go read it" about a document that silently differs from what was asked for).
   One kernel: **`AnswerRules`** (`Merge` + `Check`), which replaced `HandoffGate.ResolvedAnswer` because the
   rules became part of the merge.
-  - **Two asymmetries, on purpose.** An **inline** `answer` is still never checked against `options` — the
-    page's "Something else" write-in (#109) is a *human's* decision and `charter-format` forbids validating
-    it — but an `--answers` file is a machine input with no human behind it. And a **`free-text`** question
-    can only be checked for SHAPE (one value, not blank), because it declares no options to test against.
+  - **Validation is a function of WHO SUPPLIED the value, not of WHERE IT LANDS.** A human at a review page
+    holds authority to exceed the declared `options` (the "Something else" write-in, #109 — `charter-format`
+    forbids validating it away); an **invocation does not**. That is why an inline `answer` is never
+    membership-checked and an `--answers` value is: one rule, two suppliers, and the next channel someone
+    adds takes its rule from who is behind it.
+  - **Separately** (a different axis — the *question's* declared schema, not the answer's provenance): a
+    **`free-text`** question can only be checked for SHAPE (one value, not blank), because it declares no
+    options to test against. Do not hunt for one rule behind both.
   - **Chose refuse-the-override over #187's record-the-source.** Recording makes an override auditable, not
     safe: the flatten would still assert the overriding value in a side file nobody has to read. The residual
     hazard — a refusal leaves the PREVIOUS run's `plan.md`, and `plan-sha256` cannot expose that (same plan,
     different answers file) — is #187's `answersSha256` to close.
+  - **What `answerSource` can and cannot say**, so the withdrawn reading does not get re-invented in #187:
+    it does **NOT** distinguish *a human decided this* from *the automation supplied this* — `inline`
+    conflates a reviewer's folded-in answer, the drafting agent's own edit, and any other writer, and
+    `handoff` never reads the review log. It carries **which hash reproduces the decision**: `inline` ⇒
+    `planSha256` covers it; `answers-file` ⇒ reproducing it also needs `answersSha256`.
 - **"Answered" means a DECISION, and it is ONE predicate** (#188): `AnswerRules.IsDecision` — at least one
   value, **none of them blank**. It used to be `Count > 0` in **three independent implementations** (the
   record's property, the gate's inline test, the flatten's inline test) plus the renderer and the

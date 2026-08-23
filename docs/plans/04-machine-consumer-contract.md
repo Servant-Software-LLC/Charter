@@ -291,17 +291,39 @@ because #187 is still open and should build on this rather than re-propose it:
 
 **Re-stating an identical value is accepted**, and that clause is what keeps the rule usable: a generator
 that supplies its whole answer set on every run must not break the day one of those questions gets answered
-inline. The rule is therefore *an answers file may only ADD information* — monotone, and safe to apply twice.
+inline. So among the values that **pass**, an answers file only ever ADDS information — the accepted set is
+monotone, and safe to apply twice.
+
+**That monotonicity is a property of the accepted values, not a licence covering the whole input space**, and
+§9.2 is exactly where the difference bites: `[]` "adds nothing", so under monotonicity alone it would be a
+harmless no-op — which is what a reader who has just internalised the word will predict, and they will be
+wrong. §9.2 is a **second rule from a second argument**, not a corollary of this one.
 
 **What #187 should take from this.** `answerSource` remains worth recording; it is now a fact with exactly
 two values (`inline`, `answers-file`) and an invariant — **it can never mean "the file overrode the plan"**.
 That is a strictly simpler thing to record than the three-way "which one won" it would have been.
 
+**But not for the reason first given, and the withdrawn reading must not propagate into #187.** It was argued
+that the field distinguishes *a human decided this* from *the automation supplied this*. **It cannot.**
+`inline` conflates at least three origins — a human's review answer folded in by `poll --apply` / `resolve`,
+the drafting agent's own edit of the `.charter.md`, and anything else that wrote the key — and `handoff` does
+not read the review log at all, so it holds no evidence about who decided anything. What the field actually
+carries is **which hash reproduces this decision**: `inline` means `planSha256` covers it; `answers-file`
+means reproducing it also needs `answersSha256`. That is a claim the producer can support, and it is the one
+a chain-of-custody manifest needs.
+
 ### 9.2 An empty or null value is an ERROR, not an erasure
 
-"This question was not answered here" is **already** expressible by omitting the id — and omission has a
-defined meaning (fall back to the inline answer, else open). So an explicit `[]` has no honest meaning left,
-and reading it as an erasure is exactly what let a generator delete a decision it could not make itself.
+**A different argument from §9.1's, and it must not be read as following from it.** §9.1 is about
+**authority** — what an answers file may do to a decision that already exists. This is about the
+**exhaustiveness of the vocabulary** — whether an explicit `[]` has anything left to say. Both rules are
+right; neither derives from the other, and §9.1's monotonicity would in fact predict the opposite here.
+
+It has nothing left to say. "This question was not answered here" is **already** expressible by omitting the
+id, and omission has a defined meaning (fall back to the inline answer, else open). Every reading `[]` could
+carry is therefore already spoken for, and the only behaviour left to give it — erasure — is exactly what let
+a generator delete a decision it could not make itself. **A spelling with no meaning left is an error, not a
+no-op**: accepting it silently would tell a caller their key did something when it did nothing.
 `ReadAnswers` maps JSON `null` to an empty array, so both spellings land on the same rule.
 
 ### 9.3 A violation fails the RUN, at exit 1, with nothing written
@@ -314,7 +336,10 @@ reasons, in the order they decided it:
    forbids is the same class — it is not a valid answers file *for this plan*. Drawing the line at *"is it
    syntactically JSON"* would be arbitrary.
 2. **It does not invert the `2` vocabulary** (§2.1). Every `2` in this pipeline means *the output exists, go
-   read it*; `1` already means the opposite and means it correctly. Nothing is being redefined.
+   read it*. `1` **promises nothing** about the output — `unattended.md` documents it as "the files **may**
+   not exist" — which is why nothing is being redefined by writing nothing under it. Note what that does NOT
+   license: a consumer must not branch on a no-write *guarantee* at `1`, because across Charter's verbs there
+   is none. Charter writes nothing on this path; the exit code is not the thing that says so.
 3. **Every "write it anyway" variant produces a document that silently differs from the resolution the caller
    asked for**, with the difference living only on stderr. That is the out-of-band failure §5.2 exists to
    fight, one level up.
@@ -332,12 +357,16 @@ gate, so a rejected value can never be certified. And in-library, a rejected ent
 answer rather than winning, so a direct caller of `HandoffGate.Evaluate` sees the question as **still open**
 and **blocks** — a rejected answer can never pass the gate, however it reaches it.
 
-### 9.4 The rules, and the two asymmetries they create
+### 9.4 The rules, and the two apparent asymmetries they dissolve
 
 `AnswerRules` (Charter.Core) is the one place: `IsDecision` (what counts as an answer at all) and
 `Merge`/`Check` (what an answers file may do). `Merge` replaces `HandoffGate.ResolvedAnswer` because the
 moment *"the dictionary wins"* became *"the dictionary wins IF it passes the rules"*, the rules became part
 of the merge — and the gate/emitter agreement §4 depends on is only provable if both live in one file.
+
+The table below is a **design record, not a normative source** (invariant 3). The normative homes are
+`charter-format` for the question schema and `AnswerRules` for the code. Editing this table does not change a
+rule; change it there, then update this.
 
 | Mode | Arity | Value rule |
 |---|---|---|
@@ -349,13 +378,27 @@ of the merge — and the gate/emitter agreement §4 depends on is only provable 
 
 Plus, for every mode: no blank values (§9.5), and no replacing a recorded answer (§9.1).
 
-**Asymmetry 1 — an INLINE `answer` is still never checked against `options`.** `charter-format` states that
-as a rule and it stays true: the renderer appends a "Something else" write-in to every select (#109), so a
-*reviewer's* answer may legitimately fall outside the options and dropping it would lose a real decision. An
-`--answers` file is **not a reviewer at a page** — no human clicked anything, and the flatten already
-instructs a delegated agent to *choose one of the options above*. An agent that genuinely needs a write-in
-records it inline, where every other decision lives. Both halves are now stated in `charter-format`, because
-the contradiction is the first thing a reader will think they have found.
+**The two are NOT the same kind of thing**, and a reader hunting for one unifying rule behind them will not
+find it. They sit on different axes: Asymmetry 2 is about the **question's declared schema** — how much shape
+there is to check at all; Asymmetry 1 is about the **answer's provenance** — who supplied the value. Each
+dissolves under its own principle, and neither dissolves under the other's.
+
+**Asymmetry 1 — an INLINE `answer` is still never checked against `options`.** The principle:
+
+> **Validation is a function of WHO SUPPLIED the value, not of WHERE IT LANDS.** A human at a review page
+> holds the authority to exceed the declared options; an invocation does not.
+
+Stated that way there is no asymmetry — **one rule, two suppliers**. The write-in is the mechanism, not the
+reason: the renderer offers it (#109) because the agent authoring the options is the party least qualified to
+know they are exhaustive, so a reviewer's departure from the framing is a real decision and `charter-format`
+rightly forbids validating it away. An `--answers` file has no human behind it and no such authority; the
+flatten already instructs a delegated agent to *choose one of the options above*. An agent that genuinely
+needs a write-in records it inline, where every other decision lives.
+
+Stating it as a principle rather than as the write-in's story is what makes it **generalise**: the next
+channel someone adds — a `headless --answers`, an API POST, a manifest replay — takes its rule from who is
+behind it, without re-arguing this section. Both halves are stated in `charter-format`, because the
+contradiction is the first thing a reader will think they have found.
 
 **Asymmetry 2 — `free-text` can only be checked for shape.** It declares no options, so there is no set to
 test a value against. That is not a hole: the rule is *a supplied answer must be something the question's
@@ -373,12 +416,23 @@ The predicate is read in **four** places and all four now share it: the record's
 Answered/Open branch, the rendered page's `data-answered` / "Answered" status, and the missing-lean lint.
 A field read in several places that means several things is the same defect one level up.
 
-**Why no `schema` 3.** Changing what `answered` means flips a consumer's assertion, which is a bump by
-`HeadlessRecord.Schema`'s own rule. But **`schema` 2 has not shipped**: it was raised from 1 by #173 *after*
-0.24.0 was released (the release commit carries `Schema = 1`), so no consumer has ever seen a schema-2
-record and there is nothing in the wild to break. Both meaning changes ride the same 2. `unattended.md` says
-so explicitly, including the warning not to read it as licence to change a meaning under a *released*
-version — which is the exact mistake #142 made.
+**Why no `schema` 3.** The rule first, because the next person to need it will arrive with a different field:
+
+> **A schema number that has never appeared in a released binary is still malleable. The moment it ships, it
+> freezes.** Reusing an unshipped number is not a licence to change a meaning under a *released* one — that is
+> the exact mistake #142 made, shipping `recommended` with the number left at 1.
+
+Changing what `answered` means flips a consumer's assertion, which is a bump by `HeadlessRecord.Schema`'s own
+rule. But `schema` 2 has not shipped: it was raised from 1 by #173 *after* 0.24.0 was released — **verified,
+not assumed**, by reading the release commit's own `HeadlessRecord.cs`, which carries `Schema = 1`. No
+consumer has ever seen a schema-2 record, so there is nothing in the wild to break and both meaning changes
+ride the same 2.
+
+**The precondition is one a CONSUMER cannot check.** Only Charter can see which schema numbers reached a
+release; from outside, a schema-2 record whose meaning changed is indistinguishable from one whose meaning did
+not. A rule whose safety rests on a fact only the producer can observe has to be exercised **conservatively
+and recorded** — which is what this section and `unattended.md`'s note are for. Verify it the way it was
+verified here, against the release commit, and write down that you did.
 
 **The drift test was binding NAMES, not meanings**, and #188 proves that is not enough: `answered` changed
 meaning while every assertion in `HeadlessRecordContractTests` stayed green, because they all check that the
