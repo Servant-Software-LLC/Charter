@@ -186,6 +186,14 @@ public sealed partial class ReviewLoopBrowserTests
     /// overlays the content column's right-hand side, so a probe there would report the product's documented
     /// design as a regression. The badge's own hit test — where the panel is not in the way — lives in
     /// <see cref="Every_railed_block_shows_a_hit_testable_badge_whose_number_is_the_truth"/>.</para>
+    ///
+    /// <para><b>Charter #198 — the badge is re-resolved after the yield, and here that matters MORE than it
+    /// does in the badge probe.</b> Every SDK <c>render()</c> begins by removing the rail, taking its badge
+    /// with it, and later renders arrive on their own schedule after a note is saved. A rail badge captured
+    /// before the two animation frames could therefore be measured detached — reporting a <c>0x0</c> box, an
+    /// overlap area of ZERO, and this rule passing while proving nothing. That is the failure direction #198
+    /// warned about: the badge probe's version of the same bug goes red in the safe direction, this one would
+    /// have gone green in the wrong one.</para>
     /// </summary>
     private static async Task AssertTheBadgeDoesNotSwallowTheTableHeaderAsync(IPage page, int width)
     {
@@ -194,21 +202,33 @@ public sealed partial class ReviewLoopBrowserTests
         var json = await page.EvaluateAsync<string>(
             "async () => {" +
             "  const frame = () => new Promise(r => requestAnimationFrame(() => r()));" +
-            "  const table = document.querySelector('body > div.table-scroll > table');" +
-            "  const region = document.querySelector('body > div.table-scroll');" +
-            "  const head = table ? table.querySelector('thead tr') : null;" +
-            "  const first = table ? table.querySelector('thead th') : null;" +
-            "  const rail = region ? region.previousElementSibling : null;" +
-            "  const badge = rail ? rail.querySelector('[data-charter-ui=\"badge\"]') : null;" +
-            "  if (!table || !head || !first || !badge) {" +
-            "    return JSON.stringify({ ok: false, why: 'missing ' + (!table ? 'table' : !head ? 'thead row'" +
-            "      : !first ? 'th' : 'railed badge') });" +
-            "  }" +
-            "  region.scrollLeft = 0;" +
-            "  table.scrollIntoView({ block: 'center' });" +
+            // Resolved from the LIVE document with no await inside, and called again after the yield: the
+            // <table>, the region and the header cells are the renderer's own DOM and survive a re-render,
+            // but the rail and its badge are SDK chrome that every render() destroys and rebuilds.
+            "  const locate = () => {" +
+            "    const table = document.querySelector('body > div.table-scroll > table');" +
+            "    const region = document.querySelector('body > div.table-scroll');" +
+            "    const head = table ? table.querySelector('thead tr') : null;" +
+            "    const first = table ? table.querySelector('thead th') : null;" +
+            "    const rail = region ? region.previousElementSibling : null;" +
+            "    const badge = rail ? rail.querySelector('[data-charter-ui=\"badge\"]') : null;" +
+            "    if (!table || !region || !head || !first || !badge) {" +
+            "      return { ok: false, why: 'missing ' + (!table ? 'table' : !region ? 'scroll region'" +
+            "        : !head ? 'thead row' : !first ? 'th' : 'railed badge') };" +
+            "    }" +
+            "    return { ok: true, table: table, region: region, head: head, first: first, badge: badge };" +
+            "  };" +
+            "  const before = locate();" +
+            "  if (!before.ok) return JSON.stringify({ ok: false, why: before.why });" +
+            "  before.region.scrollLeft = 0;" +
+            "  before.table.scrollIntoView({ block: 'center' });" +
             "  await frame(); await frame();" +
-            "  const h = head.getBoundingClientRect();" +
-            "  const b = badge.getBoundingClientRect();" +
+            // ---- from here to the return there is no await: one synchronous read of live elements ----
+            "  const live = locate();" +
+            "  if (!live.ok) return JSON.stringify({ ok: false, why: live.why });" +
+            "  const first = live.first, region = live.region;" +
+            "  const h = live.head.getBoundingClientRect();" +
+            "  const b = live.badge.getBoundingClientRect();" +
             "  const f = first.getBoundingClientRect();" +
             "  const g = region.getBoundingClientRect();" +
             // The header row is far WIDER than the region that shows it — a plan's table columns are file
@@ -225,7 +245,7 @@ public sealed partial class ReviewLoopBrowserTests
             "  const fy = Math.min(Math.max(f.top + (f.height / 2), 1), window.innerHeight - 2);" +
             "  const hit = document.elementFromPoint(fx, fy);" +
             "  return JSON.stringify({ ok: true, probedAt: Math.round(fx) + ',' + Math.round(fy)," +
-            "    headerArea: visW * visH, overlapArea: overlapW * overlapH," +
+            "    headerArea: visW * visH, overlapArea: overlapW * overlapH, badgeArea: b.width * b.height," +
             "    firstCellHit: !!(hit && (hit === first || first.contains(hit)))," +
             "    hitTag: hit ? hit.tagName + '.' + String(hit.className || '') : '(nothing)' });" +
             "}");
@@ -247,6 +267,17 @@ public sealed partial class ReviewLoopBrowserTests
         var headerArea = root.GetProperty("headerArea").GetDouble();
         var overlap = root.GetProperty("overlapArea").GetDouble();
         Assert.True(headerArea > 0, "the table header has no area" + at);
+
+        // ANTI-VACUITY (Charter #198). "The badge covers little of the header" is trivially satisfied by a
+        // badge with NO BOX — which is exactly what a detached rail badge measures as, and what this rule
+        // reported as a pass before the locate above was moved after the yield. A badge with area is the
+        // premise of the ratio below, so it is asserted rather than assumed.
+        var badgeArea = root.GetProperty("badgeArea").GetDouble();
+        Assert.True(
+            badgeArea > 0,
+            "Charter #198 — the table's rail badge measured as a zero-area box" + at + ", so the occlusion " +
+                "ratio below would be 0% for a badge nobody can see rather than for a badge that behaves");
+
         Assert.True(
             overlap / headerArea <= 0.2,
             "Charter #164 — the badge covers " +
