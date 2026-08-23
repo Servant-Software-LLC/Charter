@@ -68,12 +68,43 @@ asserts "was every question answered before handoff" against the record today, i
 against a document that never saw the inputs which produced the artifact it is vouching for.
 Design is in progress on our side.
 
---- ASK 3: does your side want the gate's verdict recorded? ---
+--- ASK 3: what must the gate's verdict prove, and is a fourth artifact acceptable? ---
 
-A pipeline that FORGOT `--fail-if-needs-human` currently looks identical, after the fact, to one
-that passed it. We are deciding whether the record should carry the gate's verdict so a
-post-mortem can tell "the gate passed" from "the gate was never invoked". That is a question
-about what #496 needs to prove, so it is yours to answer.
+CORRECTION to an earlier version of this ask, which said "should the RECORD carry the gate's
+verdict". It cannot. `.headless.json` is by contract a pure function of the plan text and the
+tool version — that is what makes it byte-identical across runs and safe to collect. The gate is
+a function of plan + answers file + a flag. Putting the verdict in the record would destroy the
+property that makes the record worth having.
+
+So the verdict goes in a FOURTH artifact — a handoff manifest, `<out-stem>.manifest.json`,
+written by `charter handoff --manifest` from the SAME resolution pass that writes the CommonMark.
+That is Charter #187, designed and about to be built. It carries the three hashes, per-question
+provenance (was this answered inline by a human, or supplied by the automation being audited),
+and the gate's verdict as `flagPassed` / `needsHuman` / `exitCode` / `blockers[]` /
+`unmatchedAnswerIds[]`.
+
+`flagPassed: false` + `needsHuman: true` + `exitCode: 0` is then the one-field signature of a
+pipeline that forgot the flag — currently unrecoverable after the fact.
+
+TWO THINGS FOR YOU:
+
+(a) Is a fourth artifact acceptable, or does #496 want fewer files? It is opt-in and its path is
+    derived from `-o` so a harness can compute it without being told.
+
+(b) YOUR HARNESS STEP 2 IS BROKEN TODAY, and this is the important half. We read #496's plan:
+    step 2 asserts `charter headless` exits 0 rather than 2. That asserts a STRICTLY WEAKER
+    predicate than the gate. `headless`'s needs-human and `handoff --fail-if-needs-human`'s are
+    deliberately different booleans — the gate ALSO blocks an undecidable agent question and an
+    unknown `:::foo` directive. So a run that strict handoff would have blocked can pass your
+    step 2 today. Assert the manifest's `gate.needsHuman`, not `headless`'s exit code.
+
+    Note this is also why we are NOT giving `headless` an `--answers` option, though it would be
+    the smaller change: it would make step 2 look correct while still asserting the wrong
+    predicate, which is worse than the current obvious mismatch.
+
+One distinction to keep separate, because conflating them is easy: "every question answered" is
+STRICTER than "the gate passed". An open but decidable agent question is `answered: false` and
+does NOT block. Both are separately assertable and the manifest never merges them.
 
 --- THE CORRECTION: Charter's exit 2 and Guardrails' exit 2 AGREE ---
 
@@ -122,11 +153,25 @@ elements, so an empty-string answer certifies as a decision).
 --- WHAT WE NEED BACK ---
 
 1. Is the delegated-question marker shape workable, or what shape do you want? (blocks #500)
-2. Which provenance surface will #496 assert on — the in-band stamp, the record, or both?
-3. Should the record carry the strict gate's verdict?
+2. Which provenance surface will #496 assert on — the in-band stamp, the record, the manifest,
+   or some combination?
+3. Is a fourth artifact (the manifest) acceptable — and will you change step 2 off `headless`'s
+   exit code, which asserts a weaker predicate than the gate?
+4. Will `guardrails` record the SHA-256 of the `plan.md` it consumed? We checked: `PlanHash`
+   hashes `guardrails.json` plus every `task.json`, not the markdown they were broken down from,
+   and nothing in your src or docs records the source plan's hash. Until something does, Charter's
+   `handoffSha256` is a tamper detector with no consumer. Filed on your side separately.
 
-Charter's side of all three is unreleased and therefore still cheap to change. After a release it
+Charter's side of all four is unreleased and therefore still cheap to change. After a release it
 is not.
+
+ONE MORE THING WE ARE CHANGING BEFORE THE RELEASE, so you are not surprised: the in-band stamp
+gains a SECOND line, `answers-sha256`. Reason: a stale manifest otherwise passes every documented
+join. Run once with answers and a manifest, then re-run bare — the write is unconditional, so
+`plan.md` becomes the all-questions-open flatten, the old manifest survives, and `planSha256`,
+the in-band plan stamp, the record's `planSha256` and `charterVersion` ALL FOUR still match. A
+manifest certifying decisions that are not in the file beside it, with every join green. The
+second stamp line makes that mismatch visible from the two artifacts alone.
 ```
 
 ---
