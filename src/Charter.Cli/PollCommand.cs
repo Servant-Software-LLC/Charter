@@ -16,7 +16,10 @@ internal static class PollCommand
     private const string NoSessionMessage = "charter poll: no running review session.";
 
     // Per-liveness-probe budget; short because a live loopback server answers instantly.
-    private static readonly TimeSpan ProbeDeadline = TimeSpan.FromSeconds(5);
+    // The OUTER budget for one probe. Must stay >= ReviewClient.ProbeTimeout, or it becomes the binding
+    // deadline and the inner one's reasoning is silently overridden -- it was 5s against an inner 3s,
+    // which is how the effective probe deadline came to be a number stated nowhere (Charter #217).
+    private static readonly TimeSpan ProbeDeadline = TimeSpan.FromSeconds(30);
 
     // Drain budgets: a generous bound for one --wait long-poll cycle (server long-polls ~30s), a short one
     // for the non-blocking immediate drain. Both are upper guards, not fixed sleeps — the server responds as
@@ -203,6 +206,23 @@ internal static class PollCommand
         NoticeIfAHumanIsWatching(apply);
 
         var resolution = await ResolveSessionAsync(input, sessionPath, url).ConfigureAwait(false);
+
+        // THE PROBE COULD NOT TELL (Charter #217). Reported before the no-session path below, because that
+        // path's whole claim — "no running review session" — is one this branch has no evidence for. Exit 4,
+        // whose documented meaning is already "the state is UNKNOWN, not empty"; the honest post-condition is
+        // identical, so it keeps the vocabulary rather than inventing a fourth meaning. The committed review
+        // log is deliberately NOT consulted here: falling back to it would answer a different question
+        // (what was committed) while the one that was asked (what is queued live) stays unanswered.
+        if (resolution.Unknown)
+        {
+            Console.Error.WriteLine(
+                "charter poll: the review session did not answer in time — the session state is unknown, so "
+                    + "this is NOT a report that no session is running. Nothing was pruned. Retry, or pass "
+                    + "--url to probe one address directly.");
+            Console.WriteLine(PollEnvelope.Serialize(null, Array.Empty<Annotation>(), Array.Empty<Answer>()));
+            return ReviewExitCodes.DrainFailed;
+        }
+
         if (resolution.Client is null)
         {
             // A LIVE session always takes precedence; only once none was found does the committed review log
@@ -501,8 +521,12 @@ internal static class PollCommand
         ReviewClient client, string? expectedSourcePath, string? descriptorPath)
     {
         using var cts = new CancellationTokenSource(ProbeDeadline);
-        var session = await client.ProbeAsync(expectedSourcePath, cts.Token).ConfigureAwait(false);
-        if (session is null)
+        var probe = await client.ProbeAsync(expectedSourcePath, cts.Token).ConfigureAwait(false);
+
+        // PRUNE ONLY ON POSITIVE ABSENCE (Charter #217). This read `session is null`, which was also true when
+        // the probe merely TIMED OUT — so a busy live server lost the descriptor that proved it was there, and
+        // the wrong answer latched: the next poll had nothing left to find. `IsAbsent`, never `!IsLive`.
+        if (probe.IsAbsent)
         {
             client.Dispose();
             if (descriptorPath is not null)
@@ -513,12 +537,21 @@ internal static class PollCommand
             return SessionResolution.None;
         }
 
-        return new SessionResolution(client, session, Ambiguous: false);
+        if (!probe.IsLive)
+        {
+            // Unknown: the descriptor STAYS. Nothing was learned, so nothing may be destroyed on the strength
+            // of it.
+            client.Dispose();
+            return SessionResolution.Undetermined;
+        }
+
+        return new SessionResolution(client, probe.Session, Ambiguous: false);
     }
 
     private static async Task<SessionResolution> AutoSelectAsync(string sessionsDirectory)
     {
         var live = new List<(ReviewClient Client, PollSession Session)>();
+        var undetermined = false;
         foreach (var entry in SessionRegistry.Enumerate(sessionsDirectory))
         {
             if (!Uri.TryCreate(entry.Descriptor.Address, UriKind.Absolute, out var address))
@@ -529,20 +562,32 @@ internal static class PollCommand
 
             var client = new ReviewClient(address, entry.Descriptor.Key);
             using var cts = new CancellationTokenSource(ProbeDeadline);
-            var session = await client.ProbeAsync(entry.Descriptor.SourcePath, cts.Token).ConfigureAwait(false);
-            if (session is null)
+            var probe = await client.ProbeAsync(entry.Descriptor.SourcePath, cts.Token).ConfigureAwait(false);
+            if (probe.IsAbsent)
             {
                 client.Dispose();
                 SessionRegistry.Delete(entry.Path); // prune stale
                 continue;
             }
 
-            live.Add((client, session));
+            if (!probe.IsLive)
+            {
+                // Unknown (Charter #217): keep the descriptor and REMEMBER that this candidate was
+                // undetermined, so an empty `live` list cannot be reported as "no session running" when one of
+                // the candidates simply did not answer in time.
+                client.Dispose();
+                undetermined = true;
+                continue;
+            }
+
+            live.Add((client, probe.Session!));
         }
 
         if (live.Count == 0)
         {
-            return SessionResolution.None;
+            // NO live session found — but "found none" and "could not tell" are different answers, and only
+            // the first may be reported as absence (Charter #217).
+            return undetermined ? SessionResolution.Undetermined : SessionResolution.None;
         }
 
         if (live.Count == 1)
@@ -563,8 +608,18 @@ internal static class PollCommand
 
     // The outcome of session discovery: a live client+session, plain no-session, or an ambiguous refusal
     // (candidates already listed to stderr). Client is non-null only for the live case.
-    private readonly record struct SessionResolution(ReviewClient? Client, PollSession? Session, bool Ambiguous)
+    /// <param name="Unknown">
+    /// The probe could not complete, so whether a session is there is UNKNOWN (Charter #217). Distinct from
+    /// <see cref="None"/>, which means the probe positively established there is none. A caller may not
+    /// report "no session" on this, and may not prune the descriptor that would have proved otherwise.
+    /// </param>
+    private readonly record struct SessionResolution(
+        ReviewClient? Client, PollSession? Session, bool Ambiguous, bool Unknown = false)
     {
+        /// <summary>The probe looked and positively found nothing drainable here.</summary>
         public static SessionResolution None => new(null, null, false);
+
+        /// <summary>The probe could not tell. NOT the same as finding nothing.</summary>
+        public static SessionResolution Undetermined => new(null, null, false, Unknown: true);
     }
 }

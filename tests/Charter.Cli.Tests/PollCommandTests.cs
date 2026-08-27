@@ -998,6 +998,81 @@ public class PollCommandTests
     }
 
     [Fact]
+    public async Task UnresponsiveServer_Poll_DoesNotClaimNoSession_AndKEEPS_TheDescriptor()
+    {
+        // Charter #217. The regression this pins is not the exit code -- it is that the old code DELETED the
+        // descriptor of a live-but-slow server, so the first wrong answer latched and every later poll had
+        // nothing left to find. Compare against KilledReview_LeavesDescriptor_...AndPrunes above: that server
+        // is genuinely dead (connection refused), and pruning there is still correct. The two tests differ
+        // only in whether the port answers, which is exactly the distinction #217 is about.
+        var stateDir = NewTempDir();
+        var planPath = WriteTempPlan(SimplePlan);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var held = new List<TcpClient>();
+        var accepting = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    // Accept and HOLD: the handshake succeeds, no response ever comes.
+                    held.Add(await listener.AcceptTcpClientAsync().ConfigureAwait(false));
+                }
+            }
+            catch (Exception)
+            {
+                // listener stopped
+            }
+        });
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var descriptorPath = SessionRegistry.Write(
+                stateDir,
+                new SessionDescriptor(
+                    SessionDescriptor.CurrentSchema,
+                    $"http://127.0.0.1:{port}/",
+                    "stubkey0000000000000",
+                    planPath,
+                    Path.GetFileName(planPath),
+                    Environment.ProcessId,
+                    DateTimeOffset.UtcNow));
+
+            Assert.True(File.Exists(descriptorPath));
+
+            var result = await RunCharterAsync(stateDir, "poll", planPath);
+
+            // THE LOAD-BEARING ASSERTION, AND IT IS FIRST ON PURPOSE. A probe that could not tell may not
+            // destroy the evidence that would have told it. Asserted ahead of the exit code because both
+            // follow from the same branch: with the defect restored, an exit-code assertion placed first
+            // fails and this one is never reached, so the mutation would go red WITHOUT ever exercising the
+            // claim this test exists to make.
+            Assert.True(
+                File.Exists(descriptorPath),
+                "an unresponsive probe must NOT prune the descriptor -- that is what made #217 latch.");
+
+            // NOT 3: exit 3 asserts "no running review session", which this run has no evidence for.
+            Assert.Equal(4, result.ExitCode);
+            Assert.Contains("session state is unknown", result.StdErr);
+            Assert.DoesNotContain("no running review session", result.StdErr);
+        }
+        finally
+        {
+            listener.Stop();
+            foreach (var c in held)
+            {
+                try { c.Dispose(); } catch (Exception) { /* best effort */ }
+            }
+
+            await accepting;
+            TryDeleteDir(stateDir);
+            TryDelete(planPath);
+        }
+    }
+
+    [Fact]
     public async Task Review_CleanExit_RemovesDescriptor()
     {
         if (OperatingSystem.IsWindows())
