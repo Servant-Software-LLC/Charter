@@ -83,11 +83,35 @@ public static class HandoffMarkdown
             parts.Add(linkDefinitions);
         }
 
+        // Where the count declaration lands once the walk below knows how many there are (Charter #219). It
+        // leads the plan's own content — after the link reference definitions, which are non-content and must
+        // stay first for CommonMark's first-definition-wins to do its work (#175).
+        var countIndex = parts.Count;
+        var delegatedIds = new List<string>();
+
         foreach (var block in blocks)
         {
             // TrimEnd drops a block's trailing newline(s) so the join below yields exactly one blank line
             // between blocks rather than doubling up when a RawContent slice carries its own line break.
-            parts.Add(EmitBlock(block, source, answers).TrimEnd());
+            parts.Add(EmitBlock(block, source, answers, delegatedIds).TrimEnd());
+        }
+
+        // Declared ONCE, at the top, and only when there is something to declare (Charter #219). The consuming
+        // side composes a ~283 KB breakdown prompt of which this plan is one part, and the failure that
+        // actually happens there is SKIM: an agent that finds two of three delegated decisions invents the
+        // third. A stated total is what makes that recoverable — an agent short of the count rescans, and a
+        // gate gets an expected total it can assert without parsing the plan.
+        //
+        // Emitted only when the count is non-zero: a plan that delegates nothing should not carry a line
+        // about delegation, and its absence is unambiguous because the marker lines are absent too.
+        if (delegatedIds.Count > 0)
+        {
+            var plural = delegatedIds.Count == 1 ? "decision" : "decisions";
+            parts.Insert(
+                countIndex,
+                $"> {DelegatedCountMarker}{delegatedIds.Count}** — this plan hands {delegatedIds.Count} "
+                    + $"{plural} to the agent reading it, each marked below with its own id. Settle every one "
+                    + "before building, and record the choice you made and why.");
         }
 
         // The in-band provenance stamp (Charter #172/#187). Until it existed the flattened plan
@@ -260,8 +284,51 @@ public static class HandoffMarkdown
     /// <summary>The literal that marks an emitted question as OPEN and needing a person.</summary>
     public const string OpenQuestionMarker = "**Open question (unresolved):**";
 
-    /// <summary>The literal that marks an emitted question as OPEN and delegated to the reading agent.</summary>
-    public const string DelegatedDecisionMarker = "**Delegated decision — you must settle this before building:**";
+    /// <summary>
+    /// The literal that marks an emitted question as OPEN and delegated to the reading agent, up to and
+    /// including the space before the backtick that opens the id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>ASCII-ONLY, and that is a contract rather than a style choice (Charter #219).</b> This used to read
+    /// <c>**Delegated decision — you must settle this before building:**</c>, whose em dash is U+2014
+    /// (<c>e2 80 94</c>). The consumer this marker exists for gates on it with a <b>grep, frequently
+    /// PowerShell on Windows</b>, and an encoding round-trip that mangles one multi-byte character turns their
+    /// gate into one that silently matches nothing — which fails in the direction that ships an invented
+    /// decision. The em dash still appears later in the same line, where nothing matches on it.
+    /// </para>
+    /// <para>
+    /// <b>The id rides on THIS line, not on the metadata line below it.</b> Split across two lines, a consumer
+    /// pairing a sentinel with an id must be two-pass and order-coupled; on one line it is a single regex
+    /// capturing both. The metadata line keeps its own <c>id</c> as well, and that duplication is deliberate:
+    /// <c>charter verify</c> cross-checks the manifest against <see cref="QuestionIdMarker"/>, and
+    /// <c>charter-format</c> documents the metadata line as the uniform shape under EVERY status lead.
+    /// Removing the id from either place breaks a different consumer.
+    /// </para>
+    /// </remarks>
+    public const string DelegatedDecisionMarker = "**DELEGATED DECISION ";
+
+    /// <summary>
+    /// The literal that opens the count declaration a plan carrying delegated decisions leads with, up to and
+    /// including the space after the colon. The expected total follows, then <c>**</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a count line exists at all (Charter #219).</b> The composed breakdown prompt on the consuming
+    /// side is <b>~283 KB</b>, almost all inlined skill, and the failure mode that actually occurs there is
+    /// <b>skim</b>, not misparse. An agent told to find three delegated decisions that finds two rescans; a
+    /// gate gets an expected total for free.
+    /// </para>
+    /// <para>
+    /// <b>Why it does not spell <see cref="DelegatedDecisionMarker"/>'s words in that order.</b> Every plural
+    /// phrasing of "delegated decision" contains the singular as a substring, so a consumer counting
+    /// occurrences of the item sentinel would have counted this line too and reported N+1 — a gate that is
+    /// wrong by exactly one, which is the hardest kind to notice. Reversing the words keeps
+    /// <c>grep -c "DELEGATED DECISION"</c> equal to the number of delegated questions, and nothing in this
+    /// line's prose names the item sentinel either.
+    /// </para>
+    /// </remarks>
+    public const string DelegatedCountMarker = "**DECISIONS DELEGATED TO YOU: ";
 
     /// <summary>
     /// The leading block of link reference definitions — one line per definition, in source order — or null
@@ -371,7 +438,11 @@ public static class HandoffMarkdown
                 .Replace('\n', ' ');
 
     /// <summary>Convert one parsed block to its plain-CommonMark handoff text, dispatching on its kind.</summary>
-    private static string EmitBlock(Block block, string source, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
+    private static string EmitBlock(
+        Block block,
+        string source,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers,
+        List<string>? delegatedIds = null)
         => block.Kind switch
         {
             // Already plain CommonMark — nothing to convert, so pass the exact source lines through verbatim. A
@@ -392,7 +463,7 @@ public static class HandoffMarkdown
             BlockKind.Diff => EmitFencedBody(InnerLines(block.RawContent), "diff"),
 
             // A question resolves to answered prose or a flagged open question — never its raw JSON body.
-            BlockKind.Question => EmitQuestion(block.RawContent, answers),
+            BlockKind.Question => EmitQuestion(block.RawContent, answers, delegatedIds),
 
             // The raw-HTML escape hatch passes its inner HTML through VERBATIM (fence stripped) — raw HTML is
             // valid CommonMark, so it survives the bridge to Guardrails as authored rather than being flattened
@@ -725,7 +796,10 @@ public static class HandoffMarkdown
     /// <see cref="QuestionMetadataLine"/> carrying <c>id</c>, <c>mode</c>, <c>target</c> and <c>options</c>.
     /// The raw JSON body is NEVER emitted in either branch.
     /// </summary>
-    private static string EmitQuestion(string rawContent, IReadOnlyDictionary<string, IReadOnlyList<string>>? answers)
+    private static string EmitQuestion(
+        string rawContent,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? answers,
+        List<string>? delegatedIds = null)
     {
         // ONE question-body parse, shared with `charter headless`'s forensic record (Charter #172). This used
         // to be a private line-split here, and the two diverged in both directions: an unterminated container
@@ -786,8 +860,18 @@ public static class HandoffMarkdown
         // and prose is the whole interface. "Open question (unresolved)" reads as something someone ELSE will
         // settle, which is exactly wrong for a block whose `target` says the reader settles it.
         var delegated = string.Equals(QuestionSpec.Token(spec.Target), "agent", StringComparison.Ordinal);
+        if (delegated)
+        {
+            // The count line is a BYPRODUCT of this same emit, never a second walk that re-resolves the plan
+            // (Charter #219). A separate pass could disagree with the markers it counts — and a total that is
+            // wrong by one is the hardest kind of wrong to notice — so the id is recorded HERE, downstream of
+            // the one `AnswerRules.Merge` above that decided this question is open in the first place.
+            delegatedIds?.Add(spec.Id);
+        }
+
         var lead = delegated
-            ? $"> {DelegatedDecisionMarker} {spec.Title}\n> {metadata}"
+            ? $"> {DelegatedDecisionMarker}`{spec.Id}`** — settle this before building. {spec.Title}"
+                + $"\n> {metadata}"
                 + $"\n> _{DecisionInstruction(spec)}_"
             : $"> {OpenQuestionMarker} {spec.Title}\n> {metadata}";
 
