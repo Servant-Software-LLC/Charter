@@ -221,7 +221,8 @@ public sealed partial class ReviewLoopBrowserTests
 
             await AssertFocusAsync(
                 page, "DIV[item]#" + watched.Id,
-                "a second note landed while the reviewer was on the first note's CARD");
+                "a second note landed while the reviewer was on the first note's CARD",
+                restoredKey: "item:" + watched.Id);
 
             // ---- and the control inside it ------------------------------------------------------------
             await TabForwardToAsync(page, "BUTTON[item-jump]#" + watched.Id);
@@ -236,7 +237,8 @@ public sealed partial class ReviewLoopBrowserTests
             await AssertFocusAsync(
                 page, "BUTTON[item-jump]#" + watched.Id,
                 "a third note landed while the reviewer was on that card's JUMP -- the control the SDK "
-                    + "itself names as the one that can come back DISABLED");
+                    + "itself names as the one that can come back DISABLED",
+                restoredKey: "item-jump:" + watched.Id);
 
             AssertNoBrowserErrors(instrumented);
         }
@@ -514,12 +516,53 @@ public sealed partial class ReviewLoopBrowserTests
     /// is what let Charter #209 spend two rounds being called a flake while it was a product bug.
     /// </para>
     /// </remarks>
-    private static async Task AssertFocusAsync(IPage page, string expected, string moment)
+    /// <param name="restoredKey">
+    /// When supplied, the focus key the SDK must have reported landing on — the MECHANISM, not the state
+    /// (Charter #221, prompted by the Guardrails session naming the general move: assert that the child was
+    /// terminated, not that it took under 60 seconds).
+    /// <para>
+    /// <c>document.activeElement</c> being right is a weaker claim than it looks: it is also true when this
+    /// render never took focus at all (<c>takeChromeFocus</c> returns null for anything that is not chrome
+    /// this pass rebuilds), in which case nothing was preserved and nothing was exercised. The card test had
+    /// no vacuity guard at all — the badge test's <c>markers-rendered</c> check is the same idea.
+    /// </para>
+    /// <para>
+    /// It also separates a restore from a FALLBACK. A control keys itself with the card as its fallback, so a
+    /// Jump that could not be re-focused lands the reviewer on the card and still emits
+    /// <c>focus-restored</c> — with the fallback's key. Asserting the key says which of the two happened.
+    /// </para>
+    /// </param>
+    private static async Task AssertFocusAsync(
+        IPage page, string expected, string moment, string? restoredKey = null)
     {
         var actual = await FocusIdentityAsync(page);
         if (string.Equals(actual, expected, StringComparison.Ordinal))
         {
-            return;
+            if (restoredKey is null)
+            {
+                return;
+            }
+
+            var entries = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
+            var last = entries.LastOrDefault();
+            var wanted = "focus-restored key=" + restoredKey + " ";
+
+            if (last is not null && last.StartsWith(wanted, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Assert.Fail(
+                $"focus WAS on {expected}, but the SDK did not report putting it there ({moment})."
+                    + Environment.NewLine + Environment.NewLine
+                    + "expected the last focus event to be: " + wanted.TrimEnd()
+                    + Environment.NewLine
+                    + "last focus event was: " + (last ?? "(none emitted)")
+                    + Environment.NewLine + Environment.NewLine
+                    + "A correct activeElement with no matching restore means either this render never "
+                    + "took focus -- so nothing was preserved and nothing was exercised -- or the SDK "
+                    + "landed on a FALLBACK. Both pass an activeElement check and neither is what this "
+                    + "test is named for.");
         }
 
         var trace = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
