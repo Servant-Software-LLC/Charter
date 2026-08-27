@@ -164,8 +164,83 @@ public static class AnswerRules
     /// to a fix for this.
     /// </para>
     /// </remarks>
-    public static bool IsForbidden(char value)
-        => value != '\n' && (char.IsControl(value) || value is '\u2028' or '\u2029');
+    public static bool IsForbidden(char value) => value != '\n' && IsControlOrSeparator(value);
+
+    /// <summary>
+    /// The character-level rule itself, with NO carve-out. <c>U+000A</c> is a control character, so this is
+    /// true for it too.
+    /// </summary>
+    /// <remarks>
+    /// Split out so the newline carve-out is stated in exactly ONE place and the two field policies cannot
+    /// drift apart on what "control character" means (Charter #212). Everything the remarks above say about
+    /// contested line status and invisibility applies here unchanged.
+    /// </remarks>
+    private static bool IsControlOrSeparator(char value)
+        => char.IsControl(value) || value is '\u2028' or '\u2029';
+
+    /// <summary>
+    /// True when <paramref name="value"/> may not appear in a <c>:::question</c> field emitted onto a SINGLE
+    /// LINE \u2014 <c>id</c>, <c>title</c>, each <c>options</c> entry, and <c>recommended</c> (Charter #212).
+    /// Stricter than <see cref="IsForbidden"/> by exactly one character: <c>U+000A</c> is forbidden here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why the newline carve-out does not generalise.</b> Charter #202 allowed <c>U+000A</c> in an ANSWER
+    /// because a free-text answer is typed into a <c>&lt;textarea&gt;</c> \u2014 a reviewer affordance that
+    /// legitimately produces line breaks. Nothing of the kind sits behind an <c>id</c>, a <c>title</c> or an
+    /// option label, so a newline in one of them is never something a reviewer asked for.
+    /// </para>
+    /// <para>
+    /// <b>Since Charter #219 it is structural, not cosmetic.</b> The delegated-decision marker emits the
+    /// question's <c>id</c> and <c>title</c> onto ONE line, and the Guardrails breakdown gate matches that line
+    /// with a regex needing both of the id's backticks on it. CommonMark ends a line on a lone CR, so a control
+    /// character in either field SPLITS the marker line: the regex then matches nothing, and a plan carrying a
+    /// delegated decision reports none. Reproduced on v0.25.0 before this rule existed.
+    /// </para>
+    /// </remarks>
+    public static bool IsForbiddenOnOneLine(char value) => IsControlOrSeparator(value);
+
+    /// <summary>
+    /// Why <paramref name="value"/> cannot be carried in the <c>:::question</c> field named
+    /// <paramref name="field"/>, or <see langword="null"/> when it is writable (Charter #212).
+    /// </summary>
+    /// <param name="oneLine">
+    /// True for a field emitted onto a single line (<c>id</c>, <c>title</c>, an option, <c>recommended</c>),
+    /// which additionally forbids <c>U+000A</c>. False for <c>answer</c> and <c>rationale</c>, which may carry
+    /// one \u2014 the answer because a textarea produces it, the rationale because <c>HandoffMarkdown.Inline</c>
+    /// collapses it to a space on the way out.
+    /// </param>
+    /// <remarks>
+    /// Routes through the SAME predicates as <see cref="Malformation"/>, so a value refused at one gate cannot
+    /// be accepted at another \u2014 the discipline keeping the three answer gates in agreement, extended to the
+    /// format. The offending value is echoed ESCAPED for the reason given there: this text reaches a console,
+    /// and printing a raw control character would tear the line explaining it.
+    /// </remarks>
+    public static string? FieldMalformation(string? value, string field, bool oneLine)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        foreach (var character in value)
+        {
+            if (oneLine ? IsForbiddenOnOneLine(character) : IsForbidden(character))
+            {
+                var extra = character == '\n'
+                    ? " A line break cannot be carried by this field: it is emitted onto a single line, and "
+                        + "since Charter #219 that line is what the consuming tool's gate matches on."
+                    : string.Empty;
+
+                return $"\"{field}\" contains {Name(character)} in \"{Escape(value)}\". A :::question's strings "
+                    + "are emitted verbatim into a LINE-ORIENTED document that a human approves and a machine "
+                    + $"parses, so a control character in one is invisible in the plan they saw.{extra} "
+                    + "Remove it.";
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Why <paramref name="values"/> cannot be carried as an answer, or <see langword="null"/> when every one

@@ -213,9 +213,13 @@ public class VerifyCommandTests : IDisposable
         //
         // Looking only ONE line above the metadata line finds `beta`, drops the id from the set, and reports an
         // untouched pair as a mismatch. Searching back to the block's first line finds the real lead.
+        // The TITLE was multi-line here too until Charter #212 forbade a newline in it — a title has no
+        // reviewer affordance that produces one, and since #219 it rides the single-line marker the Guardrails
+        // gate matches. The ANSWER keeps its newline (#202's textarea carve-out), so the flatten still spreads
+        // one question over several lines and the behaviour under test is reached exactly as before.
         const string multiLinePlan =
             "---\ncharter-format-version: 1\n---\n\n# Plan\n\n:::question\n"
-            + "{\"id\": \"db\", \"title\": \"pick a\\nstore\", \"mode\": \"free-text\", "
+            + "{\"id\": \"db\", \"title\": \"pick a store\", \"mode\": \"free-text\", "
             + "\"target\": \"human\", \"answer\": [\"alpha\\nbeta\"]}\n:::\n";
 
         VerifyFixture.Build(_dir, multiLinePlan);
@@ -298,8 +302,14 @@ public class VerifyCommandTests : IDisposable
         // ReviewBaseStatus's hash collapses a lone CR into a newline, and copying that form here would bless a
         // CONTENT change as a harmless rewrite. This is the shape that proves it: replace one newline with a
         // lone CR, and a `\r` -> `\n` collapse reproduces the manifest's hash EXACTLY -- so a verifier using
-        // that form would announce "LINE-ENDING REWRITE" with total confidence over a file whose lone CR may
-        // just as well be plan content (see the test below). Declining is the only honest answer available.
+        // that form would announce "LINE-ENDING REWRITE" with total confidence over a file whose lone CR it
+        // cannot account for. Declining is the only honest answer available.
+        //
+        // This used to point at a companion test proving a lone CR could be PLAN CONTENT, via a question
+        // answer that reached the flatten JSON-escaped. Charter #212 closed that route, and `Emit`
+        // normalises every CR in prose before parsing -- so no Charter-produced flatten can carry one.
+        // That does NOT weaken the rule, it sharpens it: verify reads a file it did not necessarily
+        // produce, so "Charter would not emit this" is not evidence about how the bytes got there.
         VerifyFixture.Build(_dir, VerifyFixture.AnsweredPlan);
         // The newline chosen is the one before `Prose.`, which is preceded by another newline -- so the result
         // is a LONE CR (`\n\rProse.`), not a CRLF. Collapsing that CR to a newline reproduces the manifest's
@@ -315,14 +325,10 @@ public class VerifyCommandTests : IDisposable
     }
 
     [Fact]
-    public void ALoneCRReallyCanBePLANCONTENT_AndAnHonestPairWithOneStillVerifies()
+    public void ALoneCRInAQuestionANSWER_IsRefusedAtParse_SoItCannotReachTheFlattenAtAll()
     {
-        // The PREMISE of the rule above, asserted rather than argued -- and a live false alarm caught before
-        // this shipped. A question answer carrying a lone CR arrives JSON-ESCAPED inside the :::question body,
-        // so `Emit`'s source normalization never sees it and the flatten really does carry
-        // `Answered: alpha<CR>beta` (Charter #202). The first cut of the question scan split lines on a lone CR
-        // like ReviewBaseStatus does, which tore that Answered line in two, left the metadata line with `beta`
-        // above it, and reported this UNTOUCHED pair as `questions MISMATCH`.
+        // The other half of the test above, and the reason its channel moved (Charter #212). The route that
+        // produced the original false alarm is closed at the format, not merely handled downstream.
         const string crAnswerPlan =
             "---\ncharter-format-version: 1\n---\n\n# Plan\n\n:::question\n"
             + "{\"id\": \"db\", \"title\": \"Which?\", \"mode\": \"free-text\", \"target\": \"human\", "
@@ -330,16 +336,9 @@ public class VerifyCommandTests : IDisposable
 
         VerifyFixture.Build(_dir, crAnswerPlan);
 
-        // The premise: the flatten carries a real lone CR, so this is not a hypothetical.
         var handoff = VerifyFixture.ReadHandoff(_dir);
-        Assert.Contains("alpha\rbeta", handoff, StringComparison.Ordinal);
-        Assert.DoesNotContain("alpha\r\nbeta", handoff, StringComparison.Ordinal);
-
-        var (exit, stdout, stderr) = VerifyFixture.Verify(_dir);
-
-        Assert.Equal(0, exit);
-        Assert.DoesNotContain("MISMATCH", stdout, StringComparison.Ordinal);
-        Assert.Equal(string.Empty, stderr.Trim());
+        Assert.Contains("Malformed question", handoff, StringComparison.Ordinal);
+        Assert.DoesNotContain('\r', handoff);
     }
 
     [Fact]

@@ -196,6 +196,29 @@ The `answer` shape mirrors a submitted answer's values: a `single`/`bool`/`numbe
 it is the shape a mis-written generator produces, and reading it as resolved let a blank certify as a made
 decision (#188). One rule, in one place: at least one value, none of them blank.
 
+### Control characters are refused, and the rule is not uniform (#212)
+
+A `:::question` whose strings carry a control character **does not parse**. It renders as a visible
+**malformed-question placeholder**, `charter headless` reports `needsHuman`, and
+`charter handoff --fail-if-needs-human` blocks. This is a **hard refusal, not a lint** — the strings below are
+emitted **verbatim** into the flattened CommonMark, so a control character in one is invisible in the plan the
+reviewer approved and lands in the document a machine parses.
+
+**Forbidden:** every `Cc` control character, plus `U+2028` and `U+2029` (line terminators to JavaScript and to
+`string.ReplaceLineEndings`, while being `Zl`/`Zp` rather than `Cc` — so they must be named alongside the
+category, not assumed inside it).
+
+| Field | May carry `U+000A`? | Why |
+|---|---|---|
+| `id` · `title` · `options[]` · `recommended` | **No** | Emitted onto a **single line**. Since #219 that line is the delegated-decision marker, which the Guardrails breakdown gate matches with a regex needing both of the id's backticks on it — and CommonMark ends a line on a lone CR, so a control character **splits** the marker and the gate matches nothing while the plan genuinely carries a delegated decision. |
+| `answer` | **Yes** | A free-text answer is typed into a `<textarea>` — a reviewer affordance that legitimately produces line breaks (#202). |
+| `rationale` | **Yes** | `HandoffMarkdown.Inline` collapses line breaks to a space on the way out. It collapses **nothing else**, so every other control character is still refused here. |
+
+**Not refused:** NBSP (`Zs`) and the zero-width format characters (`Cf`, including the bidi overrides). They
+occur in honest human text — NBSP in "10 km", the bidi controls throughout right-to-left prose — and refusing
+them would refuse real answers from real reviewers. The bidi-override **display** hazard is real and strictly
+wider than `:::question` (prose has it too), so it belongs to whoever settles it for the whole format.
+
 **An answer value may legitimately fall OUTSIDE `options`.** The renderer appends a "Something else" free-text
 escape hatch to every `single`/`multi` form, because the agent writing the options is the party least
 qualified to know they are exhaustive — it is asking precisely because it does not know. A reviewer can

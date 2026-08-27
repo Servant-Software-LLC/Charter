@@ -206,10 +206,29 @@ public sealed record QuestionSpec(
                 return (null, "\"id\" is required and must be a non-empty string.");
             }
 
+            // CONTROL CHARACTERS ARE REFUSED FORMAT-WIDE (Charter #212), not only on the paths an answer
+            // ENTERS through (#202). A hand-authored `:::question` was the one channel those gates did not sit
+            // on, and every string below is emitted VERBATIM into the flatten — so a control character here is
+            // invisible in the plan the reviewer approved and lands in the CommonMark a machine parses.
+            //
+            // `id` is checked FIRST and is the one that turned this from cosmetic into structural: since #219
+            // the id rides the delegated-decision marker line, which the Guardrails gate matches with a regex
+            // needing both backticks on one line. A lone CR ends a line in CommonMark, so the marker splits,
+            // the regex matches nothing, and a plan carrying a delegated decision reports none.
+            if (AnswerRules.FieldMalformation(id, "id", oneLine: true) is { } idError)
+            {
+                return (null, idError);
+            }
+
             var title = ReadString(root, "title");
             if (string.IsNullOrWhiteSpace(title))
             {
                 return (null, "\"title\" is required and must be a non-empty string.");
+            }
+
+            if (AnswerRules.FieldMalformation(title, "title", oneLine: true) is { } titleError)
+            {
+                return (null, titleError);
             }
 
             var modeToken = ReadString(root, "mode");
@@ -240,6 +259,19 @@ public sealed record QuestionSpec(
                 return (null, optionsError);
             }
 
+            // An option label is emitted onto the metadata line, inside inline code, comma-separated — so a
+            // line break in one does not merely look wrong, it ends the line the rest of the metadata is on.
+            // A TAB is worse than it looks here for a second reason the answer rules already name: it defeats
+            // the StringComparer.Ordinal membership test the whole options/recommended/answer contract rests
+            // on, while rendering as an ordinary space.
+            foreach (var option in options)
+            {
+                if (AnswerRules.FieldMalformation(option, "options", oneLine: true) is { } optionError)
+                {
+                    return (null, optionError);
+                }
+            }
+
             var requiresOptions = mode is QuestionMode.SingleSelect or QuestionMode.MultiSelect;
             if (requiresOptions && options.Count == 0)
             {
@@ -252,10 +284,33 @@ public sealed record QuestionSpec(
                 return (null, answerError);
             }
 
+            // The ORIGINAL #202 symptom, through the one channel its entry gates never sat on: an `answer`
+            // hand-authored straight into the plan. Same predicate as those gates (U+000A permitted — a
+            // free-text answer comes from a textarea), reached from a different door.
+            foreach (var value in answer)
+            {
+                if (AnswerRules.FieldMalformation(value, "answer", oneLine: false) is { } valueError)
+                {
+                    return (null, valueError);
+                }
+            }
+
             // A recommendation naming no declared option is DROPPED, not rejected. It is an authoring hint, and
             // failing the whole block over one would turn a helpful annotation into a way to break a plan —
             // exactly backwards for a field whose entire purpose is to be optional.
             var recommended = ReadString(root, "recommended");
+
+            // Checked EXPLICITLY even though today it is also covered transitively: a `recommended` must match
+            // a declared option verbatim, and every option has just been refused a control character, so a
+            // recommended carrying one can no longer match anything and would be dropped below. That
+            // reasoning is an ORDERING DEPENDENCY between two rules, not a property of this field — relax the
+            // verbatim match and the hole silently reopens. One line here costs nothing and does not depend
+            // on the rule above still being what it is.
+            if (AnswerRules.FieldMalformation(recommended, "recommended", oneLine: true) is { } recommendedError)
+            {
+                return (null, recommendedError);
+            }
+
             if (recommended is not null && !options.Contains(recommended, StringComparer.Ordinal))
             {
                 recommended = null;
@@ -267,6 +322,15 @@ public sealed record QuestionSpec(
             if (string.IsNullOrWhiteSpace(rationale))
             {
                 rationale = null;
+            }
+
+            // #212 listed `rationale` as ALREADY SAFE, "because HandoffMarkdown.Inline collapses it". That is
+            // true of LINE BREAKS only — Inline replaces CRLF, CR and LF with a space and touches nothing
+            // else, so a NUL, an ESC or a TAB travels through it untouched and reaches the flatten. Hence
+            // oneLine: false (a newline here is genuinely harmless, being collapsed) but checked all the same.
+            if (AnswerRules.FieldMalformation(rationale, "rationale", oneLine: false) is { } rationaleError)
+            {
+                return (null, rationaleError);
             }
 
             return (
