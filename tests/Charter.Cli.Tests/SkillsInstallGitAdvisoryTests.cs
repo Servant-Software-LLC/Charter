@@ -29,6 +29,9 @@ namespace Charter.Cli.Tests;
 [Trait("Category", "SkillsInstallGitAdvisory")]
 public class SkillsInstallGitAdvisoryTests
 {
+    /// <summary>U+000A, spelled by code point so no escape sequence sits in this file.</summary>
+    private const char Lf = (char)10;
+
     /// <summary>Every skill folder bundled in the binary — all three landed in the reported incident.</summary>
     private static readonly string[] BundledSkills = ["charter", "charter-drain", "charter-format"];
 
@@ -64,6 +67,107 @@ public class SkillsInstallGitAdvisoryTests
 
             // Anchored at the repository ROOT and correct for the RESOLVED target — not a guessed layout.
             foreach (string skill in BundledSkills)
+            {
+                Assert.Contains($"/skills/{skill}/", result.StdOut, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            TestGit.TryDeleteRepo(repo);
+        }
+    }
+
+    /// <summary>
+    /// Charter #223 — a repository that has ALREADY taken the advice is not told to take it again.
+    ///
+    /// <para>
+    /// The advisory listed every installed skill unconditionally, so a repository whose <c>.gitignore</c>
+    /// already covered them got the same paste-these-rules block on every install. A notice that fires when
+    /// its condition is already handled trains the reader to skip it — and they skip it on the day it means
+    /// something. This is the same class as a hash diagnostic that cries tampering at a line-ending rewrite.
+    /// </para>
+    /// <para>
+    /// Asserted through the REAL binary against a real repository, and the ignore rules are the ones the
+    /// advisory itself printed on the first run — so this cannot pass by ignoring the wrong paths.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_repository_that_already_ignores_the_skills_is_not_told_to_ignore_them_again()
+    {
+        if (!TestGit.IsAvailable)
+        {
+            return;
+        }
+
+        string repo = TestGit.NewRepo();
+        try
+        {
+            string skills = Path.Combine(repo, "skills");
+
+            // First install: nothing is ignored yet, so the advisory fires and hands over the rules.
+            var first = CharterCliRunner.Run("skills", "install", "--target", skills);
+            Assert.Equal(0, first.ExitCode);
+            Assert.Contains(".gitignore", first.StdOut, StringComparison.Ordinal);
+
+            // Take the advice, using the rules IT printed rather than rules this test invented.
+            var rules = first.StdOut
+                .Split(Lf)
+                .Select(line => line.Trim())
+                .Where(line => line.StartsWith("/", StringComparison.Ordinal) && line.EndsWith("/", StringComparison.Ordinal))
+                .ToArray();
+            Assert.NotEmpty(rules);
+            File.WriteAllText(Path.Combine(repo, ".gitignore"), string.Join(Lf.ToString(), rules) + Lf);
+
+            // Second install into the same place: the advice has been taken, so there is nothing to advise.
+            var second = CharterCliRunner.Run("skills", "install", "--target", skills, "--force");
+
+            Assert.Equal(0, second.ExitCode);
+            Assert.DoesNotContain(".gitignore", second.StdOut, StringComparison.Ordinal);
+            Assert.DoesNotContain("git working tree", second.StdOut, StringComparison.Ordinal);
+            foreach (string skill in BundledSkills)
+            {
+                Assert.DoesNotContain($"/skills/{skill}/", second.StdOut, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            TestGit.TryDeleteRepo(repo);
+        }
+    }
+
+    /// <summary>
+    /// Charter #223 — a MIXED repository names only the skills that are still outstanding.
+    ///
+    /// <para>
+    /// The common shape as skills are added over time: some covered by an existing rule, some not. Listing
+    /// all of them would bury the one line the reader has to act on among ones they already handled.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void A_mixed_repository_names_only_the_skills_that_are_still_outstanding()
+    {
+        if (!TestGit.IsAvailable)
+        {
+            return;
+        }
+
+        string repo = TestGit.NewRepo();
+        try
+        {
+            string skills = Path.Combine(repo, "skills");
+            string covered = BundledSkills[0];
+
+            // Ignore exactly ONE of them before installing.
+            File.WriteAllText(Path.Combine(repo, ".gitignore"), $"/skills/{covered}/" + Lf);
+
+            var result = CharterCliRunner.Run("skills", "install", "--target", skills);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains(".gitignore", result.StdOut, StringComparison.Ordinal);
+
+            // The already-covered one is absent; every other one is named.
+            Assert.DoesNotContain($"/skills/{covered}/", result.StdOut, StringComparison.Ordinal);
+            foreach (string skill in BundledSkills.Where(name => !string.Equals(name, covered, StringComparison.Ordinal)))
             {
                 Assert.Contains($"/skills/{skill}/", result.StdOut, StringComparison.Ordinal);
             }

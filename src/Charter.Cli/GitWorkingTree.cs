@@ -66,6 +66,26 @@ internal static class GitWorkingTree
         => !string.IsNullOrWhiteSpace(Run(path, "status", "--porcelain", "--", "."));
 
     /// <summary>
+    /// True when git already ignores <paramref name="path"/> (Charter #223).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>git check-ignore</c> answers in its EXIT CODE — <c>0</c> when the path is ignored, <c>1</c> when it
+    /// is not — and <see cref="Run"/> returns output only on <c>0</c>, so a non-empty result means ignored.
+    /// </para>
+    /// <para>
+    /// <b>The fail direction is deliberate.</b> When git cannot say (absent, not a repository, a permission
+    /// fault) this reports <see langword="false"/> — NOT ignored — so a caller advising the operator to add an
+    /// ignore rule still advises. Guessing "probably ignored" would silence the advice in exactly the case
+    /// where nothing is known, which is the wrong way round for a notice whose whole job is to make an
+    /// omission visible.
+    /// </para>
+    /// </remarks>
+    public static bool IsIgnored(string path)
+        => !string.IsNullOrWhiteSpace(
+            Run(Path.GetDirectoryName(path) ?? path, "check-ignore", "--", path));
+
+    /// <summary>
     /// Where <paramref name="path"/> sits inside a git working tree, or <see langword="null"/> when it sits
     /// in none — which, per this class's contract, is also the answer whenever git cannot say.
     /// </summary>
