@@ -999,7 +999,7 @@ holding Charter's prose to what the code does.
 
 ### The facts
 
-- **Version: `0.24.0`** — what `<Version>` says and what a local build reports. Bound, per above.
+- **Version: `0.25.0`** — what `<Version>` says and what a local build reports. Bound, per above.
 - **Master is routinely AHEAD of the newest tag while reporting its number, and that is normal.**
   `<Version>` is bumped when a release is *cut*, not as work lands — so a local build can report a version
   already published, and the delta is unreleased work heading for the next tag. Which side of it you are on is
@@ -1033,4 +1033,21 @@ holding Charter's prose to what the code does.
   (exit 1, `KeyNotFoundException` out of `AnchorAssignment.SubIdForLine`). It now **renders without
   sub-anchors** — #166 one level down — while the strict-handoff gate still refuses the shape. `render` is
   total; refusal lives at the gate that has evidence behind it. See §11.8.
+- **The machine-consumer contract is SETTLED WITH ITS CONSUMER, not just designed.** This is the fact to
+  know before changing anything under `charter handoff` / `charter verify`. On 2026-08-27 the Guardrails
+  session answered Charter's four questions in writing (`docs/asks/2026-08-27-guardrails-four-questions.md`,
+  with Charter's reply beside it). Three consequences with a long shelf life:
+  - **They gate on the manifest plus both in-band stamps. `.headless.json` is NOT on their gating path** —
+    it is optional forensics. **Nine manifest fields are frozen in practice** because a named harness asserts
+    on them: `schema`, `gate.{flagPassed, needsHuman, exitCode}`, `malformedQuestions`, the three hashes
+    (**join keys only**), and `questions[].{id, answered}`. `charterVersion` is deliberately **not** frozen —
+    they log it and refuse to assert it. Do not offer it back. Design of record:
+    *"The stable core now has a NAMED CONSUMER"* under §10.
+  - **The delegated-decision marker is a wire format now, not prose.** ASCII-only sentinel, id on the marker
+    line, plus a count line — because their gate is a grep, often PowerShell on Windows (#219; see
+    *"The marker's shape, settled with its consumer"* under §5). The
+    `free-text`/`bool`/`number` carve-out limit that Charter documented as "not load-bearing" **is**
+    load-bearing on their side; do not drop it.
+  - **`charter verify` is their FIRST gate**, exit 0 required, exit 1 never counted green — and not their
+    only one, because it cannot separate *the gate passed* from *every question was answered*.
 - **Decisions made** — D1 (markdown+directives hybrid), D2 (reimplement lean in C#).
