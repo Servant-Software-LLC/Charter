@@ -217,12 +217,12 @@ public sealed partial class ReviewLoopBrowserTests
                 new ReviewAnchor(list, "element", "a plain bullet", null),
                 "A second note, arriving while the reviewer is reading the first one's card.");
             await WaitForCardAsync(page, second.Id, teammate);
-            await WaitForEventCountAsync(page, "focus-restored", restoresBefore + 1, atLeast: true);
+            await WaitForFocusToSettleAsync(page, "DIV[item]#" + watched.Id, restoresBefore);
 
             await AssertFocusAsync(
                 page, "DIV[item]#" + watched.Id,
                 "a second note landed while the reviewer was on the first note's CARD",
-                restoredKey: "item:" + watched.Id);
+                restoredKey: "item:" + watched.Id, restoresBefore: restoresBefore);
 
             // ---- and the control inside it ------------------------------------------------------------
             await TabForwardToAsync(page, "BUTTON[item-jump]#" + watched.Id);
@@ -232,13 +232,14 @@ public sealed partial class ReviewLoopBrowserTests
                 new ReviewAnchor(list, "element", "a second bullet", null),
                 "A third note, arriving while the reviewer is on that card's Jump.");
             await WaitForCardAsync(page, third.Id, teammate);
-            await WaitForEventCountAsync(page, "focus-restored", jumpRestoresBefore + 1, atLeast: true);
+            await WaitForFocusToSettleAsync(
+                page, "BUTTON[item-jump]#" + watched.Id, jumpRestoresBefore);
 
             await AssertFocusAsync(
                 page, "BUTTON[item-jump]#" + watched.Id,
                 "a third note landed while the reviewer was on that card's JUMP -- the control the SDK "
                     + "itself names as the one that can come back DISABLED",
-                restoredKey: "item-jump:" + watched.Id);
+                restoredKey: "item-jump:" + watched.Id, restoresBefore: jumpRestoresBefore);
 
             AssertNoBrowserErrors(instrumented);
         }
@@ -533,12 +534,23 @@ public sealed partial class ReviewLoopBrowserTests
     /// </para>
     /// </param>
     private static async Task AssertFocusAsync(
-        IPage page, string expected, string moment, string? restoredKey = null)
+        IPage page, string expected, string moment, string? restoredKey = null, int? restoresBefore = null)
     {
         var actual = await FocusIdentityAsync(page);
         if (string.Equals(actual, expected, StringComparison.Ordinal))
         {
             if (restoredKey is null)
+            {
+                return;
+            }
+
+            // A rebuild that never took focus away repairs nothing and announces nothing (restoreChromeFocus
+            // returns early on `inDocument`). That is a correct outcome, not a silent pass -- focus is where
+            // the reviewer left it because it was never moved -- so the key is asserted only when a restore
+            // ACTUALLY happened. Asserting it unconditionally is the same over-strictness that made the #227
+            // wait sit out its deadline.
+            if (restoresBefore is { } before
+                && await CountEventsAsync(page, "focus-restored") <= before)
             {
                 return;
             }
@@ -575,6 +587,46 @@ public sealed partial class ReviewLoopBrowserTests
             "itself the finding):\n  " +
             (trace.Length == 0 ? "(none)" : string.Join("\n  ", trace)) +
             "\n\nlast events on the wire:\n  " + string.Join(" -> ", tail));
+    }
+
+    /// <summary>
+    /// Wait until the rebuild has finished with focus — EITHER the SDK repaired it, OR it is already where it
+    /// belongs because the element survived (Charter #221).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Waiting for <c>focus-restored</c> alone was wrong, and CI caught it.</b> #227 blocked on that count
+    /// advancing on every arriving note. It does not: <c>restoreChromeFocus</c> returns EARLY AND SILENTLY
+    /// when <c>inDocument(taken.el)</c> — the rebuild did not take focus away, so there is nothing to repair
+    /// and nothing to announce. On a run where the third rebuild left the Jump in place, the wait sat out its
+    /// full 90s and failed with <i>"emitted 2, expected at least 3"</i>.
+    /// </para>
+    /// <para>
+    /// The trap was named in this issue's own notes before the wait was written, and the wait walked into it
+    /// anyway. Both terminal states are correct outcomes of a rebuild, so the gate has to accept either.
+    /// </para>
+    /// </remarks>
+    private static async Task WaitForFocusToSettleAsync(
+        IPage page, string expected, int restoresBefore, int timeoutMs = ReadinessTimeoutMs)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await CountEventsAsync(page, "focus-restored") > restoresBefore)
+            {
+                return;   // repaired, and the key is asserted by the caller
+            }
+
+            if (string.Equals(await FocusIdentityAsync(page), expected, StringComparison.Ordinal))
+            {
+                return;   // never taken away: the element survived this rebuild
+            }
+
+            await Task.Delay(25);
+        }
+
+        // Neither happened. Let the assertion report it with the full trace rather than failing here with
+        // only a count — the trace is what distinguishes the three ways this ends up on BODY.
     }
 
     /// <summary>
