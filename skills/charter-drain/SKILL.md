@@ -95,6 +95,17 @@ breakdown started underneath a running drain queues behind it and looks like not
 ## If nothing is listening
 
 `charter poll` discovers the session through a per-user registry, so it needs the review server for that
-plan to be running. If it reports no session, the human's `charter review` has exited — tell them, rather
-than starting one yourself: the server is theirs, and a second one on a new port would leave their browser
-tab pointed at a dead address.
+plan to be running.
+
+**Exit 3 — no session.** The human's `charter review` has exited. **Tell them, rather than starting one
+yourself:** the server is theirs, and a second one on a new port would leave their browser tab pointed at a
+dead address.
+
+**Exit 4 — the state is UNKNOWN, and this is NOT that.** The probe did not get an answer in time, so
+Charter does **not** know whether the server is running. Its stderr says *"the session state is unknown"*.
+**Do not tell the human their review server has exited** — on a loaded machine it is more likely still up
+and simply slow. **Retry.** If it keeps coming back, ask them to check the tab before concluding anything.
+
+That distinction is the whole of Charter #217: the two used to be the same exit code, so a busy server was
+reported as a dead one — and the descriptor that proved otherwise was deleted in the process, which made the
+wrong answer stick.

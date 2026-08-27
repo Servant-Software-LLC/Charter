@@ -36,10 +36,10 @@ public class ReviewClientTests
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var live = await client.ProbeAsync(session.SourcePath, cts.Token);
 
-            Assert.NotNull(live);
-            Assert.Equal(session.SourcePath, live!.SourcePath);
-            Assert.Equal(Path.GetFileName(session.SourcePath), live.SourceFile);
-            Assert.Equal(server.Address.GetLeftPart(UriPartial.Authority) + "/", live.Address);
+            Assert.Equal(ProbeOutcome.Live, live.Outcome);
+            Assert.Equal(session.SourcePath, live.Session!.SourcePath);
+            Assert.Equal(Path.GetFileName(session.SourcePath), live.Session.SourceFile);
+            Assert.Equal(server.Address.GetLeftPart(UriPartial.Authority) + "/", live.Session.Address);
         }
         finally
         {
@@ -61,8 +61,8 @@ public class ReviewClientTests
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var live = await client.ProbeAsync(expectedSourcePath: null, cts.Token);
 
-            Assert.NotNull(live);
-            Assert.Equal(session.SourcePath, live!.SourcePath);
+            Assert.Equal(ProbeOutcome.Live, live.Outcome);
+            Assert.Equal(session.SourcePath, live.Session!.SourcePath);
         }
         finally
         {
@@ -81,8 +81,10 @@ public class ReviewClientTests
                 session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
             using var client = new ReviewClient(server.Address, "not-the-real-key");
 
+            // The server ANSWERED and rejected the key: positive evidence, so ABSENT rather than Unknown --
+            // this is a case where pruning the descriptor is sound (Charter #217).
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            Assert.Null(await client.ProbeAsync(session.SourcePath, cts.Token));
+            Assert.Equal(ProbeOutcome.Absent, (await client.ProbeAsync(session.SourcePath, cts.Token)).Outcome);
         }
         finally
         {
@@ -104,7 +106,8 @@ public class ReviewClientTests
             // The descriptor claimed a DIFFERENT source than the live server serves (a recycled port): reject.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var mismatch = Path.Combine(Path.GetTempPath(), "charter-some-other-plan.mdx");
-            Assert.Null(await client.ProbeAsync(mismatch, cts.Token));
+            // A live server CONFIRMING it serves a different source is evidence the descriptor is stale.
+            Assert.Equal(ProbeOutcome.Absent, (await client.ProbeAsync(mismatch, cts.Token)).Outcome);
         }
         finally
         {
@@ -128,8 +131,9 @@ public class ReviewClientTests
 
             // The server (and its listener) are disposed: a connection to the freed port is refused.
             using var client = new ReviewClient(address, session.Key.Value);
+            // Connection refused is the one unambiguous absence, and the only one that licenses a prune.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            Assert.Null(await client.ProbeAsync(session.SourcePath, cts.Token));
+            Assert.Equal(ProbeOutcome.Absent, (await client.ProbeAsync(session.SourcePath, cts.Token)).Outcome);
         }
         finally
         {
