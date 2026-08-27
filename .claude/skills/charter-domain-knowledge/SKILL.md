@@ -999,7 +999,7 @@ holding Charter's prose to what the code does.
 
 ### The facts
 
-- **Version: `0.25.0`** — what `<Version>` says and what a local build reports. Bound, per above.
+- **Version: `0.26.0`** — what `<Version>` says and what a local build reports. Bound, per above.
 - **Master is routinely AHEAD of the newest tag while reporting its number, and that is normal.**
   `<Version>` is bumped when a release is *cut*, not as work lands — so a local build can report a version
   already published, and the delta is unreleased work heading for the next tag. Which side of it you are on is
