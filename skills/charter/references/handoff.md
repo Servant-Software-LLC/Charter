@@ -228,9 +228,26 @@ _Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgr
 
   **State the scope precisely if you re-verify this.** The literals *do* appear in Charter's own
   `charter/references/handoff.md` — this file, a document *describing* them, not a consumer acting on them —
-  and that copy is installed into consuming repos. A bare `rg` will not show it: ripgrep's default ignore
-  rules hide the hit entirely, and `rg --no-ignore --hidden` is what finds it. Both sides over-claimed here
-  on a first pass for exactly that reason.
+  and that copy is installed into consuming repos, typically under `.claude/skills/`.
+
+  **A bare recursive `rg` will not show it, and the reason is not the one most people reach for.** Measured
+  in this repo:
+
+  | Invocation | Finds a hit under `.claude/` |
+  |---|---|
+  | `rg -c "<text>" .` | **no** |
+  | `rg -c --no-ignore "<text>" .` | **no** — `.claude/` is not gitignored, so there is nothing for this flag to lift |
+  | `rg -c --hidden "<text>" .` | **yes** |
+  | `rg -c "<text>" .claude` (path named explicitly) | **yes** — the dot-prefix rule governs *traversal*, not an explicitly named root |
+
+  So the flag that matters is `--hidden`, and blaming "ignore rules" sends the next reader to `--no-ignore`,
+  which changes nothing here. Both sides of this exchange over-claimed on a first pass for exactly that
+  reason, and the Guardrails session's own correction landed on the same mechanism.
+
+  **The general rule, which is worth more than the flag:** *"no matches"* and *"the tool never looked"*
+  produce identical output. Before trusting an absence, run a **positive control** — search the same subject
+  with the same invocation for a literal you have already read out of that file. If the control does not hit,
+  the absence proves nothing about anything else.
 - **`id` correlates** the flattened question back to its `:::question` block (and to `--answers`).
 
 It stays **plain CommonMark** — emphasis and inline code, nothing that reopens a `:::` directive — so the
@@ -654,6 +671,21 @@ Answered/Open states the **document actually carries**.
 | `0` | every join holds **and** the manifest records no outstanding escalation |
 | `2` | a join disagreed, **or** the manifest records `gate.needsHuman: true` — read stderr |
 | `1` | verify **could not answer**: unreadable handoff, no manifest beside it, unparseable manifest, a `schema` this build does not know, or no in-band stamp. A `1` is not a verdict. |
+
+> ### The `1` that looks like a pass: RUN `verify` BEFORE YOU MOVE ANYTHING
+>
+> Discovery is **co-location plus co-naming** — the manifest is found beside the handoff, at a name derived
+> from it. **So a handoff copied anywhere without its manifest returns `1` forever**, and it will keep
+> returning `1` no matter how sound the run was.
+>
+> `1` is correctly **not a verdict**, which is exactly what makes it dangerous: it is silent, it is not
+> `MISMATCH`, and a pipeline that treats "not a failure" as "fine" will sail past it. A harness that copies
+> or regenerates from the handoff markdown — one that seeds a working folder from it, say — must
+> **`charter verify` before relocating**, not after.
+>
+> Raised by the Guardrails session from their own harness, where a seed folder is generated from the handoff
+> markdown. **Their constraint, not a Charter bug** — but a `1` reads as "nothing to see" to almost everyone,
+> so it belongs in the docs rather than in each consumer's hard-won experience.
 
 > ### READ THIS BEFORE QUOTING A GREEN `verify`
 >
