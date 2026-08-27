@@ -217,11 +217,12 @@ public sealed partial class ReviewLoopBrowserTests
                 new ReviewAnchor(list, "element", "a plain bullet", null),
                 "A second note, arriving while the reviewer is reading the first one's card.");
             await WaitForCardAsync(page, second.Id, teammate);
-            await WaitForEventCountAsync(page, "focus-restored", restoresBefore + 1, atLeast: true);
+            await WaitForFocusToSettleAsync(page, "DIV[item]#" + watched.Id, restoresBefore);
 
             await AssertFocusAsync(
                 page, "DIV[item]#" + watched.Id,
-                "a second note landed while the reviewer was on the first note's CARD");
+                "a second note landed while the reviewer was on the first note's CARD",
+                restoredKey: "item:" + watched.Id, restoresBefore: restoresBefore);
 
             // ---- and the control inside it ------------------------------------------------------------
             await TabForwardToAsync(page, "BUTTON[item-jump]#" + watched.Id);
@@ -231,12 +232,14 @@ public sealed partial class ReviewLoopBrowserTests
                 new ReviewAnchor(list, "element", "a second bullet", null),
                 "A third note, arriving while the reviewer is on that card's Jump.");
             await WaitForCardAsync(page, third.Id, teammate);
-            await WaitForEventCountAsync(page, "focus-restored", jumpRestoresBefore + 1, atLeast: true);
+            await WaitForFocusToSettleAsync(
+                page, "BUTTON[item-jump]#" + watched.Id, jumpRestoresBefore);
 
             await AssertFocusAsync(
                 page, "BUTTON[item-jump]#" + watched.Id,
                 "a third note landed while the reviewer was on that card's JUMP -- the control the SDK "
-                    + "itself names as the one that can come back DISABLED");
+                    + "itself names as the one that can come back DISABLED",
+                restoredKey: "item-jump:" + watched.Id, restoresBefore: jumpRestoresBefore);
 
             AssertNoBrowserErrors(instrumented);
         }
@@ -514,12 +517,64 @@ public sealed partial class ReviewLoopBrowserTests
     /// is what let Charter #209 spend two rounds being called a flake while it was a product bug.
     /// </para>
     /// </remarks>
-    private static async Task AssertFocusAsync(IPage page, string expected, string moment)
+    /// <param name="restoredKey">
+    /// When supplied, the focus key the SDK must have reported landing on — the MECHANISM, not the state
+    /// (Charter #221, prompted by the Guardrails session naming the general move: assert that the child was
+    /// terminated, not that it took under 60 seconds).
+    /// <para>
+    /// <c>document.activeElement</c> being right is a weaker claim than it looks: it is also true when this
+    /// render never took focus at all (<c>takeChromeFocus</c> returns null for anything that is not chrome
+    /// this pass rebuilds), in which case nothing was preserved and nothing was exercised. The card test had
+    /// no vacuity guard at all — the badge test's <c>markers-rendered</c> check is the same idea.
+    /// </para>
+    /// <para>
+    /// It also separates a restore from a FALLBACK. A control keys itself with the card as its fallback, so a
+    /// Jump that could not be re-focused lands the reviewer on the card and still emits
+    /// <c>focus-restored</c> — with the fallback's key. Asserting the key says which of the two happened.
+    /// </para>
+    /// </param>
+    private static async Task AssertFocusAsync(
+        IPage page, string expected, string moment, string? restoredKey = null, int? restoresBefore = null)
     {
         var actual = await FocusIdentityAsync(page);
         if (string.Equals(actual, expected, StringComparison.Ordinal))
         {
-            return;
+            if (restoredKey is null)
+            {
+                return;
+            }
+
+            // A rebuild that never took focus away repairs nothing and announces nothing (restoreChromeFocus
+            // returns early on `inDocument`). That is a correct outcome, not a silent pass -- focus is where
+            // the reviewer left it because it was never moved -- so the key is asserted only when a restore
+            // ACTUALLY happened. Asserting it unconditionally is the same over-strictness that made the #227
+            // wait sit out its deadline.
+            if (restoresBefore is { } before
+                && await CountEventsAsync(page, "focus-restored") <= before)
+            {
+                return;
+            }
+
+            var entries = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
+            var last = entries.LastOrDefault();
+            var wanted = "focus-restored key=" + restoredKey + " ";
+
+            if (last is not null && last.StartsWith(wanted, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Assert.Fail(
+                $"focus WAS on {expected}, but the SDK did not report putting it there ({moment})."
+                    + Environment.NewLine + Environment.NewLine
+                    + "expected the last focus event to be: " + wanted.TrimEnd()
+                    + Environment.NewLine
+                    + "last focus event was: " + (last ?? "(none emitted)")
+                    + Environment.NewLine + Environment.NewLine
+                    + "A correct activeElement with no matching restore means either this render never "
+                    + "took focus -- so nothing was preserved and nothing was exercised -- or the SDK "
+                    + "landed on a FALLBACK. Both pass an activeElement check and neither is what this "
+                    + "test is named for.");
         }
 
         var trace = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
@@ -532,6 +587,46 @@ public sealed partial class ReviewLoopBrowserTests
             "itself the finding):\n  " +
             (trace.Length == 0 ? "(none)" : string.Join("\n  ", trace)) +
             "\n\nlast events on the wire:\n  " + string.Join(" -> ", tail));
+    }
+
+    /// <summary>
+    /// Wait until the rebuild has finished with focus — EITHER the SDK repaired it, OR it is already where it
+    /// belongs because the element survived (Charter #221).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Waiting for <c>focus-restored</c> alone was wrong, and CI caught it.</b> #227 blocked on that count
+    /// advancing on every arriving note. It does not: <c>restoreChromeFocus</c> returns EARLY AND SILENTLY
+    /// when <c>inDocument(taken.el)</c> — the rebuild did not take focus away, so there is nothing to repair
+    /// and nothing to announce. On a run where the third rebuild left the Jump in place, the wait sat out its
+    /// full 90s and failed with <i>"emitted 2, expected at least 3"</i>.
+    /// </para>
+    /// <para>
+    /// The trap was named in this issue's own notes before the wait was written, and the wait walked into it
+    /// anyway. Both terminal states are correct outcomes of a rebuild, so the gate has to accept either.
+    /// </para>
+    /// </remarks>
+    private static async Task WaitForFocusToSettleAsync(
+        IPage page, string expected, int restoresBefore, int timeoutMs = ReadinessTimeoutMs)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await CountEventsAsync(page, "focus-restored") > restoresBefore)
+            {
+                return;   // repaired, and the key is asserted by the caller
+            }
+
+            if (string.Equals(await FocusIdentityAsync(page), expected, StringComparison.Ordinal))
+            {
+                return;   // never taken away: the element survived this rebuild
+            }
+
+            await Task.Delay(25);
+        }
+
+        // Neither happened. Let the assertion report it with the full trace rather than failing here with
+        // only a count — the trace is what distinguishes the three ways this ends up on BODY.
     }
 
     /// <summary>
