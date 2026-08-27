@@ -110,7 +110,9 @@ public sealed partial class ReviewLoopBrowserTests
                 "Charter #200 — the teammate's note never caused a marker pass, so nothing was rebuilt and " +
                     "this test would pass without asserting anything.");
 
-            Assert.Equal("BUTTON[badge]#" + paragraph, await FocusIdentityAsync(page));
+            await AssertFocusAsync(
+                page, "BUTTON[badge]#" + paragraph,
+                "a second note rebuilt the markers under an in-block badge");
 
             // ---- a RAILED badge, on the list --------------------------------------------------------
             // Built by mountBadgeRail on a sibling rail rather than appended inside the block, so it is torn
@@ -122,7 +124,9 @@ public sealed partial class ReviewLoopBrowserTests
                 "A third note, arriving while the reviewer is poised on the list's rail badge.");
             await WaitForBadgeAsync(page, ordered, teammate);
 
-            Assert.Equal("BUTTON[badge]#" + list, await FocusIdentityAsync(page));
+            await AssertFocusAsync(
+                page, "BUTTON[badge]#" + list,
+                "a third note rebuilt the markers under a RAILED badge");
 
             // ---- and it is still the control the reviewer was about to press -------------------------
             await page.Keyboard.PressAsync("Enter");
@@ -202,22 +206,37 @@ public sealed partial class ReviewLoopBrowserTests
             // ---- the card itself ---------------------------------------------------------------------
             await TabForwardToAsync(page, "DIV[item]#" + watched.Id);
 
+            // Gate on the product's OWN completion signal, not on the card being in the DOM (Charter #221).
+            // The card's presence is a PROXY: the trace shows an arriving note drives SEVERAL render passes
+            // (`markers-rendered -> focus-restored -> review-log-loaded -> review-log-changed -> ...`), and
+            // the pass that first puts the card in the DOM is not the last one. `focus-restored` is emitted by
+            // `restoreChromeFocus` itself, so waiting for it to advance ties this assertion to the thing it is
+            // actually about. `atLeast` because the count per note is not fixed.
+            var restoresBefore = await CountEventsAsync(page, "focus-restored");
             var second = teammate.AppendCreate(
                 new ReviewAnchor(list, "element", "a plain bullet", null),
                 "A second note, arriving while the reviewer is reading the first one's card.");
             await WaitForCardAsync(page, second.Id, teammate);
+            await WaitForEventCountAsync(page, "focus-restored", restoresBefore + 1, atLeast: true);
 
-            Assert.Equal("DIV[item]#" + watched.Id, await FocusIdentityAsync(page));
+            await AssertFocusAsync(
+                page, "DIV[item]#" + watched.Id,
+                "a second note landed while the reviewer was on the first note's CARD");
 
             // ---- and the control inside it ------------------------------------------------------------
             await TabForwardToAsync(page, "BUTTON[item-jump]#" + watched.Id);
 
+            var jumpRestoresBefore = await CountEventsAsync(page, "focus-restored");
             var third = teammate.AppendCreate(
                 new ReviewAnchor(list, "element", "a second bullet", null),
                 "A third note, arriving while the reviewer is on that card's Jump.");
             await WaitForCardAsync(page, third.Id, teammate);
+            await WaitForEventCountAsync(page, "focus-restored", jumpRestoresBefore + 1, atLeast: true);
 
-            Assert.Equal("BUTTON[item-jump]#" + watched.Id, await FocusIdentityAsync(page));
+            await AssertFocusAsync(
+                page, "BUTTON[item-jump]#" + watched.Id,
+                "a third note landed while the reviewer was on that card's JUMP -- the control the SDK "
+                    + "itself names as the one that can come back DISABLED");
 
             AssertNoBrowserErrors(instrumented);
         }
@@ -469,6 +488,51 @@ public sealed partial class ReviewLoopBrowserTests
             "  const cls = String(a.className || '').trim();" +
             "  return a.tagName + (ui ? '[' + ui + ']' : (cls ? '.' + cls.split(/\\s+/).join('.') : '')) +" +
             "    (key ? '#' + key : ''); }");
+
+    /// <summary>
+    /// Assert where focus is, and on failure say what the SDK CLAIMED about it (Charter #221).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A bare <c>Assert.Equal</c> here produced <c>Actual: "BODY"</c> and nothing else, twice, at two
+    /// different assertions, on commits that touched no browser code at all — the second of them a
+    /// documentation-only commit. Two occurrences and still no way to tell apart the three things that
+    /// produce that same string:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description><c>restoreChromeFocus</c> never ran — nothing emitted.</description></item>
+    ///   <item><description>It ran and SUCCEEDED, and focus was lost again afterwards —
+    ///     <c>focus-restored</c> in the trace.</description></item>
+    ///   <item><description>It ran and REFUSED, for a reason it states — <c>focus-not-restored</c>, which
+    ///     <c>landChromeFocus</c> returns when the rebuilt control came back <b>disabled</b> and
+    ///     <c>focus()</c> silently did nothing. The SDK names a note's <c>Jump</c> as exactly that case,
+    ///     and one of the two failures was on a <c>Jump</c>.</description></item>
+    /// </list>
+    /// <para>
+    /// <b>This does not fix the flake, and is not dressed up as fixing it.</b> It makes the next occurrence
+    /// answer the question instead of being a third identical data point. Diagnosing from the symptom alone
+    /// is what let Charter #209 spend two rounds being called a flake while it was a product bug.
+    /// </para>
+    /// </remarks>
+    private static async Task AssertFocusAsync(IPage page, string expected, string moment)
+    {
+        var actual = await FocusIdentityAsync(page);
+        if (string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var trace = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
+        var tail = await page.EvaluateAsync<string[]>(
+            "() => (window.__charterEvents || []).slice(-12)");
+
+        Assert.Fail(
+            $"focus was {actual}, expected {expected} ({moment})." +
+            "\n\nfocus events the SDK emitted (empty = restoreChromeFocus never reported anything, which is " +
+            "itself the finding):\n  " +
+            (trace.Length == 0 ? "(none)" : string.Join("\n  ", trace)) +
+            "\n\nlast events on the wire:\n  " + string.Join(" -> ", tail));
+    }
 
     /// <summary>
     /// Press Tab from a BLURRED document until <see cref="FocusIdentityAsync"/> reports

@@ -4526,11 +4526,27 @@ public sealed partial class ReviewLoopBrowserTests
         };
         page.PageError += (_, err) => errors.Add(err);
 
+        // The focus trace records DETAIL, which `__charterEvents` (types only) cannot carry — Charter #221.
+        // Two occurrences of "focus is on BODY after a rebuild" produced identical, uninformative failures,
+        // and neither could distinguish a focus that was never repaired from one repaired to the wrong place
+        // or refused for a stated reason. `restoreChromeFocus` emits `focus-restored` with the key it landed
+        // on and `focus-not-restored` with the key it could not, so the answer is already on the wire; nothing
+        // was reading it. `active` is captured at emit time because the trace is worth little without what
+        // the browser actually had focus on when the SDK made its claim.
         await page.AddInitScriptAsync(
             "window.__charterEvents = [];" +
+            "window.__charterFocusTrace = [];" +
             "window.addEventListener('message', function (e) {" +
             "  if (e && e.data && e.data.channel === 'charter-annotate') {" +
             "    window.__charterEvents.push(e.data.type);" +
+            "    if (e.data.type === 'focus-restored' || e.data.type === 'focus-not-restored') {" +
+            "      var a = document.activeElement;" +
+            "      window.__charterFocusTrace.push(" +
+            "        e.data.type + ' key=' + ((e.data.detail && e.data.detail.key) || '(none)') +" +
+            "        ' active=' + (a ? a.tagName : 'null') +" +
+            "        '[' + (a && a.getAttribute ? (a.getAttribute('data-charter-ui') || '') : '') + ']' +" +
+            "        ' disabled=' + !!(a && a.disabled));" +
+            "    }" +
             "  }" +
             "});" +
             "window.__promptCalls = [];" +
