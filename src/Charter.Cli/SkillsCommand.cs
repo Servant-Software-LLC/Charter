@@ -175,14 +175,30 @@ internal static class SkillsCommand
             return;
         }
 
+        // NAME ONLY WHAT IS ACTUALLY OUTSTANDING (Charter #223). This listed every skill unconditionally, so
+        // a repository that had ALREADY taken the advice was told to take it again — the notice asked for work
+        // that was done. A diagnostic that fires when its condition is already handled is the same defect as
+        // one that cries tampering at a line-ending rewrite: the reader learns to skip it, and skips it on the
+        // day it means something. It cost a real reader real time before it was filed.
+        List<SkillsInstaller.SkillResult> outstanding = results
+            .Where(result => !GitWorkingTree.IsIgnored(Path.Combine(targetDir, result.Name)))
+            .ToList();
+
+        if (outstanding.Count == 0)
+        {
+            // Every one is already ignored: there is no decision left to prompt, so there is nothing to say.
+            return;
+        }
+
         Console.WriteLine();
         Console.WriteLine(
-            $"Note: {results.Count} Charter skill(s) now sit inside a git working tree ({location.Root}).");
+            $"Note: {outstanding.Count} Charter skill(s) now sit inside a git working tree ({location.Root}) "
+                + "and are not ignored there.");
         Console.WriteLine(
             $"  They are tool-managed and version-stamped (v{toolVersion}); 'charter skills install --force' "
                 + "re-creates them, so a copy committed here goes stale and draws drift warnings.");
         Console.WriteLine("  To keep them out of source control, add to that repository's .gitignore:");
-        foreach (SkillsInstaller.SkillResult result in results)
+        foreach (SkillsInstaller.SkillResult result in outstanding)
         {
             Console.WriteLine($"    /{location.PrefixWithinRoot}{result.Name}/");
         }
