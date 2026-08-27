@@ -97,7 +97,11 @@ public class HandoffProvenanceTests
             "# Plan\n\n:::question\n{\"id\":\"cache\",\"title\":\"Which cache?\",\"mode\":\"single\","
             + "\"target\":\"agent\",\"options\":[\"Redis\",\"in-memory\"],\"recommended\":\"Redis\"}\n:::\n");
 
-        Assert.Contains("Delegated decision", output, StringComparison.Ordinal);
+        // Bound to the PRODUCER's constant, never a re-typed literal (Charter #219). This assertion was
+        // written against "Delegated decision" and survived the marker changing shape underneath it by
+        // being about a string nobody emits any more.
+        Assert.Contains(HandoffMarkdown.DelegatedDecisionMarker, output, StringComparison.Ordinal);
+        Assert.Contains("`cache`", output, StringComparison.Ordinal);
         Assert.DoesNotContain("Open question (unresolved)", output, StringComparison.Ordinal);
 
         // The instruction names the mode's actual action and the author's lean.

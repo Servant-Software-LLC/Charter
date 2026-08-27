@@ -159,16 +159,27 @@ The **status** line is one of:
   them blank. `[""]` is not an answer and flattens as **open** (#188).
 - **Open, `target: human`** (no inline `answer` and no accepted `--answers` entry) → an
   **"Open question (unresolved)"** line. Guardrails sees an unresolved decision it can surface for a human.
-- **Open, `target: agent`** → a **"Delegated decision — you must settle this before building:"** line, the
+- **Open, `target: agent`** → a **`**DELEGATED DECISION <id>**`** line carrying the question's id, the
   metadata line, and a `_Decide: …_` instruction naming the mode's actual action and the author's lean:
 
   ```
-  > **Delegated decision — you must settle this before building:** Which cache should front it?
+  > **DELEGATED DECISION `cache`** — settle this before building. Which cache should front it?
   > _Question — id: `cache`; mode: `single`; target: `agent`; options: `Redis`, `in-memory`; recommended: `Redis`_
   > _Decide: choose exactly one of the options above, state the choice and your reason in the work you
   > generate from this plan, and build against it. Do not carry it forward as an open question. The plan's
   > author leans `Redis`; depart from it only with a stated reason._
   ```
+
+  **The sentinel is ASCII-only and the id is on the marker line — both are contract, not style** (#219,
+  settled with the Guardrails session on 2026-08-27). The consumer gates on this with a **grep, frequently
+  PowerShell on Windows**: a multi-byte character inside the matched token turns their gate into one that
+  silently matches nothing, and an id on the line below forces them to pair two lines in a second,
+  order-coupled pass. The em dash still appears later in the same line, where nothing matches on it.
+
+  The metadata line **also** carries `id`, and that duplication is deliberate — `charter verify` cross-checks
+  the manifest against the metadata line's `_Question — id: \`` marker, and the metadata line is documented
+  as the uniform shape under every status lead. Removing the id from either place breaks a different
+  consumer.
 
   **Why the wording differs.** On this path there is no parser and no routing table — the flattened plan is
   prose, and prose is the whole interface. "Open question (unresolved)" reads as something *someone else*
@@ -204,15 +215,59 @@ _Question — id: `db-choice`; mode: `single`; target: `human`; options: `Postgr
   flattened path structurally cannot honour `target: agent`, and a decision the plan author explicitly
   delegated is indistinguishable from one that needs a person.
 
-  **No claim is made that any consumer does branch on it.** This line used to say the headless breakdown
-  branches on `human` vs `agent`. It does not: neither literal Charter emits (`Open question (unresolved)`,
-  `_Question — id`) appears anywhere in Guardrails' source, docs or skills. That false claim was the sole
-  justification for exempting `target: agent` from `--fail-if-needs-human`, which is why the exemption is
-  now narrowed (below). Filed reciprocally as Guardrails #500.
+  **A consumer does not branch on it today; one is being built.** This line used to say the headless
+  breakdown branches on `human` vs `agent`. It does not — neither literal Charter emits
+  (`Open question (unresolved)`, `_Question — id`) is read by anything in Guardrails. That false claim was
+  the sole justification for exempting `target: agent` from `--fail-if-needs-human`, which is why the
+  exemption is now narrowed (below). Filed reciprocally as Guardrails #500, and **answered** on 2026-08-27
+  (`docs/asks/2026-08-27-guardrails-four-questions.md`): their plan-breakdown skill already carries the
+  contract — *"the breakdown agent resolves it within its authoring judgment and RECORDS the choice +
+  rationale as a visible decision"* — but that rule triggers on the `.charter.md` **filename** and
+  explicitly disclaims the flattened path. The semantics were never missing; they are unreachable on the one
+  path that matters. A trigger, not a design.
+
+  **State the scope precisely if you re-verify this.** The literals *do* appear in Charter's own
+  `charter/references/handoff.md` — this file, a document *describing* them, not a consumer acting on them —
+  and that copy is installed into consuming repos. A bare `rg` will not show it: ripgrep's default ignore
+  rules hide the hit entirely, and `rg --no-ignore --hidden` is what finds it. Both sides over-claimed here
+  on a first pass for exactly that reason.
 - **`id` correlates** the flattened question back to its `:::question` block (and to `--answers`).
 
 It stays **plain CommonMark** — emphasis and inline code, nothing that reopens a `:::` directive — so the
 headless contract is unchanged and the line reads naturally in a rendered PR diff.
+
+### The delegated-decision count leads the file
+
+When a plan hands **one or more** open decisions to the reading agent, the flatten opens with a single line
+declaring how many — above the plan's own title, below only the link reference definitions:
+
+```
+> **DECISIONS DELEGATED TO YOU: 2** — this plan hands 2 decisions to the agent reading it, each marked
+> below with its own id. Settle every one before building, and record the choice you made and why.
+```
+
+**Why it exists.** The consuming side composes a **~283 KB** breakdown prompt of which the plan is one part,
+and the failure that actually happens there is **skim**, not misparse: an agent that finds two of three
+delegated decisions invents the third. A stated total makes that recoverable — an agent short of the count
+rescans, and a gate gets an expected total without parsing the plan. Guardrails called it *"the single
+highest-value line in the whole marker design."*
+
+**Three properties it is required to keep:**
+
+- **It counts what is still owed.** An `answer` folded in inline, or an accepted `--answers` entry, settles a
+  `target: agent` question — it emits as **Answered** and is **not** counted. An open `target: human`
+  question is not counted either; it is not delegated to the agent.
+- **It cannot disagree with the markers below it**, because it is a byproduct of the same emit — the id is
+  recorded downstream of the one `AnswerRules.Merge` that decided the question was open. A second walk that
+  re-resolved the plan could drift, and a total wrong by one is the hardest kind of wrong to notice.
+- **It never inflates a naive count.** Every plural phrasing of "delegated decision" contains the singular as
+  a substring, so the obvious wording would have made `grep -c "DELEGATED DECISION"` report N+1. The words
+  are reversed deliberately, and the line's prose does not name the item sentinel either. `grep -c
+  "DELEGATED DECISION"` equals the number of delegated questions; `DECISIONS DELEGATED TO YOU: ` matches the
+  count line alone.
+
+**A plan that delegates nothing carries no such line**, and its absence is unambiguous because the marker
+lines are absent too.
 
 ### Unknown directives
 
@@ -549,13 +604,32 @@ decodes correctly and the run is honest; only the comparison is surprising.
 `answersSha256` covers the file's **own text**, not a canonicalized dictionary — two JSON files that parse to
 the same answers hash differently, deliberately.
 
-### `handoffSha256` is ADVISORY, and has no consumer today
+### `handoffSha256` is ADVISORY — a consumer is designed but not yet shipped
 
 Guardrails' own `PlanHash` hashes `guardrails.json` plus every `task.json`; it does **not** hash the markdown
 the folder was broken down from, and nothing there records the source plan's hash (filed as Guardrails #505).
 So this field is the only tamper detector Charter can offer, and a mismatch means **either tampering or a
 line-ending rewrite in transit** — the hash alone cannot separate them. That is the other half of why the
 in-band stamps matter: they survive a CRLF rewrite and this does not.
+
+**Answered 2026-08-27** (`docs/asks/2026-08-27-guardrails-four-questions.md`, Q4): **yes, they will record
+it** — as `<plan-folder>/state/plan-source.json`, schema 1, carrying a raw `sourceSha256`, an LF-normalized
+`sourceSha256Lf`, and an **open `stamps` map keyed by whatever `<!-- charter: <key>=<value> -->` comments
+they find**. Three things follow for Charter, and the third is the one to act on:
+
+- The **two hashes** exist for the reason this section already gives: a raw mismatch is usually
+  `core.autocrlf`, not tampering, *"and a check whose first alarm is a false one trains everyone to ignore
+  it."*
+- It lives in `state/` because `state/` is excluded from all four of their hashes. A field on
+  `guardrails.json` would fold into `PlanDefinitionHash`, which keys their review attestation — so recording
+  provenance would **de-attest the plan's review**. That is why the answer is a side file and not the config
+  field one would expect.
+- **The `stamps` map is open, so keep emitting both stamp lines exactly as they are.** Anything Charter adds
+  after `answers-sha256` arrives on their side with **no schema change**. This is the one place they can
+  cheaply give Charter room, and they took it — do not spend it by changing the two lines that exist.
+
+**Designed, not scheduled.** They said so plainly rather than implying a date, so this section keeps saying
+*advisory* until their side ships.
 
 ### Two more things the manifest cannot tell you
 

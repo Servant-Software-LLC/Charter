@@ -1,3 +1,4 @@
+using Charter.Core;
 using Xunit;
 
 namespace Charter.Cli.Tests;
@@ -136,7 +137,8 @@ public class HandoffStrictModeTests : IDisposable
         Assert.Equal(0, exit);
 
         var handoff = File.ReadAllText(Out());
-        Assert.Contains("Delegated decision", handoff, StringComparison.Ordinal);
+        // The producer's constant, not a re-typed literal (Charter #219).
+        Assert.Contains(HandoffMarkdown.DelegatedDecisionMarker, handoff, StringComparison.Ordinal);
         Assert.Contains("Decide: choose exactly one of the options above", handoff, StringComparison.Ordinal);
     }
 

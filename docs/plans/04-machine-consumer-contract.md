@@ -205,12 +205,55 @@ veto here would be a rule nothing else in the pipeline shares.
 
 ### 5.1 A delegated question tells the agent what to do
 
-An open `target: agent` question now leads with **"Delegated decision — you must settle this before
-building:"** and carries a `_Decide: …_` instruction phrased for its mode, naming the author's lean where
-there is one. On this path there is no parser; prose is the interface, and *"Open question (unresolved)"*
-reads as something **someone else** will settle — exactly backwards for a block whose `target` says the
-reader settles it. The metadata line is unchanged in shape. An **answered** agent question gains no
-instruction.
+An open `target: agent` question leads with a **`**DELEGATED DECISION <id>**`** line and carries a
+`_Decide: …_` instruction phrased for its mode, naming the author's lean where there is one. On this path
+there is no parser; prose is the interface, and *"Open question (unresolved)"* reads as something **someone
+else** will settle — exactly backwards for a block whose `target` says the reader settles it. The metadata
+line is unchanged in shape. An **answered** agent question gains no instruction.
+
+#### 5.1.1 Rev 8 — the marker's shape, settled with its consumer (#219)
+
+Rev 1–7 emitted `**Delegated decision — you must settle this before building:**` with the id on the line
+below. That shape was **designed against a guess** about what the consumer could key off. Guardrails answered
+on 2026-08-27 (`docs/asks/2026-08-27-guardrails-four-questions.md`): **workable in kind — keep the blockquote
+and the instruction line** — with two changes, both of which are about the marker being *machine-findable*
+rather than merely well-worded.
+
+**The sentinel is ASCII-only.** The old one carried **U+2014** (`e2 80 94`). The gate behind this marker is a
+**grep, frequently PowerShell on Windows**, and encoding round-trips are a live defect class in their repo. A
+mangled multi-byte character does not produce a loud failure — it produces a gate that **silently matches
+nothing**, which fails in the direction that ships an invented decision. The em dash still sits later in the
+same line, where nothing matches on it.
+
+**The id rides on the marker line.** Split across two lines, pairing a sentinel with an id is a second,
+order-coupled pass; on one line it is a single regex capturing both. The metadata line keeps its own `id`,
+and that duplication is deliberate — `charter verify` cross-checks the manifest against `QuestionIdMarker`,
+and §11 documents the metadata line as the uniform shape under every status lead. **Removing the id from
+either place breaks a different consumer.**
+
+**And a count line leads the file** — `**DECISIONS DELEGATED TO YOU: <n>**`, emitted only when `n > 0`.
+Their words: *"the single highest-value line in the whole marker design."* The composed breakdown prompt is
+**~283 KB**, almost all inlined skill, and the failure that actually occurs there is **skim**, not misparse.
+
+Two decisions inside the count line are load-bearing and neither is obvious:
+
+1. **It is a byproduct of the same emit, not a second walk.** The id is recorded downstream of the one
+   `AnswerRules.Merge` that decided the question was open. A separate counting pass would be a second
+   resolution of the same plan — the exact defect shape §10 exists to prevent — and **a total wrong by one is
+   the hardest kind of wrong to notice**.
+2. **It does not spell the item sentinel.** Every plural phrasing of "delegated decision" contains the
+   singular as a substring, so the natural wording would have made `grep -c "DELEGATED DECISION"` report
+   **N+1**. The words are reversed, and the prose does not name the item sentinel either.
+
+**Why this had to land before the next release, not after.** The marker is unreleased —
+`git show v0.24.0:src/Charter.Core/HandoffMarkdown.cs` has **zero** matches for `Delegated`. Shipping the
+guessed shape would have forced their gate to carry a compatibility branch for a format that was wrong on its
+only release. The window that made this a free edit is the same one §6.2 describes for the record's `schema`.
+
+**Keep the `free-text`/`bool`/`number` carve-out limit** (§4.1). Charter documented it as "not load-bearing
+today". On the consumer's side it is what makes their gate *possible*: because unconstrained delegations
+block the gate and never reach them, every id they see carries `options` or a lean — which is what makes a
+recorded one-of-N deterministically checkable. It is load-bearing after all, just not here.
 
 ### 5.2 The in-band provenance stamp
 
@@ -570,6 +613,50 @@ Those three fields are exactly why emitting a `HeadlessRecord` from `handoff` wa
 **`gate.blockers[].detail` is NOT serialized.** `HandoffGate.cs` documents it as *"Not a contract; do not
 parse it"*; putting it in a versioned schema makes it a de-facto contract the first time a harness greps it.
 `kind` carries the wire meaning, and `id`/`title`/`target`/`sourceLine` carry the rest.
+
+### 10.1.1 The stable core now has a NAMED CONSUMER, and nine fields are frozen in practice
+
+Until 2026-08-27 "stable core" was a promise with nobody on the other end of it. It now has an answer on the
+record (`docs/asks/2026-08-27-guardrails-four-questions.md`, Q2). **Guardrails gates #496 on the manifest
+plus both in-band stamps. `<plan>.headless.json` leaves their gating path entirely.**
+
+**Frozen because they assert on it — changing any of these breaks a real harness, not a hypothetical one:**
+
+| Field | How they use it |
+|---|---|
+| `schema` | branched on; an **unknown value is a hard error** on their side, never a best-effort parse |
+| `gate.flagPassed` · `gate.needsHuman` · `gate.exitCode` | the gate verdict, both arms of their fixture |
+| `malformedQuestions` | asserted **empty** — an unknown directive silently becoming prose is #500's failure class |
+| `planSha256` · `answersSha256` · `handoffSha256` | **join keys ONLY** — compared to each other and to bytes they hash themselves, never to literal expected values |
+| `questions[].{id, answered}` | `id` set equality, and `answered` in the happy-path arm |
+
+**Still genuinely uncontracted, and they said so explicitly:** `charterVersion` (they *log* it and will not
+assert it — freezing it would pin their tests to one Charter release), `questions[].answer` /
+`answerSource` / `title`, `gate.blockers[]` and its ordering, `gate.unmatchedAnswerIds`, the three file-name
+fields, JSON key order, and everything in the record.
+
+**Two consequences for whoever changes this file next.**
+
+*The hashes being join keys only is what keeps them cheap.* A consumer comparing `planSha256` to a literal
+would freeze the hash **recipe** (§10.6); comparing it to another artifact's copy of the same value freezes
+only that the two agree. That is the difference between a field being asserted and a field being pinned, and
+it is why §10.6 documents the recipe rather than promising it.
+
+*`charterVersion` staying out is the load-bearing one.* It is the field a harness reaches for first when it
+wants "did this come from a Charter that knows about X", and asserting it converts every Charter release into
+a consumer break. They declined it deliberately. Do not offer it back.
+
+### 10.1.2 `charter verify` is their FIRST gate, not their only one
+
+They will run it requiring **exit 0**, with **exit 1 explicitly not counted as green** — which is the reading
+§13.1 intended when it said Charter's `1` *"promises nothing"*, and is worth recording because the opposite
+reading (absence of a failure = success) is the natural one.
+
+But not verify-alone, and their reasons are ones this document should not lose: it cannot separate *the gate
+passed* from *every question was answered*, and its own success text disclaims answer-value checking. **One
+verb plus the field assertions above, never one verb instead of them.** Their stated reason for being willing
+to depend on it at all is §13.0's disclaimer-on-success — *a verifier that says what it cannot prove is one
+you can build a gate on.*
 
 ### 10.2 `answerSource` — what it can and cannot say
 
