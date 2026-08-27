@@ -13,7 +13,10 @@ namespace Charter.Cli;
 /// </summary>
 internal static class ResolveCommand
 {
-    private static readonly TimeSpan ProbeDeadline = TimeSpan.FromSeconds(5);
+    // The OUTER budget for one probe. Must stay >= ReviewClient.ProbeTimeout, or it becomes the binding
+    // deadline and the inner one's reasoning is silently overridden -- it was 5s against an inner 3s,
+    // which is how the effective probe deadline came to be a number stated nowhere (Charter #217).
+    private static readonly TimeSpan ProbeDeadline = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DrainDeadline = TimeSpan.FromSeconds(15);
 
     /// <summary>Run the verb synchronously. <paramref name="planPath"/> is an existing plan (Program checks).</summary>
@@ -34,7 +37,22 @@ internal static class ResolveCommand
         // Prefer a live server: its store (mirrored to the sidecar) is the freshest source, and going through
         // it keeps the store and sidecar in step via the commit. Fall back to the sidecar only when no server
         // is running — the genuine solo case.
-        var live = await TryResolveLiveAsync(canonical).ConfigureAwait(false);
+        var (live, undetermined) = await TryResolveLiveAsync(canonical).ConfigureAwait(false);
+
+        // THE PROBE COULD NOT TELL (Charter #217). The fallback below is licensed by "no server is running",
+        // and a timeout is not that fact. Falling through anyway would resolve against the sidecar — a MIRROR
+        // of the live store — while the server holding the fresher answers is still up, and then report
+        // success. Quieter than poll's wrong exit code, same class of lie.
+        if (undetermined)
+        {
+            Console.Error.WriteLine(
+                "charter resolve: the review session did not answer in time — the session state is unknown, "
+                    + "so falling back to the sidecar could resolve against a STALE mirror of a live store. "
+                    + "Nothing was applied. Retry, or stop the review server to resolve from the sidecar "
+                    + "deliberately.");
+            return ReviewExitCodes.DrainFailed;
+        }
+
         if (live is not null)
         {
             using (live.Value.Client)
@@ -187,27 +205,32 @@ internal static class ResolveCommand
         return ReviewExitCodes.ApplyFailed;
     }
 
-    // Find a LIVE review server for the plan via the per-user registry, or null. Focused on the plan-specific
+    // Find a LIVE review server for the plan via the per-user registry. Focused on the plan-specific
     // descriptor (resolve always names a plan), so unlike poll it does not auto-select or list ambiguities. A
     // stale descriptor is left in place — pruning is poll's job; resolve just falls through to the sidecar.
-    private static async Task<(ReviewClient Client, PollSession Session)?> TryResolveLiveAsync(string canonical)
+    //
+    // Returns (null, false) when the probe positively found nothing — the genuine solo case the sidecar
+    // fallback is for — and (null, true) when it could not tell (Charter #217). A missing or unparseable
+    // descriptor is the FIRST of those: there is nothing to have timed out against.
+    private static async Task<((ReviewClient Client, PollSession Session)? Live, bool Undetermined)>
+        TryResolveLiveAsync(string canonical)
     {
         var descriptorPath = SessionRegistry.PathForPlan(StateDirectory.Sessions(), canonical);
         var descriptor = SessionRegistry.Read(descriptorPath);
         if (descriptor is null || !Uri.TryCreate(descriptor.Address, UriKind.Absolute, out var address))
         {
-            return null;
+            return (null, false);
         }
 
         var client = new ReviewClient(address, descriptor.Key);
         using var cts = new CancellationTokenSource(ProbeDeadline);
-        var session = await client.ProbeAsync(descriptor.SourcePath, cts.Token).ConfigureAwait(false);
-        if (session is null)
+        var probe = await client.ProbeAsync(descriptor.SourcePath, cts.Token).ConfigureAwait(false);
+        if (!probe.IsLive)
         {
             client.Dispose();
-            return null;
+            return (null, !probe.IsAbsent);
         }
 
-        return (client, session);
+        return ((client, probe.Session!), false);
     }
 }

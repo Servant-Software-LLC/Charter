@@ -23,7 +23,26 @@ public sealed class ReviewClient : IDisposable
 {
     // Short bound on the liveness probe: a live loopback server answers instantly, so anything slower is
     // treated as unresponsive rather than blocking the caller.
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
+    /// <summary>
+    /// How long one <c>GET /api/sessions</c> may take before the probe gives up and reports
+    /// <see cref="ProbeOutcome.Unknown"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is defence in depth, NOT the fix for Charter #217</b> — that is the three-valued
+    /// <see cref="ProbeResult"/>, which changes what the probe CLAIMS when it cannot tell. Raising a timeout
+    /// only changes how OFTEN it cannot tell, and the two are indistinguishable from outside because the
+    /// symptom gets rarer either way. Do not let a future reader mistake this constant for the remedy.
+    /// </para>
+    /// <para>
+    /// <b>Raising it is free in the case that matters.</b> A genuinely absent server refuses the connection
+    /// and returns immediately via <c>HttpRequestException</c> — it never waits out this deadline. So the
+    /// only run this lengthens is one where something IS listening but slow, which is precisely the run that
+    /// deserves patience. It was 3s, which lost to a loaded machine (the same shape as the 15s readiness
+    /// gates in Charter #216, one layer down).
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
 
     private readonly HttpClient _http;
     private readonly Uri _base;
@@ -70,12 +89,31 @@ public sealed class ReviewClient : IDisposable
     }
 
     /// <summary>
-    /// Prove the session is live by calling <c>GET /api/sessions?key=…</c>. Returns the live
-    /// <see cref="PollSession"/> on success, or <c>null</c> when the server is unreachable, rejects the key,
-    /// or (when <paramref name="expectedSourcePath"/> is supplied) serves a different source than the
-    /// descriptor claimed.
+    /// Prove the session is live by calling <c>GET /api/sessions?key=…</c>.
     /// </summary>
-    public async Task<PollSession?> ProbeAsync(string? expectedSourcePath, CancellationToken cancellationToken)
+    /// <remarks>
+    /// <para>
+    /// <b>Three outcomes, not two, and the third is the whole point (Charter #217).</b> This returned a
+    /// nullable <see cref="PollSession"/>, so <i>"nothing is listening"</i> and <i>"I could not tell"</i> were
+    /// the same value — and the caller pruned the session descriptor on it, with the comment
+    /// <c>// stale hint — remove it</c>. Under load a probe against a LIVE review server timed out, the CLI
+    /// reported exit 3 (<c>NoSession</c>) — <i>the server is not running</i> — and then <b>deleted the
+    /// descriptor that proved otherwise</b>, so the first wrong answer made every later answer wrong too and
+    /// the reviewer's live session became unreachable while their browser was still being served by it.
+    /// </para>
+    /// <para>
+    /// <b>A timeout is not evidence of absence; it is evidence of not knowing.</b> Charter #147 already
+    /// settled this shape once — a pid is a NEGATIVE signal only — for the same reason: weak evidence must not
+    /// be treated as proof when the action taken on it destroys the thing that would disprove it.
+    /// </para>
+    /// <para>
+    /// <b>Raising <see cref="ProbeTimeout"/> is NOT the fix</b> and must never be mistaken for one. It changes
+    /// how OFTEN the probe cannot tell, never what it claims when it cannot. The two are indistinguishable
+    /// from outside — the symptom gets rarer either way — which is exactly why the structural change is the
+    /// one that ships.
+    /// </para>
+    /// </remarks>
+    public async Task<ProbeResult> ProbeAsync(string? expectedSourcePath, CancellationToken cancellationToken)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(ProbeTimeout);
@@ -86,18 +124,24 @@ public sealed class ReviewClient : IDisposable
             using var response = await _http.GetAsync(Route("api/sessions"), cts.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
             {
-                return null; // 401 (wrong key) or any non-200 — not a session this key can drain.
+                // 401 (wrong key) or any non-200. The server ANSWERED — that is positive evidence this is not
+                // a session this key may drain, which is a different fact from silence.
+                return ProbeResult.Absent;
             }
 
             body = await response.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
         }
         catch (HttpRequestException)
         {
-            return null; // Connection refused: nothing listening on that port (stale descriptor).
+            // Connection refused: nothing is listening on that port. Positive evidence of absence — the one
+            // case where pruning a descriptor is sound.
+            return ProbeResult.Absent;
         }
         catch (OperationCanceledException)
         {
-            return null; // Timed out / unresponsive — treat as not live.
+            // Timed out, or the caller cancelled. NOTHING was learned about whether a session is there, so
+            // this may not be reported as absence and may not prune the descriptor.
+            return ProbeResult.Unknown;
         }
 
         string? sourcePath;
@@ -110,22 +154,26 @@ public sealed class ReviewClient : IDisposable
         }
         catch (JsonException)
         {
-            return null;
+            // A 200 whose body is not a session descriptor: something else holds this port. Evidence, not
+            // silence — so Absent rather than Unknown.
+            return ProbeResult.Absent;
         }
 
         if (string.IsNullOrEmpty(sourcePath))
         {
-            return null;
+            return ProbeResult.Absent;
         }
 
         // A recycled port could land the descriptor's key on a different session; require the live server to
-        // confirm it serves the same source before trusting the descriptor.
+        // confirm it serves the same source before trusting the descriptor. A live server serving a DIFFERENT
+        // source is positive evidence that this descriptor is stale.
         if (expectedSourcePath is not null && !PathsEqual(sourcePath, expectedSourcePath))
         {
-            return null;
+            return ProbeResult.Absent;
         }
 
-        return new PollSession(_base.ToString(), sourcePath, sourceFile ?? Path.GetFileName(sourcePath));
+        return ProbeResult.Live(
+            new PollSession(_base.ToString(), sourcePath, sourceFile ?? Path.GetFileName(sourcePath)));
     }
 
     /// <summary>
