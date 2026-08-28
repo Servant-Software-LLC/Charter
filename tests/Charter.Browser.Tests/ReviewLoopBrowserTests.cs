@@ -4541,11 +4541,32 @@ public sealed partial class ReviewLoopBrowserTests
             "    window.__charterEvents.push(e.data.type);" +
             "    if (e.data.type === 'focus-restored' || e.data.type === 'focus-not-restored') {" +
             "      var a = document.activeElement;" +
+            // Charter #221, the DISCRIMINATOR. `focus-not-restored` has two candidate mechanisms and the
+            // remedies are opposite, so the trace has to separate them at the moment of failure:
+            //   panelHidden=true  -> the card exists but lives in a display:none subtree, and focus() into
+            //                        one silently does nothing. The panel is revealed by explain() AFTER the
+            //                        attempts, one step too late.
+            //   items=0 (or the id absent) -> renderPanel ran with an empty/partial entry set, so
+            //                        state.focusIndex never held the key at all. That is the #209 family, not
+            //                        a visibility problem.
+            // Captured here rather than in the SDK because it is a question about the test's subject, not a
+            // fact the product owes anyone.
+            "      var p = document.querySelector('[data-charter-ui=\"panel\"]');" +
+            "      var items = document.querySelectorAll('[data-charter-ui=\"item\"]');" +
+            "      var ids = [];" +
+            "      for (var n = 0; n < items.length && n < 6; n++) {" +
+            "        ids.push(items[n].getAttribute('data-annotation-id') || '?');" +
+            "      }" +
             "      window.__charterFocusTrace.push(" +
             "        e.data.type + ' key=' + ((e.data.detail && e.data.detail.key) || '(none)') +" +
+            "        ' built=' + (e.data.detail && 'built' in e.data.detail ? e.data.detail.built : 'n/a') +" +
             "        ' active=' + (a ? a.tagName : 'null') +" +
             "        '[' + (a && a.getAttribute ? (a.getAttribute('data-charter-ui') || '') : '') + ']' +" +
-            "        ' disabled=' + !!(a && a.disabled));" +
+            "        ' disabled=' + !!(a && a.disabled) +" +
+            "        ' panelHidden=' + !!(p && p.className.indexOf('charter-hidden') >= 0) +" +
+            "        ' panelOffsetParentNull=' + !!(p && p.offsetParent === null) +" +
+            "        ' items=' + items.length +" +
+            "        ' ids=' + ids.join('|'));" +
             "    }" +
             "  }" +
             "});" +

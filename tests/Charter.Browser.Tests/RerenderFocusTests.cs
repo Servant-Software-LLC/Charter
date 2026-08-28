@@ -493,6 +493,89 @@ public sealed partial class ReviewLoopBrowserTests
             "    (key ? '#' + key : ''); }");
 
     /// <summary>
+    /// Charter #221 — a control that REALLY vanished still says so, and says it with `built: false`.
+    ///
+    /// <para>
+    /// The regression guard for splitting <c>focus-not-restored</c> in two. The change stops the SDK claiming
+    /// something is gone when it is visibly still there — but the claim is TRUE when it really went, and that
+    /// path had to keep working. Sending everything down the new message would trade a false "it is gone" for
+    /// a false "it is still here": the same defect pointed the other way.
+    /// </para>
+    /// <para>
+    /// <b>It is a BADGE, not a card, and that is a finding rather than a convenience.</b> The first draft
+    /// retracted the note under a reviewer reading its CARD and waited for the vanished case; nothing fired.
+    /// The SDK says why: <i>"in the log a retract HIDES the body and KEEPS the thread"</i>, and there is CSS
+    /// for a retracted card. A card does not leave the list, so <c>ITEM_GONE</c>'s premise is not reachable
+    /// this way — which is itself evidence about #221, recorded on the issue: the failure observed in CI
+    /// almost certainly had a counterpart that WAS built.
+    /// </para>
+    /// <para>
+    /// A block's marker does vanish, because a retracted note is not counted — so the badge is the honest
+    /// deterministic route to the case <c>BADGE_GONE</c> exists for.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_marker_that_really_vanished_reports_GONE_with_built_false()
+    {
+        var directory = NewPlanDirectory("badge-focus-vanish");
+        var planPath = Path.Combine(directory, "badge-focus.charter.md");
+        await File.WriteAllTextAsync(planPath, BadgeGatePlan);
+
+        var mine = new ReviewLogWriter(planPath, new ReviewAuthor("Alice Ng", "alice@example.com"));
+        var teammate = new ReviewLogWriter(planPath, new ReviewAuthor("Bob Chen", "bob@example.com"));
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(session, new ReviewServerOptions
+        {
+            BindAddress = IPAddress.Loopback,
+            Port = 0,
+            ReviewLog = mine,
+        });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await OpenBadgeGateAsync(page, server, session);
+            await WaitForEventAsync(page, "review-log-loaded");
+
+            var paragraph = await AnchorIdAsync(page, "body > p:nth-of-type(1)");
+
+            // The block's ONLY note, so retracting it takes the marker with it.
+            var only = teammate.AppendCreate(
+                new ReviewAnchor(paragraph, "element", "an ordinary prose paragraph", null),
+                "The only note on this block, and therefore the whole reason it has a badge.");
+            await WaitForBadgeAsync(page, paragraph, teammate);
+
+            await TabToAsync(page, "BUTTON[badge]#" + paragraph);
+            Assert.Equal("BUTTON[badge]#" + paragraph, await FocusIdentityAsync(page));
+
+            // It vanishes under them. No counterpart is built, and a badge has no fallback (#200).
+            teammate.AppendRetract(only.Id, null);
+            await WaitForEventCountAsync(page, "focus-not-restored", 1, atLeast: true);
+
+            var trace = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
+            var vanished = Assert.Single(
+                trace, e => e.StartsWith("focus-not-restored", StringComparison.Ordinal));
+
+            // built=false is the whole point: "no counterpart was built" told apart from "a counterpart
+            // exists but would not take focus".
+            Assert.Contains("built=False", vanished, StringComparison.OrdinalIgnoreCase);
+
+            AssertNoBrowserErrors(instrumented);
+        }
+        finally
+        {
+            CleanupDirectory(directory);
+        }
+    }
+
+    /// <summary>
     /// Assert where focus is, and on failure say what the SDK CLAIMED about it (Charter #221).
     /// </summary>
     /// <remarks>

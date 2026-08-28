@@ -2377,17 +2377,46 @@ window.CharterAnnotate = (function () {
     var active = document.activeElement;
     if (active && active !== document.body && active !== document.documentElement) return;
 
-    if (landChromeFocus(state.focusIndex[taken.focus.key])) {
+    // Read the counterparts BEFORE trying them, because whether they were BUILT is a different fact from
+    // whether they took focus — and the two get opposite sentences (Charter #221).
+    var target = state.focusIndex[taken.focus.key];
+    var fallback = taken.focus.fallback ? state.focusIndex[taken.focus.fallback] : null;
+
+    if (landChromeFocus(target)) {
       emit('focus-restored', { key: taken.focus.key });
       return;
     }
-    if (taken.focus.fallback && landChromeFocus(state.focusIndex[taken.focus.fallback])) {
+    if (fallback && landChromeFocus(fallback)) {
       emit('focus-restored', { key: taken.focus.fallback });
       return;
     }
 
-    if (taken.focus.gone) explain(taken.focus.gone);
-    emit('focus-not-restored', { key: taken.focus.key });
+    // `landChromeFocus` answers false for TWO different facts, and saying the stronger one for both is a
+    // lie the reviewer cannot check:
+    //
+    //   nothing was built   the note really did leave the list, or the block really did lose its marker.
+    //                       ITEM_GONE / BADGE_GONE are TRUE, and are what this path is for.
+    //   built, not focused  the control is right there on screen. focus() returns silently when the element
+    //                       is disabled, or when it sits in a display:none subtree — the panel hides exactly
+    //                       that way. Telling the reviewer their note "is no longer in the list" while it is
+    //                       visibly in the list is worse than saying nothing: it is a confident answer that
+    //                       contradicts what they can see.
+    //
+    // This is Charter #217's shape one layer over. There, a probe collapsed "nothing is listening" and "I
+    // could not tell" into one null and the caller reported absence. Here a single false collapses "no
+    // counterpart" and "a counterpart that would not take focus", and the caller reported absence.
+    var built = !!(target || fallback);
+
+    if (built) {
+      explain(NOT_FOCUSABLE);
+    } else if (taken.focus.gone) {
+      explain(taken.focus.gone);
+    }
+
+    // `built` is the discriminator, and it is emitted rather than only rendered: it is the one fact that
+    // separates the two mechanisms behind #221's intermittent failures, and a post-mortem reading the wire
+    // should not have to infer it from a screenshot.
+    emit('focus-not-restored', { key: taken.focus.key, built: built });
   }
 
   // ---- a control that disables itself under the reviewer (Charter #204) ----------------
@@ -2781,6 +2810,14 @@ window.CharterAnnotate = (function () {
   }
 
   // The sentence a reviewer gets when the card they were on is not in the new render (#200 / #170).
+  // Charter #221 -- what to say when the control IS still on screen but would not take focus. Deliberately
+  // does NOT claim anything about where the control went, because it went nowhere: the reviewer can see it.
+  // It also does not guess WHY (disabled? hidden? mid-rebuild?), since a wrong reason is worse than none and
+  // the honest answer is on the wire in `focus-not-restored`.
+  var NOT_FOCUSABLE =
+    'That control is still here but could not take keyboard focus just now, so your focus was left where it ' +
+    'is rather than moved somewhere you did not ask for. Tab or click to it to carry on.';
+
   var ITEM_GONE =
     'That note is no longer in the list, so your keyboard focus was left where it is rather than moved ' +
     'somewhere you did not ask for.';
