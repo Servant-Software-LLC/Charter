@@ -46,6 +46,14 @@ internal static class GitWorkingTree
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
 
     /// <summary>
+    /// How long a teardown waits for an abandoned stream read to stop (Charter #233). Short on
+    /// purpose: the child has just been killed, so its ends of the pipes are closed and the reads
+    /// complete almost immediately. This bound exists so a wedged teardown degrades to a slow probe
+    /// rather than a hung CLI -- never to make the wait more likely to succeed.
+    /// </summary>
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// True when the repository containing <paramref name="path"/> tracks at least one file at or under it —
     /// i.e. the directory is authored SOURCE. False when the path does not exist, lies outside a repository,
     /// holds only untracked/ignored files, or git cannot be run.
@@ -176,20 +184,59 @@ internal static class GitWorkingTree
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
 
-            if (!process.WaitForExit((int)Timeout.TotalMilliseconds))
+            try
             {
-                TryKill(process);
-                return null;
+                if (!process.WaitForExit((int)Timeout.TotalMilliseconds))
+                {
+                    TryKill(process);
+                    return null;
+                }
+
+                var output = stdout.GetAwaiter().GetResult();
+                _ = stderr.GetAwaiter().GetResult();
+
+                return process.ExitCode == 0 ? output : null;
             }
-
-            var output = stdout.GetAwaiter().GetResult();
-            _ = stderr.GetAwaiter().GetResult();
-
-            return process.ExitCode == 0 ? output : null;
+            finally
+            {
+                // NO ASYNC READ MAY STILL BE RUNNING WHEN Dispose CLOSES THE HANDLES (Charter #233).
+                //
+                // The timeout branch above used to `return null` straight out of the `using`, and the catch
+                // below still can: either way two ReadToEndAsync operations were left in flight while
+                // Process.Dispose() closed the redirected streams underneath them. On Unix those streams are
+                // socket-backed, so the abandoned read completes into a buffer whose handle has been freed —
+                // which is an AccessViolationException on a threadpool thread, and therefore FATAL rather
+                // than catchable. It aborts the process (SIGABRT, exit 134) AFTER the command's real work has
+                // finished and its output has been printed, so the caller sees a successful install and a
+                // crash, and a script reading $? sees only the crash.
+                //
+                // Killing the child closes its ends of the pipes, so both reads complete promptly here; the
+                // bounded wait is belt-and-braces so a teardown can never hang the CLI.
+                DrainQuietly(stdout);
+                DrainQuietly(stderr);
+            }
         }
         catch (Exception)
         {
             return null;   // git absent, permission fault, anything: the answer is "no".
+        }
+    }
+
+    /// <summary>
+    /// Wait for one abandoned stream read to finish, so nothing is still touching the handle when the
+    /// process is disposed (Charter #233). Bounded and silent: this runs on the failure path, where the
+    /// read's RESULT is already known to be unwanted and the only thing that matters is that it has stopped.
+    /// </summary>
+    private static void DrainQuietly(Task<string> read)
+    {
+        try
+        {
+            read.Wait(DrainTimeout);
+        }
+        catch (Exception)
+        {
+            // The read faulted, which is the outcome this is here to absorb: a faulted task has finished
+            // touching the handle, which is the whole requirement.
         }
     }
 
