@@ -1,3 +1,4 @@
+using System.Globalization;
 using Markdig.Extensions.CustomContainers;
 using Markdig.Extensions.Tables;
 using Markdig.Renderers;
@@ -889,14 +890,32 @@ internal sealed class CharterContainerRenderer : HtmlCustomContainerRenderer
         IReadOnlyList<string> answer,
         string? recommended = null)
     {
+        // A POSITION NUMBER THE REVIEWER CAN CITE (Charter #238). The write-in box is where a reviewer says
+        // something the options do not cover, and saying it usually means referring to one of them — "like 2,
+        // but without the cache". Without a number that reference has to be made by RETYPING the option's
+        // text, and the longer the option the worse it gets.
+        //
+        // Numbered from 1 in document order, and CALCULATED rather than authored — the same rule "Something
+        // else" itself follows (#109): anything authored into `options` is emitted verbatim into the
+        // CommonMark Guardrails consumes and would arrive downstream as though the agent had proposed it.
+        // Nothing in `charter-format` changes and every existing plan gets this for free.
+        //
+        // It rides the LABEL only. The submitted value stays the bare option, exactly as "(Recommended)" does
+        // one line down (#125) — and here that is not merely tidy: `recommended` must match an option
+        // VERBATIM, and `WriteWriteIns` decides "this answer matches no declared option" by the same ordinal
+        // comparison. A number inside the value would break both, silently.
+        var position = 0;
         foreach (var option in options)
         {
+            position++;
+
             // The agent's lean rides the LABEL only; the submitted value stays the bare option (Charter #125).
             // "(Recommended)" is the convention reviewers already know from Claude Code's own AskUserQuestion,
             // so it is reproduced verbatim rather than invented — but it must never become part of the recorded
             // decision, which is what authoring it into the option text would have done.
             var recommend = recommended is not null && string.Equals(option, recommended, StringComparison.Ordinal);
-            var label = recommend ? option + " (Recommended)" : option;
+            var label = position.ToString(CultureInfo.InvariantCulture) + ". "
+                + (recommend ? option + " (Recommended)" : option);
             WriteChoice(
                 renderer,
                 inputType,

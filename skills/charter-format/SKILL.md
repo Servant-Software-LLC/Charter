@@ -219,6 +219,30 @@ occur in honest human text — NBSP in "10 km", the bidi controls throughout rig
 them would refuse real answers from real reviewers. The bidi-override **display** hazard is real and strictly
 wider than `:::question` (prose has it too), so it belongs to whoever settles it for the whole format.
 
+### Options are NUMBERED for the reviewer, and the number is calculated (#238)
+
+At review time each declared option is shown with its **1-based position in document order** — `1.`, `2.`,
+`3.` — so a reviewer writing in the "Something else" box can refer to an option by number instead of
+retyping its text: *"like 2, but without the cache"*.
+
+**The number is calculated, never authored.** It is not a field, nothing in this catalog changes, and every
+existing plan gets it. Do **not** write `"1. Redis"` into `options` — the option string is the submitted
+value and is emitted verbatim into the handoff, so a number written there becomes part of the recorded
+decision and part of what the downstream tool reads.
+
+**An interpreter computes the same numbers the reviewer saw** by numbering `options` from 1 in the order the
+array declares them. That is the whole contract: the flatten's `options` list is already document-ordered,
+so **nothing is added to the metadata line** and no consumer of it changes.
+
+**What is NOT numbered:** the `bool` mode's Yes/No (two named choices nobody indexes), the "Something else"
+control itself (it is not one of the author's choices), and a write-in value echoed back as a checked
+control (the reviewer's words, not a declared option).
+
+**The number means "position at the time you answered."** Reordering or inserting an `options` entry between
+review rounds renumbers the rest, and a recorded write-in that said *"like 2"* still says it. So: an agent
+applying a write-in that refers to a number should **record what it resolved to** — *"like `in-memory`, but
+…"* — rather than carrying the bare reference forward. Reorder options between rounds only when you mean to.
+
 **An answer value may legitimately fall OUTSIDE `options`.** The renderer appends a "Something else" free-text
 escape hatch to every `single`/`multi` form, because the agent writing the options is the party least
 qualified to know they are exhaustive — it is asking precisely because it does not know. A reviewer can

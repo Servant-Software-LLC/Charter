@@ -147,8 +147,11 @@ public class AnsweredQuestionRenderTests
             $"<form class=\"question\" id=\"{blockId}\" data-question-id=\"q-single\" data-question-mode=\"single\">\n"
             + "<input type=\"hidden\" name=\"question-id\" value=\"q-single\" />\n"
             + "<fieldset><legend>A single question</legend>\n"
-            + "<label><input type=\"radio\" name=\"answer\" value=\"A\" /> A</label>\n"
-            + "<label><input type=\"radio\" name=\"answer\" value=\"B\" /> B</label>\n"
+            // #238 - each declared option carries its 1-based position, so a reviewer can cite it from the
+            // write-in box instead of retyping the option's text. The number rides the LABEL; the `value`
+            // stays the bare option, which is exactly what this byte-for-byte literal is here to keep honest.
+            + "<label><input type=\"radio\" name=\"answer\" value=\"A\" /> 1. A</label>\n"
+            + "<label><input type=\"radio\" name=\"answer\" value=\"B\" /> 2. B</label>\n"
             // #109 - the renderer always appends a free-text escape hatch to a select. Emitted HERE
             // rather than authored into `options`, so the option list handed to Guardrails stays
             // exactly the choices the agent proposed.
