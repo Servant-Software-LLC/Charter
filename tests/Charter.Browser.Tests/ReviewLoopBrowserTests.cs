@@ -3155,6 +3155,95 @@ public sealed partial class ReviewLoopBrowserTests
         }
     }
 
+    /// <summary>
+    /// Charter #239 — typing in "Something else:" IS answering with it. The reviewer must not have to find a
+    /// second, undiscoverable click for their words to count.
+    ///
+    /// <para>
+    /// The regression this pins is the silent one. <c>collectValues</c> reads only CHECKED controls, so with
+    /// an option already selected the answer signature still equalled THAT OPTION: Save was enabled, pressing
+    /// it recorded the option, and the reviewer's typed sentence sat visible on screen and was discarded. A
+    /// wrong answer that looks like a legitimate one.
+    /// </para>
+    /// <para>
+    /// Asserted through the SERVER's stored value, not the form's state — the form agreeing with itself is
+    /// exactly what was already true while the answer was being lost.
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Typing_in_Something_else_selects_it_and_beats_an_already_chosen_option()
+    {
+        var planPath = Path.Combine(
+            Path.GetTempPath(), "charter-other-auto-" + Guid.NewGuid().ToString("N") + ".charter.md");
+        await File.WriteAllTextAsync(planPath, ClearableQuestionPlan);
+
+        var session = ReviewSession.Create(planPath);
+        using var server = ReviewServer.Start(
+            session, new ReviewServerOptions { BindAddress = IPAddress.Loopback, Port = 0 });
+
+        try
+        {
+            var launched = await TryLaunchAsync();
+            Skip.If(launched is null, $"{BrowserEngine.Name}/Playwright unavailable on this host.");
+
+            await using var browser = launched!.Browser;
+            var instrumented = await NewInstrumentedPageAsync(launched);
+            var page = instrumented.Page;
+
+            await page.GotoAsync(
+                CapabilityUrl(server, session), new PageGotoOptions { WaitUntil = WaitUntilState.Load });
+            await WaitForEventAsync(page, "ready");
+
+            var other = Control("q-open", "input[data-answer-other]");
+            var otherText = Control("q-open", "input[data-answer-other-text]");
+            var green = Control("q-open", "input[type=\"radio\"][value=\"Green\"]");
+
+            // The reviewer picks a real option first. This is what made the loss silent: Save is already
+            // enabled and already has something valid to record.
+            await page.CheckAsync(green);
+            Assert.True(await page.IsEnabledAsync(SaveButton("q-open")));
+
+            // Then they change their mind and type -- WITHOUT clicking "Something else".
+            // Real typing, not FillAsync: FillAsync sets the value and fires one input event, which would
+            // not distinguish "reacts to typing" from "reacts to a programmatic set". PressSequentially is
+            // keystrokes, and the first one is what has to select the control.
+            await page.ClickAsync(otherText);
+            await page.Locator(otherText).PressSequentiallyAsync("Green, but only the dark shade");
+
+            // The control selected itself...
+            Assert.True(
+                await page.IsCheckedAsync(other),
+                "Charter #239 -- typing in the write-in box must check its own control.");
+
+            // ...the radio it replaced gave way, as clicking Other would have done...
+            Assert.False(await page.IsCheckedAsync(green));
+
+            // ...and the caret never left the reviewer's hands. Three fixed defects in this codebase are
+            // about focus leaving where the reviewer put it (#168, #200, #221), so this is asserted.
+            Assert.Equal(
+                "INPUT",
+                await page.EvaluateAsync<string>("() => document.activeElement.tagName"));
+            Assert.Equal(
+                "1",
+                await page.EvaluateAsync<string>(
+                    "() => document.activeElement.getAttribute('data-answer-other-text') || ''"));
+
+            await SaveAsync(page, "q-open");
+
+            // THE LOAD-BEARING ASSERTION: the server holds what they TYPED, not the option they had picked.
+            Assert.Equal(
+                new[] { "Green, but only the dark shade" },
+                await WaitForAnswerValuesAsync(server, session, "q-open"));
+        }
+        finally
+        {
+            if (File.Exists(planPath))
+            {
+                File.Delete(planPath);
+            }
+        }
+    }
+
     // ---- Charter #63: a reviewer can clear an accidental radio answer -----------------------------------
 
     /// <summary>
