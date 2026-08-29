@@ -1532,10 +1532,54 @@ window.CharterAnnotate = (function () {
 
   // Re-sync on every edit of a question control. Capture phase and delegated from the document, like
   // the SDK's other listeners, so it needs no per-control bookkeeping.
+  // TYPING IN A WRITE-IN BOX IS ANSWERING WITH IT (Charter #239).
+  //
+  // `collectValues` reads only CHECKED controls, and `effectiveValue` consults the paired text field only
+  // when that control is checked — so text typed beside an unchecked "Something else" was invisible to the
+  // form, in two different ways:
+  //
+  //   nothing else selected   the signature stayed EMPTY_ANSWER, so Save never enabled. The reviewer typed
+  //                           a sentence, watched a dead button, and was told nothing.
+  //   an option selected      the signature still equalled THAT OPTION, so Save was enabled and recorded it
+  //                           — while the reviewer's words sat visible on screen, discarded.
+  //
+  // The second is a wrong answer that looks like a legitimate one, and it defeats the escape hatch: #109
+  // exists because the agent writing the options is least qualified to know they are exhaustive, and
+  // "without this … the real decision is lost". Needing a second, undiscoverable click lost it another way.
+  //
+  // `input` (not `keyup`) is what this hangs off, so PASTE and IME composition both count.
+  function selectWriteInIfTyping(target) {
+    if (!target || !target.getAttribute) return;
+    if (target.getAttribute('data-answer-other-text') !== '1') return;
+
+    var label = target.closest ? target.closest('label') : null;
+    var control = label ? label.querySelector('[data-answer-other="1"]') : null;
+    if (!control || control.checked) return;
+
+    // Assigning `checked` does NOT move focus, which is the property this depends on: the reviewer is
+    // mid-word and the caret must stay under their hands. Three fixed defects in this codebase are about
+    // focus leaving where the reviewer put it (#168, #200, #221), so the browser test asserts it rather
+    // than trusting this sentence.
+    //
+    // On a RADIO this deselects whatever was chosen before, which is what radios mean and is the same act
+    // as clicking "Something else" — reached one keystroke sooner. On a CHECKBOX it is purely additive:
+    // Other combines with declared options.
+    //
+    // Only ever SET. Emptying the box does not deselect: an Other checked with no text already yields
+    // nothing, and auto-deselecting would fight a reviewer who selects-all and retypes.
+    control.checked = true;
+  }
+
   function onQuestionInput(ev) {
-    var form = ev && ev.target && ev.target.form;
+    var target = ev && ev.target;
+    var form = target && target.form;
     var root = questionRoot(form);
-    if (root) syncSubmitState(form, root);
+    if (!root) return;
+
+    // BEFORE the sync, not after: the signature is computed from checked controls, so syncing first would
+    // read a state one keystroke stale and leave Save lagging the reviewer's typing by a character.
+    selectWriteInIfTyping(target);
+    syncSubmitState(form, root);
   }
 
   // ---- clearing an accidental answer (Charter #63) --------------------------------------
