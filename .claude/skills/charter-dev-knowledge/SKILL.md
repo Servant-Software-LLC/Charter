@@ -494,9 +494,18 @@ update run `charter skills install --force` too.
 - **Native binaries (no .NET runtime for consumers):** `release.yml` builds self-contained single-file
   binaries for 5 RIDs on a `v*` tag, renames the apphost `Charter.Cli` → `charter` **post-publish**,
   smoke-runs `charter --version`, and uploads archives + `.sha256`.
-- **Homebrew:** `bump-tap.yml` regenerates `charter.rb` from `.github/templates/charter.rb.tmpl` and opens a PR
-  to `Servant-Software-LLC/homebrew-tap` (needs org secret `TAP_PAT`). Triggered by `workflow_run` of
-  "Release" — a GITHUB_TOKEN-created release does not emit `release:published`.
+- **Homebrew:** `bump-tap.yml` regenerates `charter.rb` from `.github/templates/charter.rb.tmpl` and **commits
+  it straight to** `Servant-Software-LLC/homebrew-tap` (needs org secret `TAP_PAT`). Triggered by
+  `workflow_run` of "Release" — a GITHUB_TOKEN-created release does not emit `release:published`.
+  **It does NOT open a PR, and must never go back to opening one (#95).** That step used to
+  `peter-evans/create-pull-request` and nothing was staffed to merge the result: by 2026-08-01 the tap held 21
+  open bump PRs, `charter.rb` was pinned eight releases back at v0.1.0, and `guardrails.rb` was not in the tap
+  at all — while every release reported **success**, because opening the PR is the last thing the workflow is
+  asked to do. The formula is a template plus a version and four checksums read from the release's own
+  `.sha256` assets, so there was no judgement in the gate; it was a publish step wearing a code-review costume.
+  **Consequence for anyone watching a release: do not wait for a tap PR — read the tap's COMMITS**
+  (`gh api repos/Servant-Software-LLC/homebrew-tap/commits`). This bullet said "opens a PR" for a while after
+  #95 and cost a release watch forty minutes waiting for one that by design never comes.
 - **macOS codesign/notarize:** a gated step in `release.yml`, auto-skips until the six `MACOS_*` secrets exist.
 - **Dry-run:** a `v0.0.0-ci.N` tag exercises binaries + tap without touching NuGet (the `-ci.` guard skips the
   publish job).
