@@ -41,14 +41,34 @@ public enum ReviewLogOutcome
 /// <param name="Unreadable">The file names of logs that could not be read, with the reason.</param>
 public sealed record ReviewLogRead(ReviewLogState State, IReadOnlyList<string> Unreadable)
 {
-    /// <summary>An empty read — no review directory, or no logs in it. Not an error.</summary>
-    public static ReviewLogRead Empty { get; } = new(
-        new ReviewLogState { Comments = Array.Empty<ReviewComment>(), Diagnostics = Array.Empty<ReviewDiagnostic>() },
-        Array.Empty<string>());
+    /// <summary>
+    /// The review directory was read and holds no logs, so nobody has commented. Not an error — and not the
+    /// answer for a directory that was never there to read, which is <see cref="Unknown"/>.
+    /// </summary>
+    public static ReviewLogRead Empty { get; } = new(NoComments(), Array.Empty<string>())
+    {
+        Outcome = ReviewLogOutcome.Empty,
+    };
 
-    /// <summary>What this read learned. See <see cref="ReviewLogOutcome"/>.</summary>
-    public ReviewLogOutcome Outcome => throw new NotImplementedException(
-        "The three-state review-log read is not implemented yet (Charter #221).");
+    /// <summary>
+    /// The read could not complete. Carries no comments for the same reason it carries no finding: nothing was
+    /// learned. <b>Not evidence that nobody commented.</b>
+    /// </summary>
+    public static ReviewLogRead Unknown { get; } = new(NoComments(), Array.Empty<string>())
+    {
+        Outcome = ReviewLogOutcome.Unknown,
+    };
+
+    /// <summary>
+    /// What this read learned. See <see cref="ReviewLogOutcome"/>.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="ReviewLogOutcome.Present"/>, the only outcome the constructor can honestly carry:
+    /// reaching it means a fold is already in hand. The two outcomes that carry no comments are reached through
+    /// <see cref="Empty"/> and <see cref="Unknown"/> — the pairing ProbeResult's factories exist to make
+    /// unmistakable (#217) — so neither can be built by accident from an empty fold.
+    /// </remarks>
+    public ReviewLogOutcome Outcome { get; init; } = ReviewLogOutcome.Present;
 
     /// <summary>True when logs were found and folded — the only case whose comments are the whole answer.</summary>
     public bool IsPresent => Outcome == ReviewLogOutcome.Present;
@@ -66,6 +86,13 @@ public sealed record ReviewLogRead(ReviewLogState State, IReadOnlyList<string> U
     /// exits 4, the panel declines the view, and <c>FindComment</c> refuses to answer "not found".
     /// </summary>
     public bool IsUnknown => Outcome == ReviewLogOutcome.Unknown;
+
+    // The state both no-comment outcomes carry. They differ in what was learned, never in what was found.
+    private static ReviewLogState NoComments() => new()
+    {
+        Comments = Array.Empty<ReviewComment>(),
+        Diagnostics = Array.Empty<ReviewDiagnostic>(),
+    };
 }
 
 /// <summary>
@@ -92,15 +119,61 @@ public static class ReviewLogStore
     }
 
     /// <summary>
-    /// Read and fold every <c>*.jsonl</c> in <paramref name="reviewDirectory"/>. A missing directory folds to
-    /// <see cref="ReviewLogRead.Empty"/>: a plan nobody has commented on is a normal state, not a failure.
+    /// Read and fold every <c>*.jsonl</c> in <paramref name="reviewDirectory"/>. A directory that is THERE and
+    /// holds no logs folds to <see cref="ReviewLogRead.Empty"/>: a plan nobody has commented on is a normal
+    /// state, not a failure. A directory that is not there at all — after a short bounded retry — reads
+    /// <see cref="ReviewLogRead.Unknown"/>, because it was never looked into.
     /// </summary>
-    public static ReviewLogRead Read(string reviewDirectory)
+    public static ReviewLogRead Read(string reviewDirectory) => Read(reviewDirectory, Thread.Sleep);
+
+    /// <summary>
+    /// The same read with the retry's WAIT supplied by the caller, so a transient absence can be arranged
+    /// deterministically instead of by racing a background thread against the bound.
+    /// </summary>
+    /// <param name="reviewDirectory">The plan's review-log directory.</param>
+    /// <param name="waitBetweenAttempts">
+    /// Called between attempts with the delay, in milliseconds, the read would otherwise have slept. The
+    /// public overload passes <see cref="Thread.Sleep(int)"/>.
+    /// </param>
+    internal static ReviewLogRead Read(string reviewDirectory, Action<int> waitBetweenAttempts)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(reviewDirectory);
+        ArgumentNullException.ThrowIfNull(waitBetweenAttempts);
+
+        // The same budget the per-file read spends, for the same reason: the logs arrive by git, so a pull or a
+        // checkout can be putting the directory back at the moment the panel refreshes. BOUNDED, and by the
+        // attempt count rather than a clock — an unbounded retry would hang the panel instead of emptying it,
+        // which is worse than the bug this fixes. Only the absent case ever waits; a directory that answers is
+        // answered on the first look.
+        for (var attempt = 1; ; attempt++)
+        {
+            var read = TryRead(reviewDirectory);
+            if (read is not null)
+            {
+                return read;
+            }
+
+            if (attempt >= ReadAttempts)
+            {
+                return ReviewLogRead.Unknown;
+            }
+
+            waitBetweenAttempts(ReadRetryDelayMs);
+        }
+    }
+
+    // One look at the directory: the fold, or null when there was no directory to look into.
+    private static ReviewLogRead? TryRead(string reviewDirectory)
     {
         var logs = ReviewLogPaths.EnumerateLogs(reviewDirectory);
         if (logs.Count == 0)
         {
-            return ReviewLogRead.Empty;
+            // EnumerateLogs answers the same empty list to both questions, so the directory itself settles
+            // which one was asked: there and holding nothing is a positive finding — nobody has commented —
+            // while not there at all is nothing learned. Neither branch complains about what it found.
+            // `.review/` is created lazily on the first append, so an absent one is the ORDINARY state of a
+            // solo review, and it has to stay every bit as cheap and as quiet as a comment-less directory.
+            return Directory.Exists(reviewDirectory) ? ReviewLogRead.Empty : null;
         }
 
         var sources = new List<ReviewLogSource>(logs.Count);
@@ -120,24 +193,6 @@ public static class ReviewLogStore
         }
 
         return new ReviewLogRead(ReviewLog.Fold(sources), unreadable);
-    }
-
-    /// <summary>
-    /// The same read with the retry's WAIT supplied by the caller, so a transient absence can be arranged
-    /// deterministically instead of by racing a background thread against the bound.
-    /// </summary>
-    /// <param name="reviewDirectory">The plan's review-log directory.</param>
-    /// <param name="waitBetweenAttempts">
-    /// Called between attempts with the delay, in milliseconds, the read would otherwise have slept. The
-    /// public overload passes <see cref="Thread.Sleep(int)"/>.
-    /// </param>
-    internal static ReviewLogRead Read(string reviewDirectory, Action<int> waitBetweenAttempts)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(reviewDirectory);
-        ArgumentNullException.ThrowIfNull(waitBetweenAttempts);
-
-        throw new NotImplementedException(
-            "The bounded retry in front of the review-log read is not implemented yet (Charter #221).");
     }
 
     // Read one log, tolerating the brief sharing conflicts a concurrent append or a git checkout creates.
