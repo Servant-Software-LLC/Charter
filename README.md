@@ -47,20 +47,33 @@ review it in the browser.
   every block through, promotes an obvious "Open Questions" / "Risks" list into question blocks, and
   stamps the format marker. The mechanical floor an agent then enriches (diagrams, comparisons, more
   questions) — the rich "any source → plan" authoring is agent-driven, not a deterministic command.
-- `charter recap <range> -o <plan.charter.md>` — the same seed from the other direction: a **git diff**
-  instead of an intent, for reviewing a change that already happened. Emits an overview, a commit table
-  and one per-line-annotatable diff block per file; git is read-only. Like `convert`, the mechanical
-  floor an agent then enriches with the summary, grouping, diagram and questions a diff cannot state.
-  It describes a **change**, not an execution run — run reporting stays Guardrails' job.
+- `charter recap <range> -o <plan.charter.md> [-C <repo>] [--max-diff-lines <n>]` — the same seed from the
+  other direction: a **git diff** instead of an intent, for reviewing a change that already happened. Emits
+  an overview, a commit table and one per-line-annotatable diff block per file; git is read-only. Like
+  `convert`, the mechanical floor an agent then enriches with the summary, grouping, diagram and questions a
+  diff cannot state. It describes a **change**, not an execution run — run reporting stays Guardrails' job.
+  `-C/--repo` reads a repository other than the current directory. `--max-diff-lines` caps the diff lines
+  emitted per file so a large branch stays reviewable in a browser (default 400; `0` removes the cap) — and
+  whatever a cap hides is always **reported**, never silently dropped.
 - `charter render <plan.charter.md> -o <out.html>` — renders a plan to one portable HTML artifact.
-- `charter review <plan.charter.md> [--no-open]` — serves the plan over the loopback review server
-  (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you can
-  annotate elements, text ranges, and diagram nodes **in place**. `--no-open` serves without
-  launching a browser.
-- `charter poll [<plan.charter.md>] [--apply]` / `charter resolve <plan.charter.md>` — drain the
-  running review session's annotations and `:::question` answers, folding each answer **inline into the
-  `.charter.md`** (agent-in-the-loop `poll --apply`, or `resolve` for a solo human review). The plan is
-  a living document that accumulates your decisions before handoff.
+- `charter review <plan.charter.md> [--no-open] [--keep-annotations]` — serves the plan over the loopback
+  review server (`127.0.0.1`, an ephemeral port, gated on a per-session key) and opens your browser so you
+  can annotate elements, text ranges, and diagram nodes **in place**. `--no-open` serves without
+  launching a browser. `--keep-annotations` restores notes Charter judged to belong to a *different*
+  document at this path — when none of their anchors resolve, they are set aside and reported rather than
+  shown against prose they were never written about; this is how you get them back if that call was wrong.
+- `charter poll [<plan.charter.md>] [--apply] [--wait] [--watch [--for 45m]]` /
+  `charter resolve <plan.charter.md> [--apply-stale-answers]` — drain the running review session's
+  annotations and `:::question` answers, folding each answer **inline into the `.charter.md`**
+  (agent-in-the-loop `poll --apply`, or `resolve` for a solo human review). The plan is a living document
+  that accumulates your decisions before handoff. `--wait` runs one long-poll cycle instead of returning
+  immediately; `--watch` keeps draining across cycles in **one** invocation until `--for` elapses (default
+  2h), which is how an agent stays attached for a whole review round instead of being re-run per comment.
+  `resolve --apply-stale-answers` writes answers whose `:::question` has since **changed shape** (title,
+  mode, target or options differ); without it those are reported and left queued — never written, never
+  discarded. `poll` finds the session itself through a per-user registry, so the capability key never crosses
+  your command line; `--session <descriptor>` and `--url <cap-url>` are escape hatches for scripting and
+  debugging.
 - `charter reply <plan.charter.md> --to <comment-id> --body "…"` — the agent's half of that exchange: it
   answers a review comment **in the comment's own thread**, so accepting a note, pushing back on it, or
   asking what you meant lands beside the note itself rather than in a chat log you never see — or
@@ -90,8 +103,16 @@ review it in the browser.
   such rather than reported as tampering. **It cannot detect incorrectness** — both files are writable by the
   same party — and it says so on success as well as on failure, because a green `verify` is not evidence that
   a run was proper.
-- `charter skills install [--project] [--force] [--overwrite-tracked]` — installs the bundled agent skills so
-  your agent (and Guardrails) can discover them. `--force` overwrites an existing copy; it refuses to clobber
+- `charter skills install [--project] [--force] [--overwrite-tracked] [--target <dir>]` — installs the three
+  bundled agent skills so your agent (and Guardrails) can discover them:
+  - **`charter`** — the authoring skill: how to write a `.charter.md` and drive author → review → handoff.
+  - **`charter-drain`** — the agent's side of the review loop. When the review page tells you to hand a
+    command to your agent (the **Send to agent** button), this is the skill that picks the round up, drains
+    your notes and answers, and keeps listening until you are done. You never run it yourself.
+  - **`charter-format`** — the normative block catalog and `:::question` schema, cited by the authoring
+    skill to *write* blocks and by Guardrails plan-breakdown to *interpret* them.
+
+  `--target` installs into an explicit directory. `--force` overwrites an existing copy; it refuses to clobber
   git-tracked skill source that has uncommitted changes unless you add `--overwrite-tracked`. If the target
   turns out to be inside a git working tree — `~/.claude/skills` symlinked into a dotfiles repo, say — it says
   so and prints the ignore rules to paste, because these copies are version-stamped and a committed one goes
@@ -119,15 +140,16 @@ If you're driving Charter from an agent, a bundled usage skill lives at `skills/
 
 ## Still ahead
 
-A few capabilities are deliberately **out of v1**, each tracked as its own issue so it outlives the
-plan:
+A capability is deliberately **out of v1**, tracked as its own issue so it outlives the plan:
 
-- **Recap mode** — building a plan from a diff (`charter recap`), a v2 addition.
 - **Telemetry** — v1 ships **none**: zero analytics dependency, zero data egress. Any future
   telemetry would be strictly opt-in and vendor-neutral, never Lavish's default-on model.
 
-And two things that were on this list and **won't be built**, because the answer turned out to be
-something Charter already has:
+### Settled — not building these
+
+Two things that were on the list above and **won't be built**, because the answer turned out to be
+something Charter already has. Unlike "Still ahead", these bullets name shipped verbs on purpose: the
+shipped capability *is* the reason:
 
 - **Hosted share / publish** — *git is the share.* A plan and its per-author review logs are committed
   files: a teammate pulls the commit and sees the rendered plan with everyone's comments folded in.

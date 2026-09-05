@@ -44,7 +44,8 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
-  <!-- Bundle the shipped Claude skills (skills/charter/ and skills/charter-format/) INSIDE the binary as
+  <!-- Bundle the shipped Claude skills (every folder under skills/ — currently charter, charter-drain and
+       charter-format; the glob below takes whatever is there, so do NOT re-add a list here) INSIDE the binary as
        embedded resources so they travel with the single self-contained native binary (there is no loose
        skills/ folder next to the exe to copy) — mirroring how Charter.Core embeds mermaid.min.js and
        Charter.Server embeds charter-annotate.js. `charter skills install` reads them back by LogicalName

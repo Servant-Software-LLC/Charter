@@ -116,6 +116,21 @@ internal static class SkillsInstaller
     }
 
     /// <summary>One bundled file: the skill it belongs to, its path within that skill, and its resource name.</summary>
+    /// <summary>
+    /// Every bundled skill folder name, in ordinal order, derived from the embedded resources themselves —
+    /// the SAME grouping <see cref="InstallAll"/> extracts from.
+    /// </summary>
+    /// <remarks>
+    /// This exists so there is ONE enumeration of the bundled set. <see cref="SkillDriftCheck"/> used to
+    /// carry its own literal — <c>{ "charter", "charter-format" }</c> — while the installer discovered the
+    /// set from the <c>skills/**</c> resource glob, so <c>charter-drain</c> was installed and stamped by one
+    /// and invisible to the other for its whole life: <c>charter --version</c> reported "2 skills are out of
+    /// date" with three stale on disk (Charter #247). Adding a skill folder must not require remembering a
+    /// second list; that is the same defect #138 removed from the verb catalog.
+    /// </remarks>
+    public static IReadOnlyList<string> BundledSkillNames { get; } =
+        GroupResourcesBySkill(typeof(SkillsInstaller).Assembly).Keys.ToArray();
+
     private sealed record SkillFile(string RelativePath, string ResourceName);
 
     /// <summary>
