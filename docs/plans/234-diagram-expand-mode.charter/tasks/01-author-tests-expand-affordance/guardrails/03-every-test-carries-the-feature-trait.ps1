@@ -15,13 +15,21 @@
 $ErrorActionPreference = 'Continue'
 
 # DUAL-MODE, and this is a CONTRACT, not a convenience. `guardrails samples verify` (which the plan
-# preflight runs before scheduling any task) invokes this script with the sample file as $args[0] and
-# cwd = the workspace; it sets no GUARDRAILS_* variables. A guardrail that ignores $args[0] and only
-# ever scans its hardcoded target reads the SAME file for both halves of its pair - so both exit
+# preflight runs before scheduling any task) invokes this script with the sample file BOTH as the env
+# var GR_SUBJECT and as $args[0], with cwd = the workspace. A guardrail that honours neither, and only
+# ever scans its hardcoded target, reads the SAME file for both halves of its pair - so both exit
 # identically and the pair proves nothing. Measured: this script did exactly that, and the harness
 # caught it with "the guardrail may not be reading the sample at all".
-$path = if ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
-    $args[0]                                                        # sample-verification mode
+#
+# GR_SUBJECT is checked FIRST because it is the canonical half of the contract (Guardrails #559, which
+# is open precisely because that contract is documented nowhere but the verifier's own source, and
+# proposes a review probe asserting guardrails honour GR_SUBJECT by name). $args[0] is kept as the
+# fallback: it is what this script was first fixed against, both are supplied by the same call, and a
+# guardrail that accepts either cannot be broken by whichever one a future verifier drops.
+$path = if (-not [string]::IsNullOrWhiteSpace($env:GR_SUBJECT)) {
+    $env:GR_SUBJECT                                                 # sample-verification mode (canonical)
+} elseif ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
+    $args[0]                                                        # sample-verification mode (fallback)
 } else {
     'tests/Charter.Browser.Tests/DiagramExpandAffordanceTests.cs'   # normal run
 }
