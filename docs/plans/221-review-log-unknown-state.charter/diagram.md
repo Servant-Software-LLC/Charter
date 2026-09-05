@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=991c569a47096282436f0b42c2aa1ef96288b2777b9d95fdecacb84c782ab16e -->
+<!-- guardrails:graph v1 source-sha256=c5d8cf494e0762db173470aefc926f166b4fb23e173030e0da7812bc80d14bb6 -->
 
 ```mermaid
 flowchart TD
@@ -36,6 +36,8 @@ flowchart TD
   subgraph task_07_author_tests_panel_declines_unknown["07-author-tests-panel-declines-unknown"]
     task_07_author_tests_panel_declines_unknown_gr_0["01-tests-build"]:::guardrail
     task_07_author_tests_panel_declines_unknown_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_07_author_tests_panel_declines_unknown_gr_2["03-every-test-carries-the-feature-trait"]:::guardrail
+    task_07_author_tests_panel_declines_unknown_gr_3["04-no-forbidden-playwright-idioms"]:::guardrail
   end
   style task_07_author_tests_panel_declines_unknown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_panel_declines_unknown["08-implement-panel-declines-unknown"]

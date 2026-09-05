@@ -21,9 +21,19 @@ if ($testExit -ne 0) {
     # it DROPS a DoesNotContain failure's String:/Found: payload and every stack frame - measured. Take the
     # CONTIGUOUS block from the first failure marker onward, bounded to fit the ~60-line feedback tail.
     $lines = ($out | Out-String) -split '\r?\n'
+    # Anchor on the first DETAIL line, NOT the first [FAIL]. MEASURED during review: xUnit prints its
+    # whole [FAIL] NAME list before any detail block, so a [FAIL]-anchored window fills with names - a
+    # 60-failure regression gave 56 name lines and ZERO Error Message: blocks, which is precisely the
+    # #179 starvation the re-emit exists to prevent. Fall back to [FAIL] only when there is no detail
+    # block at all (a crashed host prints names and nothing else).
     $first = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match '\[FAIL\]|Error Message:') { $first = $i; break }
+        if ($lines[$i] -match 'Error Message:') { $first = $i; break }
+    }
+    if ($first -lt 0) {
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '\[FAIL\]') { $first = $i; break }
+        }
     }
     Write-Output ""
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="

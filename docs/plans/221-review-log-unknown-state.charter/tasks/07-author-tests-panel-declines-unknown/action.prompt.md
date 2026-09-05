@@ -88,5 +88,12 @@ instrumentation.
   reports a 0x0 rect at the origin and an EMPTY computed style, which is how detachment is told apart
   from `display: none`.
 
-These must **COMPILE and FAIL** -- the SDK applies an Unknown view unconditionally today. Do not add
-`[Fact(Skip = "...")]` to anything.
+### The attribute this project actually uses
+
+Browser tests here are spelled **`[SkippableFact]`**, not `[Fact]` -- they skip cleanly when no
+Playwright browser is installed. Both tests in `StaleQueueReadTests.cs` use it; follow that.
+Every method also needs `[Trait("Feature", "ReviewLogUnknownPanel")]` -- a guardrail counts the two
+and fails if any method is missing the trait.
+
+These must **COMPILE and FAIL** -- the SDK applies an Unknown view unconditionally today. Do not
+skip a test to get there.

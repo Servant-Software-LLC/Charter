@@ -15,7 +15,18 @@ $buildExit = $LASTEXITCODE
 $out | ForEach-Object { Write-Output $_ }
 
 if ($buildExit -ne 0) {
+    # MEASURED on this machine during review: a lingering test host or review server holding the output
+    # DLLs fails this build with ZERO compile errors and 44 MSB3026 warnings. The old message named the
+    # TEST FILE as the cause - and the retry agent's writeScope IS that file, so every attempt would
+    # rewrite correct code while the lock persisted, dead-ending at needs-human with a wrong diagnosis.
+    # Separate the two before saying anything.
+    $csErrors = @($out | Where-Object { $_ -match ': error CS' })
+    $lockHits = @($out | Where-Object { $_ -match 'MSB302[67]' })
     Write-Output ""
+    if ($csErrors.Count -eq 0 -and $lockHits.Count -gt 0) {
+        Write-Output "ENVIRONMENT, NOT YOUR CODE: the build failed with ZERO compile errors and $($lockHits.Count) MSB3026/MSB3027 file-lock warning(s) - another process is holding the output DLLs. Do NOT edit any source file; nothing here is your fault and no edit can fix it. Escalate with needsHuman (kind: blocked-work) saying the build is blocked by a locked output DLL, and stop."
+        exit 1
+    }
     Write-Output "Charter.sln does not build on the merged plan-branch HEAD - a cross-project compilation error that no single-project build caught."
     exit 1
 }
