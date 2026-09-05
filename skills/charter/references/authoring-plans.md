@@ -95,23 +95,34 @@ flowchart LR
 :::
 ````
 
-**An oversized diagram pans and zooms — during `charter review`, and only there.** Mermaid renders with
-`useMaxWidth`, so a diagram wider than the review column never overflows: it **shrinks**, until the node
+**An oversized diagram pans, zooms and expands — during `charter review`, and only there.** Mermaid renders
+with `useMaxWidth`, so a diagram wider than the review column never overflows: it **shrinks**, until the node
 labels cannot be read and no scrollbar ever appears to say so. The review SDK detects exactly that (the
 SVG's intrinsic `viewBox` width against its rendered width) and gives that block a zoom bar
-(`−` · % · `+` · **Reset**), **Ctrl/⌘+scroll** to zoom about the pointer, **drag** to pan, and **arrow keys**
-to pan it once focused (`0` resets). A diagram that **fits gains nothing** — no chrome, no tab stop, no
-change in behaviour. Alt+click still annotates at every zoom level.
+(`−` · % · `+` · **Reset** · **Expand**), **Ctrl/⌘+scroll** to zoom about the pointer, **drag** to pan, and
+**arrow keys** to pan it once focused (`0` resets). A diagram that **fits gains nothing** — no chrome, no tab
+stop, no change in behaviour. Alt+click still annotates at every zoom level.
+
+**Expand** (#234) takes one diagram to the whole browser viewport, for the case zoom alone cannot serve: a
+comparison diagram with side-by-side subgraphs, where the column bounds the viewport so only part is legible
+at a readable scale. Zoom, pan and per-node Alt+click all keep working inside it, and **Escape** leaves —
+Escape only ever *leaves*, there is no chord in, so the button and the hint are the only ways to discover it.
+The bar's hint names whichever move is next: *"Expand for a full-screen view"* on an oversized diagram at
+fit, *"Ctrl+scroll to zoom, Esc to close"* once expanded, and *"drag or arrow keys to pan"* whenever zoomed.
+Nothing is hidden while expanded — the diagram paints over the page and the review panel stays reachable, so
+a note can still be written from inside the expanded view.
 
 > **Say "Option" to a reviewer on a Mac.** The modifier is `event.altKey` everywhere, but the keycap is
 > `⌥ Option` on macOS and `Alt` elsewhere — and a reviewer told to press a key their keyboard does not have
 > reads it as "diagrams are not commentable". The SDK's own hint picks the right word per platform; use both
 > names if you write the gesture into a plan.
 
-**The saved and exported artifact renders the diagram statically.** Pan/zoom is review-time SDK chrome
-(invariant 1, *portable artifact*), so it is not in the file you hand to a person or attach to a ticket. The
-authoring consequence: a diagram only legible when zoomed is legible **only in review**. If the artifact is
-going to matter, split it into two diagrams rather than relying on the reviewer's zoom.
+**The saved and exported artifact renders the diagram statically.** Pan/zoom **and expand** are review-time
+SDK chrome (invariant 1, *portable artifact*), so neither is in the file you hand to a person or attach to a
+ticket. The authoring consequence is unchanged by expand, and expand sharpens it rather than retiring it: a
+diagram legible only when zoomed *or only when expanded* is legible **only in review**. If the artifact is
+going to matter, split it into two diagrams rather than relying on the reviewer's zoom — expand makes a wide
+comparison diagram **reviewable**, not portable.
 
 ### Escape hatch — `:::custom-html`
 
