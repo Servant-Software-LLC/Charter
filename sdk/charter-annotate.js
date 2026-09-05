@@ -1883,6 +1883,30 @@ window.CharterAnnotate = (function () {
     '  text-align: center; }',
     '.charter-zoom-hint { font-size: 11px; color: var(--charter-muted); }',
 
+    // Expand mode (Charter #234). The block itself goes `position: fixed` and fills the viewport IN PLACE:
+    // it is never reparented, because ancestry is what the anchor walk and the source map are read through,
+    // and a diagram that moved in the DOM to be read would come back with its notes attached somewhere else.
+    // The native Fullscreen API is disqualified for a concrete reason rather than a stylistic one — in
+    // fullscreen the browser paints only the fullscreen element's subtree, and the composer mounts on
+    // document.body, so Alt+click while expanded would open a composer that exists, takes focus, and is
+    // invisible.
+    //
+    // Declared here rather than written as inline styles, which buys two things. Collapsing is then EXACTLY
+    // the removal of one class, so the block's original box comes back without anything having had to
+    // remember it; and `!important` beats applyZoom's own INLINE max-height and overflow, which are right for
+    // the reading window a zoomed diagram gets inside the column and wrong for one that already owns the
+    // screen.
+    //
+    // Nothing here is display: none and nothing outside the block is touched at all — the expanded diagram
+    // PAINTS OVER the page. It sits above the annotation overlay and below the panel, the panel toggle and
+    // the composer, so a note can still be written inside it and the reviewer's notes stay reachable. That is
+    // a rule rather than a taste: #221 is an undiagnosed focus defect whose leading hypothesis is that focus
+    // into a display:none subtree silently does nothing, and this feature manufactures none of that.
+    '.charter-expand { position: fixed !important; top: 0; left: 0; right: 0; bottom: 0;',
+    '  width: auto; height: auto; max-width: none !important; max-height: none !important;',
+    '  margin: 0 !important; padding: 40px 12px 12px; overflow: auto !important;',
+    '  z-index: 2147481500; background: var(--charter-bg); }',
+
     '.charter-has-annotations { position: relative; box-shadow: inset 3px 0 0 0 var(--charter-accent); }',
     // The accent bar on a table's scroll region has to be drawn OUTSIDE it (#167).
     //
@@ -3751,8 +3775,10 @@ window.CharterAnnotate = (function () {
     if (view) {
       // A LIVE zoom is the reviewer's, not ours to revoke because the window changed size — and the
       // zoomed <svg> is deliberately wider than intrinsic, so isZoomable() would say "no" and tear down
-      // the very view being used.
-      if (view.scale > 1) return;
+      // the very view being used. An EXPANDED view (Charter #234) is the same case for the same reason: the
+      // diagram is being shown at viewport width on purpose, and releasing it here would take the bar, the
+      // tab stop and the only way back out with it.
+      if (view.scale > 1 || view.expanded) return;
       view.baseWidth = svg.getBoundingClientRect().width || view.baseWidth;
       view.restingHeight = block.getBoundingClientRect().height || view.restingHeight;
       if (isZoomable(svg)) { view.maxScale = ceilingFor(svg, view.baseWidth); syncZoomBar(view); return; }
@@ -3780,7 +3806,8 @@ window.CharterAnnotate = (function () {
       baseWidth: svg.getBoundingClientRect().width,
       restingHeight: block.getBoundingClientRect().height,
       ownsTabIndex: false,
-      bar: null, level: null, hint: null, zoomOut: null, zoomIn: null, reset: null,
+      expanded: false,     // Charter #234 — this diagram is currently filling the viewport
+      bar: null, level: null, hint: null, zoomOut: null, zoomIn: null, reset: null, expand: null,
       onWheel: null, onKeyDown: null, onPointerDown: null, onScroll: null
     };
     view.maxScale = ceilingFor(svg, view.baseWidth);
@@ -3829,6 +3856,13 @@ window.CharterAnnotate = (function () {
     view.zoomIn.setAttribute('aria-label', 'Zoom the diagram in');
     view.reset = button('charter-btn charter-zoom-btn', 'diagram-zoom-reset', 'Reset');
     view.reset.setAttribute('aria-label', 'Reset the diagram to fit');
+    // Charter #234's control. With the hint below it is the WHOLE of expand mode's discovery surface: a
+    // keyboard shortcut into the view was offered in review and refused, so there is no chord in (Escape only
+    // ever LEAVES). Built exactly like its siblings — a real <button>, a data-charter-ui name, no id — so
+    // Enter/Space, the tab stop and the browser's own focus handling come for free, and so closestAnchored
+    // still refuses it as a note target (#166, where SDK chrome with an id captured the block's own anchor).
+    view.expand = button('charter-btn charter-zoom-btn charter-expand-btn', 'diagram-expand', '');
+    syncExpandControl(view);
     view.hint = make('span', 'charter-zoom-hint', 'diagram-zoom-hint', '');
 
     view.zoomOut.addEventListener('click', function (ev) {
@@ -3840,11 +3874,15 @@ window.CharterAnnotate = (function () {
     view.reset.addEventListener('click', function (ev) {
       ev.preventDefault(); resetZoom(view);
     }, false);
+    view.expand.addEventListener('click', function (ev) {
+      ev.preventDefault(); setExpanded(view, !view.expanded);
+    }, false);
 
     bar.appendChild(view.zoomOut);
     bar.appendChild(view.level);
     bar.appendChild(view.zoomIn);
     bar.appendChild(view.reset);
+    bar.appendChild(view.expand);
     bar.appendChild(view.hint);
 
     view.el.appendChild(bar);
@@ -3871,8 +3909,24 @@ window.CharterAnnotate = (function () {
     disableChrome(view.zoomOut, atFit, function () { return [view.zoomIn, view.el]; });
     disableChrome(view.reset, atFit, function () { return [view.zoomIn, view.el]; });
     disableChrome(view.zoomIn, atCeiling, function () { return [view.zoomOut, view.reset, view.el]; });
-    // Progressive disclosure: name the gesture that is USEFUL right now, not the whole vocabulary.
-    view.hint.textContent = atFit ? 'Ctrl+scroll to zoom' : 'drag or arrow keys to pan';
+    syncExpandControl(view);
+    // Progressive disclosure: name the gesture that is USEFUL right now, not the whole vocabulary. Charter
+    // #234 adds a third state to a slot that only ever holds one string, so the precedence is settled here:
+    //
+    //   * PANNING WINS over expand once the reviewer has zoomed. Expand answers "I cannot read this at the
+    //     size the column gives it", which is the question being asked BEFORE anything is touched; a reviewer
+    //     who has zoomed in has already answered it their own way and panning is what they need next. The
+    //     control stays one press away in the bar either way — the hint is a discovery route, not the
+    //     affordance.
+    //   * While EXPANDED, expand is behind them: the useful pair is the zoom gesture and the way out.
+    //
+    // isZoomable() is only meaningful at fit, which is the one state it is asked in: zooming widens the <svg>
+    // PAST its intrinsic width, so it reports false on exactly the diagram the hint would be about.
+    view.hint.textContent = !atFit
+      ? 'drag or arrow keys to pan'
+      : (view.expanded
+          ? 'Ctrl+scroll to zoom, Esc to close'
+          : (isZoomable(view.svg) ? 'Expand for a full-screen view' : 'Ctrl+scroll to zoom'));
     pinDiagramChrome(view);
   }
 
@@ -3883,6 +3937,104 @@ window.CharterAnnotate = (function () {
     if (view.bar) view.bar.style.transform = offset;
     var badges = view.el.querySelectorAll('.charter-annotation-badge');
     for (var i = 0; i < badges.length; i++) badges[i].style.transform = offset;
+  }
+
+  // ---- expand mode (Charter #234) -------------------------------------------------------
+  //
+  // Zooming a two-subgraph diagram inside the review column trades one problem for another: the labels
+  // become legible and the reviewer pans blind through a 640px window. Expand mode gives that diagram the
+  // whole viewport instead, which is the cheap half of the answer — #51 already did the expensive one, since
+  // widening the <svg> rather than transforming it means there is no coordinate frame of Charter's own and
+  // "make the container bigger" is genuinely all this is.
+  //
+  // Everything about the mechanism lives in the stylesheet's `.charter-expand` rule; the code below only ever
+  // toggles that class and re-measures what the class changed.
+
+  // The control names what it will DO next, the way the panel toggle does — never a state attribute beside a
+  // label that already says the same thing, which announces twice.
+  function syncExpandControl(view) {
+    if (!view.expand) return;
+    view.expand.textContent = view.expanded ? 'Close' : 'Expand';
+    view.expand.setAttribute(
+      'aria-label',
+      view.expanded ? 'Close the expanded diagram' : 'Expand the diagram to fill the screen');
+  }
+
+  function expandedDiagram() {
+    for (var i = 0; i < state.diagrams.length; i++) {
+      if (state.diagrams[i].expanded) return state.diagrams[i];
+    }
+    return null;
+  }
+
+  // The width the <svg> is drawn at with NO zoom applied — re-read after the block's own box changes size,
+  // because `baseWidth` is what every zoom level is multiplied FROM. Left stale, the first `+` pressed inside
+  // an expanded view would draw the diagram SMALLER than the fit it is already showing.
+  //
+  // Measured by clearing the zoom's two inline properties, reading, and putting them straight back. The read
+  // forces layout synchronously and both writes land in the same task, so nothing is ever PAINTED at the
+  // intermediate size.
+  function remeasureDiagram(view) {
+    var svg = view.svg;
+    var width = svg.style.width;
+    var maxWidth = svg.style.maxWidth;
+    svg.style.width = '';
+    svg.style.maxWidth = '';
+    view.baseWidth = svg.getBoundingClientRect().width || view.baseWidth;
+    svg.style.width = width;
+    svg.style.maxWidth = maxWidth;
+    view.maxScale = ceilingFor(svg, view.baseWidth);
+  }
+
+  // Enter or leave expand mode for ONE diagram. In place: the block keeps its parent, its anchor, its tab
+  // stop, its bar and its zoom level, and nothing else on the page is hidden, moved or removed.
+  function setExpanded(view, expanded) {
+    expanded = !!expanded;
+    if (!!view.expanded === expanded) return;
+
+    // One at a time. Two viewport-filling boxes would stack, and the one underneath would be unreachable
+    // while still reporting itself expanded.
+    if (expanded) {
+      var other = expandedDiagram();
+      if (other && other !== view) setExpanded(other, false);
+    }
+
+    view.expanded = expanded;
+    if (expanded) view.el.classList.add('charter-expand');
+    else view.el.classList.remove('charter-expand');
+
+    // `restingHeight` is deliberately NOT re-measured: it is the height this diagram has IN THE COLUMN, and
+    // it is what stops the first zoom after a collapse shrinking the reading window to nothing.
+    remeasureDiagram(view);
+    view.scale = clampScale(view, view.scale);
+    // A zoomed <svg> carries an inline width computed from the OLD base, so it has to be rewritten. At fit
+    // there is nothing written to rewrite and the bar is all that needs to catch up.
+    if (view.scale > DIAGRAM_ZOOM.min) applyZoom(view);
+    else syncZoomBar(view);
+
+    // The block's box just changed by most of the viewport, so everything below it moved. The transient text
+    // highlight is painted in viewport coordinates from a Range and has to be repainted for exactly the
+    // reason a scroll or a resize repaints it.
+    onViewportChange();
+    emit('diagram-expanded', { anchorId: anchorIdOf(view.el), expanded: expanded });
+  }
+
+  // Escape LEAVES an expanded diagram — it is the first thing anyone presses to get out of something that
+  // took the screen, and a view with no keyboard exit is a trap. It is an EXIT and never a way in.
+  //
+  // Registered on the document in the BUBBLE phase, deliberately. The composer already handles Escape and
+  // calls stopPropagation(), so a note being written inside an expanded view swallows the first press and
+  // closes itself, and the second press leaves the view — the precedence a reviewer expects, for free. A
+  // capture-phase listener here would reach PAST the composer and do both at once: the reviewer cancelling a
+  // note is thrown out of the diagram they were annotating AND loses what they typed, and both halves of that
+  // are silent.
+  function onExpandKeyDown(ev) {
+    if (!ev || ev.key !== 'Escape') return;
+    if (ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    var view = expandedDiagram();
+    if (!view) return;
+    ev.preventDefault();
+    setExpanded(view, false);
   }
 
   function clampScale(view, next) {
@@ -4091,6 +4243,12 @@ window.CharterAnnotate = (function () {
     view.el.removeEventListener('keydown', view.onKeyDown, false);
     view.el.removeEventListener('pointerdown', view.onPointerDown, false);
     view.el.removeEventListener('scroll', view.onScroll, false);
+
+    // An expanded diagram comes back to the column first (Charter #234). A released view is one that has
+    // been put back to the markup the renderer emitted, and a `position: fixed` <pre> covering the viewport
+    // is very much something the SDK would have left behind (invariant 1).
+    view.expanded = false;
+    view.el.classList.remove('charter-expand');
 
     view.scale = DIAGRAM_ZOOM.min;
     view.svg.style.width = '';
@@ -4319,6 +4477,9 @@ window.CharterAnnotate = (function () {
       document.addEventListener('change', onQuestionInput, true);
       document.addEventListener('keydown', onQuestionKeydown, true);
       document.addEventListener('keyup', onQuestionKeyup, true);
+      // BUBBLE phase, unlike every listener above it — see onExpandKeyDown for why the composer has to be
+      // able to swallow the Escape that closes it.
+      document.addEventListener('keydown', onExpandKeyDown, false);
     }
     ensureUi();
     wireQuestionForms();
@@ -4362,6 +4523,7 @@ window.CharterAnnotate = (function () {
       document.removeEventListener('change', onQuestionInput, true);
       document.removeEventListener('keydown', onQuestionKeydown, true);
       document.removeEventListener('keyup', onQuestionKeyup, true);
+      document.removeEventListener('keydown', onExpandKeyDown, false);
     }
     unwireQuestionForms();
     if (state.ageTicker) { window.clearInterval(state.ageTicker); state.ageTicker = 0; }
