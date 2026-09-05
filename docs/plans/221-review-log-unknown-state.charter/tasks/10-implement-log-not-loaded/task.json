@@ -1,0 +1,13 @@
+{
+  "description": "Give state.log a loaded/not-loaded distinction on the client so a render before the first load declines instead of reporting an empty panel",
+  "stableId": "w7r3ln",
+  "dependsOn": [
+    "09-author-tests-log-not-loaded"
+  ],
+  "writeScope": [
+    "sdk/charter-annotate.js"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

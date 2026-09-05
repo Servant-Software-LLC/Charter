@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant on the review-log server sources: conflict-marker-free, and any landed Unknown-outcome contribution is a real construct",
+  "scope": "integration"
+}

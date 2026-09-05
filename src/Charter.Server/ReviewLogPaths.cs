@@ -135,6 +135,13 @@ public static class ReviewLogPaths
     /// line-scoped diagnostics are reported in a stable order on every machine. Empty when the directory does
     /// not exist — a plan nobody has commented on is not an error.
     /// </summary>
+    /// <remarks>
+    /// The empty list answers two different questions the same way: <i>the directory holds no logs</i> and
+    /// <i>there is no directory</i>. That is deliberate here — this is path arithmetic, and every caller that
+    /// only wants the names is entitled to the shorter answer — but a caller reporting what a reviewer SAID
+    /// must separate them, or it asserts "nobody commented" on the strength of a directory it never opened
+    /// (Charter #221). <see cref="ReviewLogStore.Read(string)"/> is where that separation is made.
+    /// </remarks>
     public static IReadOnlyList<string> EnumerateLogs(string reviewDirectory)
     {
         if (string.IsNullOrEmpty(reviewDirectory) || !Directory.Exists(reviewDirectory))

@@ -1,0 +1,13 @@
+{
+  "description": "Make hydrateLog decline an Unknown view out loud instead of assigning it over known-good state",
+  "stableId": "k3b7ym",
+  "dependsOn": [
+    "07-author-tests-panel-declines-unknown"
+  ],
+  "writeScope": [
+    "sdk/charter-annotate.js"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}
