@@ -3,6 +3,36 @@ using Charter.Core;
 namespace Charter.Server;
 
 /// <summary>
+/// What a review-log read LEARNED — which is not the same as what it found (Charter #221).
+/// </summary>
+/// <remarks>
+/// The distinction that matters is between the two outcomes that carry no comments. <see cref="Empty"/> is a
+/// POSITIVE finding: the directory was there and holds no logs, so nobody has commented. <see cref="Unknown"/>
+/// is the absence of a finding. Collapsing them is what let a momentarily-absent <c>.review/</c> be reported to
+/// an agent as <i>"the reviewer said nothing"</i> — the shape <see cref="ProbeOutcome"/> already carries one
+/// layer up, for #217.
+/// </remarks>
+public enum ReviewLogOutcome
+{
+    /// <summary>Logs were found and folded. The only outcome whose comments are the whole answer.</summary>
+    Present,
+
+    /// <summary>
+    /// The review directory was read and holds no logs. Nobody has commented — a normal state, not a failure,
+    /// and the usual state of a solo review, since <c>.review/</c> is created lazily on the first append. This
+    /// path stays silent and cheap: it is never a warning.
+    /// </summary>
+    Empty,
+
+    /// <summary>
+    /// The read could not complete — the directory was not there, and a bounded retry did not change that.
+    /// <b>Not evidence that nobody commented.</b> A caller must not report "nothing queued", must not answer
+    /// "no such comment", and must not replace a populated panel with an empty one.
+    /// </summary>
+    Unknown,
+}
+
+/// <summary>
 /// The result of reading and folding a plan's review logs: the folded state, plus the logs that could not be
 /// read at all. Unreadable files are reported rather than absorbed — a caller that showed a partial fold as if
 /// it were complete would be exactly the silent loss the design (§3) exists to prevent.
@@ -15,6 +45,27 @@ public sealed record ReviewLogRead(ReviewLogState State, IReadOnlyList<string> U
     public static ReviewLogRead Empty { get; } = new(
         new ReviewLogState { Comments = Array.Empty<ReviewComment>(), Diagnostics = Array.Empty<ReviewDiagnostic>() },
         Array.Empty<string>());
+
+    /// <summary>What this read learned. See <see cref="ReviewLogOutcome"/>.</summary>
+    public ReviewLogOutcome Outcome => throw new NotImplementedException(
+        "The three-state review-log read is not implemented yet (Charter #221).");
+
+    /// <summary>True when logs were found and folded — the only case whose comments are the whole answer.</summary>
+    public bool IsPresent => Outcome == ReviewLogOutcome.Present;
+
+    /// <summary>
+    /// True only when the directory was read and held no logs. <b>Read this rather than <c>!IsPresent</c></b>
+    /// before reporting that nobody has commented: the negation is true of <see cref="ReviewLogOutcome.Unknown"/>
+    /// as well, and the difference between the two spellings is the whole of Charter #221 — the same rule
+    /// <see cref="ProbeResult.IsAbsent"/> exists to enforce for #217.
+    /// </summary>
+    public bool IsEmpty => Outcome == ReviewLogOutcome.Empty;
+
+    /// <summary>
+    /// True when the read could not complete. Every consumer branches on this POSITIVELY — <c>charter poll</c>
+    /// exits 4, the panel declines the view, and <c>FindComment</c> refuses to answer "not found".
+    /// </summary>
+    public bool IsUnknown => Outcome == ReviewLogOutcome.Unknown;
 }
 
 /// <summary>
@@ -69,6 +120,24 @@ public static class ReviewLogStore
         }
 
         return new ReviewLogRead(ReviewLog.Fold(sources), unreadable);
+    }
+
+    /// <summary>
+    /// The same read with the retry's WAIT supplied by the caller, so a transient absence can be arranged
+    /// deterministically instead of by racing a background thread against the bound.
+    /// </summary>
+    /// <param name="reviewDirectory">The plan's review-log directory.</param>
+    /// <param name="waitBetweenAttempts">
+    /// Called between attempts with the delay, in milliseconds, the read would otherwise have slept. The
+    /// public overload passes <see cref="Thread.Sleep(int)"/>.
+    /// </param>
+    internal static ReviewLogRead Read(string reviewDirectory, Action<int> waitBetweenAttempts)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(reviewDirectory);
+        ArgumentNullException.ThrowIfNull(waitBetweenAttempts);
+
+        throw new NotImplementedException(
+            "The bounded retry in front of the review-log read is not implemented yet (Charter #221).");
     }
 
     // Read one log, tolerating the brief sharing conflicts a concurrent append or a git checkout creates.
