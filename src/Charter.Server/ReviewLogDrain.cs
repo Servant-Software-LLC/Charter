@@ -7,7 +7,12 @@ namespace Charter.Server;
 /// at all, and why a read could not complete.
 /// </summary>
 /// <param name="Annotations">The comments this machine has not already been handed, ready for the envelope.</param>
-/// <param name="HasLog">Whether any per-author log exists beside the plan — false means "nothing to read".</param>
+/// <param name="HasLog">
+/// Whether there is a review beside the plan to report on at all. True when the log directory was READ —
+/// whether it held comments or nothing — and true when it could not be read but this machine has already been
+/// handed records from it. False only for the plan nobody has commented on, which leaves the caller on its
+/// unchanged "no session and no readable log" path.
+/// </param>
 /// <param name="DrainError">A human-readable reason when a log could not be read; null on a clean read.</param>
 /// <param name="Delivered">
 /// Every record id behind <paramref name="Annotations"/>, to be handed to
@@ -31,9 +36,22 @@ public sealed record ReviewLogDrainResult(
     /// </summary>
     public string? LedgerReset { get; init; }
 
-    /// <summary>No review directory, or no logs in it — not an error, just nothing to read.</summary>
+    /// <summary>
+    /// Nothing to read, and nothing this machine is owed: no review directory beside the plan, and no record
+    /// ever handed over from one. <c>.review/</c> is created lazily on the first append
+    /// (<c>docs/plans/03-git-mediated-team-review.md</c> §5.0), so this is the ORDINARY state of a plan nobody
+    /// has commented on — not an error, and not a claim about what a reviewer said.
+    /// </summary>
     public static ReviewLogDrainResult NoLog { get; } =
         new(Array.Empty<Annotation>(), false, null, Array.Empty<string>());
+
+    /// <summary>
+    /// The review directory was READ and holds no logs: nobody has commented. That is a positive finding, so
+    /// it is reported as a log — the caller's clean-empty verdict is then about a queue it actually looked
+    /// into, which is the only thing that verdict was ever entitled to claim.
+    /// </summary>
+    public static ReviewLogDrainResult EmptyLog { get; } =
+        new(Array.Empty<Annotation>(), true, null, Array.Empty<string>());
 }
 
 /// <summary>
@@ -55,7 +73,8 @@ public sealed record ReviewLogDrainResult(
 /// <b>Nothing is silently dropped.</b> A withdrawn comment is reported with a <c>retracted</c> status and an
 /// explicit withdrawal body; a comment whose block has changed is reported with <c>sourceLine: null</c> and
 /// <c>anchorStatus: "orphaned"</c> — the agent needs to know it is looking at a note whose block moved, not to
-/// be handed silence.
+/// be handed silence. And a review log that could not be READ is reported as a failed drain rather than an
+/// empty one, so the queue state comes back UNKNOWN instead of as "the reviewer said nothing" (Charter #221).
 /// </para>
 /// <para>
 /// <b>And nothing is withheld for staleness — deliberately (Charter #74, §4.3.1).</b> The #67 sidecar
@@ -92,13 +111,37 @@ public static class ReviewLogDrain
         ArgumentException.ThrowIfNullOrEmpty(consumedDirectory);
 
         var directory = ReviewLogPaths.DirectoryForPlan(planPath);
-        if (ReviewLogPaths.EnumerateLogs(directory).Count == 0)
-        {
-            return ReviewLogDrainResult.NoLog;
-        }
 
+        // The log directory AS IT IS NOW, read once — and read for its OUTCOME, not merely for its file names.
+        // An enumeration answers the same empty list to "there is nothing in it" and to "there is no it", and
+        // the two are different answers to the question this verb is actually asked (Charter #221).
         var read = ReviewLogStore.Read(directory);
         var ledger = ReviewLogLedger.Load(consumedDirectory, planPath);
+
+        if (read.IsUnknown)
+        {
+            // Nothing was learned — but "the directory is not there" arrives from two directions, and only one
+            // of them is a failure. `.review/` is created lazily on the first append (§5.0), so the plan nobody
+            // has commented on has no directory beside it: the ordinary, silent state of a solo review, which
+            // must not become a warning. What separates them is what this machine already knows. The ledger
+            // records every record it has been HANDED from that directory, so a non-empty one is proof the
+            // directory was here; its absence now is a failed READ — a branch switch, a checkout replacing the
+            // tree, a pull in flight — and telling the agent that was handed those very comments that the
+            // reviewer said nothing is precisely the silent loss this exists to stop.
+            return ledger.Count == 0
+                ? ReviewLogDrainResult.NoLog
+                : new ReviewLogDrainResult(
+                    Array.Empty<Annotation>(),
+                    HasLog: true,
+                    DrainError: DescribeVanished(directory, ledger.Count),
+                    Delivered: Array.Empty<string>());
+        }
+
+        if (read.IsEmpty)
+        {
+            // The directory was there and holds no logs. A finding, and the one exit 2 was always right about.
+            return ReviewLogDrainResult.EmptyLog with { LedgerReset = ledger.ResetReason };
+        }
 
         var fresh = read.State.Comments
             .Where(comment => !ledger.HasConsumedAll(RecordIdsOf(comment)))
@@ -107,7 +150,8 @@ public static class ReviewLogDrain
         // The plan AS IT IS NOW, read once: null when it cannot be read at all. Both verdicts hang off it —
         // the anchor (exact block-id match or orphaned, §4.3) and the base (§4.3.1) — and an unreadable plan
         // orphans everything and answers `unknown` for every base, which is the honest answer when nothing can
-        // be verified.
+        // be verified. The same rule the read above applies to the log DIRECTORY: what could not be read is
+        // reported as unknown, never as a finding.
         var markdown = TryReadPlan(planPath);
         var revision = ReviewBaseStatus.ForPlan(markdown);
 
@@ -216,6 +260,17 @@ public static class ReviewLogDrain
         => unreadable.Count == 0
             ? null
             : $"could not read {unreadable.Count} review log(s): {string.Join("; ", unreadable)}";
+
+    /// <summary>
+    /// The reason a review directory this machine has been reading, and which is now not there, is a failed
+    /// read rather than an empty queue. The companion of <see cref="DescribeUnreadable"/> one level up: that
+    /// one names the log files that could not be read, this one the directory that could not be looked into —
+    /// and it carries the evidence, because "it is gone" alone would not distinguish this from a plan nobody
+    /// has commented on.
+    /// </summary>
+    private static string DescribeVanished(string directory, int consumedCount)
+        => $"could not read the review log at {directory}: it is not there, but this machine has already been "
+            + $"handed {consumedCount} record(s) from it";
 
     /// <summary>
     /// The plan's current text, or <see langword="null"/> when it cannot be read. The null is load-bearing:

@@ -400,15 +400,26 @@ internal static class PollCommand
 
     /// <summary>
     /// The server-less read: fold the committed <c>&lt;plan&gt;.review/*.jsonl</c> logs and emit the SAME
-    /// envelope shape, or null when there is no log beside <paramref name="planPath"/> at all (which leaves
-    /// the caller on the unchanged no-session path, exit 3 — "no session AND no readable log" is still
-    /// "nothing to drain", and an agent that branches on 3 keeps behaving as it does today).
+    /// envelope shape, or null when there is no log beside <paramref name="planPath"/> and this machine has
+    /// never been handed a record from one (which leaves the caller on the unchanged no-session path, exit 3 —
+    /// "no session AND no readable log" is still "nothing to drain", and an agent that branches on 3 keeps
+    /// behaving as it does today).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Exit codes are unchanged in meaning: comments reported ⇒ 0, a readable log with nothing new ⇒ 2, a log
     /// that could not be READ ⇒ 4 (the review state is unknown, never "nothing queued"). The envelope's
     /// <c>session</c> is null because there genuinely is none; the additive <c>source: "review-log"</c> field
     /// is what distinguishes this from the no-session case without changing any existing field.
+    /// </para>
+    /// <para>
+    /// <b>Charter #221 widens the CAUSE of the 4, not its meaning.</b> A review directory that has gone away
+    /// under a machine that was reading it — a branch switch, a checkout replacing the tree, a pull in flight —
+    /// is a log that could not be read, so it takes the same exit 4 as a locked log file. It used to come back
+    /// as "no readable log" (3), and once the directory existed-but-emptied it would have come back as a
+    /// confident clean empty (2): both told the agent something about the reviewer that nothing had verified.
+    /// The genuinely empty <c>.review/</c> keeps its 2 — that queue WAS looked into.
+    /// </para>
     /// </remarks>
     private static int? DrainReviewLog(string planPath)
     {
