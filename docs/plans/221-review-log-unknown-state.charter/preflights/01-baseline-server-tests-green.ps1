@@ -1,23 +1,24 @@
-# catches: an SDK that still assigns an Unknown view over known-good state, emptying the panel and dropping the reviewer's focus to <body> - the reported #221 symptom. These are SkippableFact tests: with no Playwright browser installed they skip, which the executed-count guard reports as certifying nothing. Install the browser rather than weakening the check. The --filter names this pair's OWN selector, never a plan-wide
-#          one - a broad filter asserts the state of every test in the plan, so the task cannot go green
-#          until a task that DEPENDS on it has run (a deadlock validate and graph --check cannot see, #455).
-#          Re-emits the failure BLOCK at the END so it reaches the retry-feedback tail (#179).
+# BASELINE (#181), plan-level, AREA-SCOPED: is Charter.Server.Tests already green before this plan touches it?
+# catches: a pre-existing red that the terminal <plan>/guardrails/02-all-tests-pass.ps1 would otherwise
+#          blame on this plan - AFTER every task has burned its spend. This area is modified by tasks 01/02 and 05/06.
+# ONE PREFLIGHT PER TOUCHED AREA, deliberately (#181c/#181e). The first version of this plan ran the
+#          WHOLE SOLUTION here, which measured IDENTICAL in scope to the terminal gate - so it was not
+#          "strictly narrower" in any sense, and it spent 3m38s on browser tests no early task can
+#          affect before the DAG had even started.
+# The exclusion filter is a NO-OP today - none of its selectors exists until this plan's author-tests
+#          tasks create them - and is written out anyway so the check keeps its meaning if it is ever
+#          re-run against a partially-executed tree. It is NOT the filter for any task-level guardrail
+#          (#455); each pair names its own class.
 $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-# SAME filter string as this pair's inverse half - copied verbatim so the two cannot drift apart.
-$filter = 'Category=BrowserAcceptance&Feature=ReviewLogUnknownPanel'
+$filter = 'Category!=ReviewLogUnknownState&Category!=BridgeUnknown'
 
-# NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block, leaving
-# only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
-# -c Release matches the build gates, so the configuration that is compile-checked is
-# the one the tests actually run in - and each task pays ONE build, not two (#8).
-$out = dotnet test -c Release tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj --filter $filter --nologo 2>&1
-$testExit = $LASTEXITCODE                                  # capture BEFORE any other statement
+# NO -v q on a test command: it suppresses the Error Message/Expected/Actual/Stack Trace block (#179).
+$out = dotnet test tests/Charter.Server.Tests/Charter.Server.Tests.csproj -c Release --nologo --filter $filter 2>&1
+$testExit = $LASTEXITCODE
 $out | ForEach-Object { Write-Output $_ }
 
-# EXIT CODE FIRST, guard second (#455): a test host that never ran exits NON-zero with no summary, so
-# checking the exit code first reports its real error instead of blaming the filter.
 if ($testExit -ne 0) {
     # THREE-WAY, not two. Found by the second review pass: `dotnet test` BUILDS before it runs, so a
     # non-zero exit here is often NOT a test failure at all - and the behavioural message below is then a
@@ -42,9 +43,6 @@ if ($testExit -ne 0) {
         exit 1
     }
 
-    # BLOCK capture, never a line allowlist (#608). An allowlist re-emits only the lines it enumerates, so
-    # it DROPS a DoesNotContain failure's String:/Found: payload and every stack frame - measured. Take the
-    # CONTIGUOUS block from the first failure marker onward, bounded to fit the ~60-line feedback tail.
     $lines = ($out | Out-String) -split '\r?\n'
     # Anchor on the first DETAIL line, NOT the first [FAIL]. MEASURED during review: xUnit prints its
     # whole [FAIL] NAME list before any detail block, so a [FAIL]-anchored window fills with names - a
@@ -67,18 +65,16 @@ if ($testExit -ne 0) {
         $lines[$first..$last] | ForEach-Object { Write-Output $_ }
     }
     else { Write-Output "(no failure block found - inspect the full log above)" }
-    Write-Output "The panel still applies an Unknown view, or the decline swallowed a genuinely empty one (see failure details above)."
+    Write-Output "Charter.Server.Tests is ALREADY RED before this plan has changed anything. Fix that first: every red the terminal gate reports at the end of this run would otherwise be attributed to the plan."
     exit 1
 }
 
-# ZERO-MATCH GUARD (#455): exit 0 alone does NOT mean tests passed - a --filter matching nothing, or a
-# malformed one, also exits 0. Key on the EXECUTED count (Passed+Failed); "Total:" would also count
-# [Skip]ped tests.
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
- if ($ran -lt 1) {
-    Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The --filter matched no tests, is malformed, or every matched test skipped because no Playwright browser is installed. Install it (pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium) rather than weakening this check."
+if ($ran -lt 1) {
+    Write-Output "exit 0 but ZERO tests executed in Charter.Server.Tests - the test host did not run, so no baseline was established. This is NOT a green baseline."
     exit 1
 }
 
+Write-Output "Baseline established: $ran tests executed and Charter.Server.Tests is green before the plan runs."
 exit 0

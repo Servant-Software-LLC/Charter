@@ -31,7 +31,7 @@ $path = if (-not [string]::IsNullOrWhiteSpace($env:GR_SUBJECT)) {
 } elseif ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
     $args[0]
 } else {
-    'tests/Charter.Browser.Tests/ReviewLogUnknownPanelTests.cs'
+    'tests/Charter.Browser.Tests/ReviewLogNotLoadedTests.cs'
 }
 
 if (-not (Test-Path -LiteralPath $path)) {

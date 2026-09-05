@@ -10,7 +10,7 @@ namespace Charter.Browser.Tests;
 public sealed partial class ReviewLoopBrowserTests
 {
     [SkippableFact]
-    [Trait("Feature", "ReviewLogUnknownPanel")]
+    [Trait("Feature", "ReviewLogNotLoaded")]
     public async Task An_unknown_view_does_not_empty_a_populated_panel()
     {
         await using var page = await OpenAsync();

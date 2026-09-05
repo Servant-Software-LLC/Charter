@@ -1,4 +1,4 @@
-# catches: an SDK that still assigns an Unknown view over known-good state, emptying the panel and dropping the reviewer's focus to <body> - the reported #221 symptom. These are SkippableFact tests: with no Playwright browser installed they skip, which the executed-count guard reports as certifying nothing. Install the browser rather than weakening the check. The --filter names this pair's OWN selector, never a plan-wide
+# catches: an SDK in which a render landing BEFORE the first review-log load still reads the initial empty state.log as a real answer - the race issue #221's own captured event wire shows (markers-rendered and focus-not-restored both firing before review-log-loaded, with items=0). These are SkippableFact tests: with no Playwright browser installed they skip, which the executed-count guard reports as certifying nothing. Install the browser rather than weakening the check. The --filter names this pair's OWN selector, never a plan-wide
 #          one - a broad filter asserts the state of every test in the plan, so the task cannot go green
 #          until a task that DEPENDS on it has run (a deadlock validate and graph --check cannot see, #455).
 #          Re-emits the failure BLOCK at the END so it reaches the retry-feedback tail (#179).
@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
 # SAME filter string as this pair's inverse half - copied verbatim so the two cannot drift apart.
-$filter = 'Category=BrowserAcceptance&Feature=ReviewLogUnknownPanel'
+$filter = 'Category=BrowserAcceptance&Feature=ReviewLogNotLoaded'
 
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block, leaving
 # only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
@@ -67,7 +67,7 @@ if ($testExit -ne 0) {
         $lines[$first..$last] | ForEach-Object { Write-Output $_ }
     }
     else { Write-Output "(no failure block found - inspect the full log above)" }
-    Write-Output "The panel still applies an Unknown view, or the decline swallowed a genuinely empty one (see failure details above)."
+    Write-Output "The panel still treats a not-yet-loaded log as a loaded-and-empty one, or the fix swallowed a genuinely empty log (see failure details above)."
     exit 1
 }
 

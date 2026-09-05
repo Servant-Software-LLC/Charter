@@ -1,9 +1,11 @@
-<!-- guardrails:graph v1 source-sha256=c5d8cf494e0762db173470aefc926f166b4fb23e173030e0da7812bc80d14bb6 -->
+<!-- guardrails:graph v1 source-sha256=08cb429303b1dc757e22ccc0c8d6a287ea4bc0ab88b800cffbbcf55e5bbbd99c -->
 
 ```mermaid
 flowchart TD
   subgraph plan_preflights["Full Flight Checks"]
-    plan_preflights_0["01-baseline-suite-green"]:::preflight
+    plan_preflights_0["01-baseline-server-tests-green"]:::preflight
+    plan_preflights_1["02-baseline-cli-tests-green"]:::preflight
+    plan_preflights_2["03-baseline-browser-tests-green"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph task_01_author_tests_unknown_read["01-author-tests-unknown-read"]
@@ -42,9 +44,19 @@ flowchart TD
   style task_07_author_tests_panel_declines_unknown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_panel_declines_unknown["08-implement-panel-declines-unknown"]
     task_08_implement_panel_declines_unknown_gr_0["01-panel-unknown-tests-pass"]:::guardrail
-    task_08_implement_panel_declines_unknown_gr_1["02-exported-artifact-unchanged"]:::guardrail
   end
   style task_08_implement_panel_declines_unknown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_09_author_tests_log_not_loaded["09-author-tests-log-not-loaded"]
+    task_09_author_tests_log_not_loaded_gr_0["01-tests-build"]:::guardrail
+    task_09_author_tests_log_not_loaded_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_09_author_tests_log_not_loaded_gr_2["03-every-test-carries-the-feature-trait"]:::guardrail
+    task_09_author_tests_log_not_loaded_gr_3["04-no-forbidden-playwright-idioms"]:::guardrail
+  end
+  style task_09_author_tests_log_not_loaded fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_10_implement_log_not_loaded["10-implement-log-not-loaded"]
+    task_10_implement_log_not_loaded_gr_0["01-log-not-loaded-tests-pass"]:::guardrail
+  end
+  style task_10_implement_log_not_loaded fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -59,8 +71,10 @@ flowchart TD
   task_05_author_tests_bridge_unknown --> task_06_implement_bridge_unknown
   task_06_implement_bridge_unknown --> task_07_author_tests_panel_declines_unknown
   task_07_author_tests_panel_declines_unknown --> task_08_implement_panel_declines_unknown
+  task_08_implement_panel_declines_unknown --> task_09_author_tests_log_not_loaded
+  task_09_author_tests_log_not_loaded --> task_10_implement_log_not_loaded
   task_04_implement_drain_unknown --> plan_guardrails
-  task_08_implement_panel_declines_unknown --> plan_guardrails
+  task_10_implement_log_not_loaded --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

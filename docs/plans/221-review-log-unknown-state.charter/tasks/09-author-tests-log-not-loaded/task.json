@@ -1,0 +1,13 @@
+{
+  "description": "Author the deterministic reproduction of #221's actual race: a render landing before the first review-log load must not read the initial empty state.log as a real answer",
+  "stableId": "q8x2vd",
+  "dependsOn": [
+    "08-implement-panel-declines-unknown"
+  ],
+  "writeScope": [
+    "tests/Charter.Browser.Tests/ReviewLogNotLoadedTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

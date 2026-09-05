@@ -21,7 +21,9 @@ $manifest = [ordered]@{
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
 Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never read a PREVIOUS attempt's TRX
 
-$out = dotnet test tests/Charter.Server.Tests/Charter.Server.Tests.csproj --filter $filter --nologo `
+# -c Release matches the build gates, so the configuration that is compile-checked is
+# the one the tests actually run in - and each task pays ONE build, not two (#8).
+$out = dotnet test -c Release tests/Charter.Server.Tests/Charter.Server.Tests.csproj --filter $filter --nologo `
        --logger 'trx;LogFileName=census.trx' --results-directory $resultsDir 2>&1
 $out | ForEach-Object { Write-Output $_ }
 
@@ -32,7 +34,7 @@ $out | ForEach-Object { Write-Output $_ }
 $trx = Get-ChildItem $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
        Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $trx) {
-    Write-Output "no .trx under $resultsDir - the test run did not happen (test host failed to start, wrong project path, or a malformed --filter, which exits 0 with no results). This is NOT a finding about the tests: do NOT rewrite them."
+    Write-Output "no .trx under $resultsDir - the test run did not happen (the project did not COMPILE, a locked output DLL failed the build, the test host failed to start, or a malformed --filter, which exits 0 with no results) - check the log above for ': error CS' and 'MSB3026' before concluding anything about the tests. This is NOT a finding about the tests: do NOT rewrite them."
     exit 1
 }
 

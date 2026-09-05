@@ -51,7 +51,12 @@ if (Test-Path -LiteralPath $storePath) {
     if ($store -match 'Unknown') {
         # Present as a real construct, not only inside a comment or a string. Strip block and line
         # comments first, then require the token to survive.
+        # Strip block comments, then STRING LITERALS, then line comments - same order rule as the trait
+        # guardrail, and for a second reason here: without the literal strip, an
+        # `throw new InvalidOperationException("Unknown outcome")` surviving a merge that DROPPED the
+        # enum member reads as a landed contribution. Measured as a false green during review.
         $code = [regex]::Replace($store, '(?s)/\*.*?\*/', '')
+        $code = [regex]::Replace($code, '"(?:[^"\\]|\\.)*"', '""')
         $code = [regex]::Replace($code, '(?m)//.*$', '')
         if ($code -notmatch 'Unknown') {
             $failures += "'Unknown' survives only inside comments in src/Charter.Server/ReviewLogStore.cs - the third outcome's construct was dropped by the union."

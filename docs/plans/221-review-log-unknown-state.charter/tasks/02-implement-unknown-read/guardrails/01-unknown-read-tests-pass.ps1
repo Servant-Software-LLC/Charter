@@ -10,13 +10,38 @@ $filter = 'Category=ReviewLogUnknownState&FullyQualifiedName~ReviewLogUnknownSta
 
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block, leaving
 # only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
-$out = dotnet test tests/Charter.Server.Tests/Charter.Server.Tests.csproj --filter $filter --nologo 2>&1
+# -c Release matches the build gates, so the configuration that is compile-checked is
+# the one the tests actually run in - and each task pays ONE build, not two (#8).
+$out = dotnet test -c Release tests/Charter.Server.Tests/Charter.Server.Tests.csproj --filter $filter --nologo 2>&1
 $testExit = $LASTEXITCODE                                  # capture BEFORE any other statement
 $out | ForEach-Object { Write-Output $_ }
 
 # EXIT CODE FIRST, guard second (#455): a test host that never ran exits NON-zero with no summary, so
 # checking the exit code first reports its real error instead of blaming the filter.
 if ($testExit -ne 0) {
+    # THREE-WAY, not two. Found by the second review pass: `dotnet test` BUILDS before it runs, so a
+    # non-zero exit here is often NOT a test failure at all - and the behavioural message below is then a
+    # confident wrong diagnosis aimed at the one file the retry agent is allowed to edit. Measured: the
+    # plan-level preflight announced "the suite is ALREADY RED" over a run in which every project passed,
+    # because a locked DLL failed the build. Separate the three cases before saying anything.
+    $csErrors = @($out | Where-Object { $_ -match ': error CS' })
+    $lockHits = @($out | Where-Object { $_ -match 'MSB302[67]' })
+
+    if ($csErrors.Count -eq 0 -and $lockHits.Count -gt 0) {
+        Write-Output ""
+        Write-Output "ENVIRONMENT, NOT YOUR CODE: the run failed with ZERO compile errors and $($lockHits.Count) MSB3026/MSB3027 file-lock warning(s) - another process is holding the output DLLs (a lingering test host, or a `charter review` server for this plan). No test ran and no edit can fix it. Escalate with needsHuman (kind: blocked-work) and stop."
+        exit 1
+    }
+
+    if ($csErrors.Count -gt 0) {
+        Write-Output ""
+        Write-Output "=== Compile errors - this is NOT a test failure, no test ran ==="
+        $csErrors | Select-Object -First 20 | ForEach-Object { Write-Output $_ }
+        Write-Output ""
+        Write-Output "The project did not COMPILE. Read the FILE PATHS above and compare each against your writeScope: this command compiles the whole project, including files this task may NOT write. If any failing file lies outside your scope, you cannot fix it - escalate with needsHuman (kind: blocked-work) naming the file and the missing symbol. Fix only what is inside your scope."
+        exit 1
+    }
+
     # BLOCK capture, never a line allowlist (#608). An allowlist re-emits only the lines it enumerates, so
     # it DROPS a DoesNotContain failure's String:/Found: payload and every stack frame - measured. Take the
     # CONTIGUOUS block from the first failure marker onward, bounded to fit the ~60-line feedback tail.

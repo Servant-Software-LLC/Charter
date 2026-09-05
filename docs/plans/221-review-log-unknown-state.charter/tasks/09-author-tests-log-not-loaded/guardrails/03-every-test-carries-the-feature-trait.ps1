@@ -1,15 +1,15 @@
-# catches: a test method authored WITHOUT [Trait("Feature", "ReviewLogUnknownPanel")] - and, worse, the
+# catches: a test method authored WITHOUT [Trait("Feature", "ReviewLogNotLoaded")] - and, worse, the
 #          trait written ONCE on the partial CLASS declaration instead of per method. Every file in
 #          tests/Charter.Browser.Tests is a partial of ONE class carrying Category=BrowserAcceptance, so
 #          that per-pair trait is the ONLY selector that can discriminate this pair. A C# attribute on
 #          any partial declaration applies to the WHOLE TYPE, so a class-level Feature trait silently
-#          widens `Category=BrowserAcceptance&Feature=ReviewLogUnknownPanel` to every browser test in the
+#          widens `Category=BrowserAcceptance&Feature=ReviewLogNotLoaded` to every browser test in the
 #          project - and everything stays GREEN while task 08's tests-pass becomes a project-wide gate
 #          (#455). A method merely MISSING the trait is the loud half: the red census reports "no test
 #          named X ran", true but misleading, since the method exists and simply is not selected.
 #          This is a STRUCTURAL fact about the file, not a runtime property, so no test can carry it -
 #          the census's own selector is what it protects, which is why it cannot be demoted (#468).
-# Measured baseline (#478): ReviewLogUnknownPanelTests.cs does not exist on the starting tree, so the
+# Measured baseline (#478): ReviewLogNotLoadedTests.cs does not exist on the starting tree, so the
 #          required token appears 0 times before this task. The precondition reports the absent file
 #          rather than counting zero traits, so this is RED on arrival for an honest reason.
 # Two-sided sample pair committed beside this file (#302/#468):
@@ -28,7 +28,7 @@ $path = if (-not [string]::IsNullOrWhiteSpace($env:GR_SUBJECT)) {
 } elseif ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
     $args[0]
 } else {
-    'tests/Charter.Browser.Tests/ReviewLogUnknownPanelTests.cs'
+    'tests/Charter.Browser.Tests/ReviewLogNotLoadedTests.cs'
 }
 
 if (-not (Test-Path -LiteralPath $path)) {
@@ -57,7 +57,7 @@ $facts = [regex]::Matches($code, '\[\s*SkippableFact')
 # blanks. Requiring it on $code would make this clause unsatisfiable - the #470 mirror-image dead-end.
 # A SECOND matcher runs over the stripped text purely so its match Indexes are comparable with the class
 # declaration's index below; it matches the attribute's SHAPE, whose argument the strip has emptied.
-$traits    = [regex]::Matches($raw,  '\[\s*Trait\s*\(\s*"Feature"\s*,\s*"ReviewLogUnknownPanel"\s*\)\s*\]')
+$traits    = [regex]::Matches($raw,  '\[\s*Trait\s*\(\s*"Feature"\s*,\s*"ReviewLogNotLoaded"\s*\)\s*\]')
 $traitsPos = [regex]::Matches($code, '\[\s*Trait\s*\(\s*""\s*,\s*""\s*\)\s*\]')
 
 $failures = @()
@@ -76,12 +76,12 @@ $classDecl = [regex]::Match($code, '(?m)^\s*(?:public|internal)?\s*(?:sealed\s+)
 if ($classDecl.Success) {
     $aboveClass = @($traitsPos | Where-Object { $_.Index -lt $classDecl.Index })
     if ($aboveClass.Count -gt 0) {
-        $failures += "a [Trait(`"Feature`", `"ReviewLogUnknownPanel`")] appears ABOVE the class declaration, so it is a CLASS-level attribute. Every file here is a partial of ONE type, and a C# attribute on any partial declaration applies to the WHOLE type - so this silently widens Category=BrowserAcceptance&Feature=ReviewLogUnknownPanel from this pair's tests to every browser test in the project (measured: 99 instead of 7). Put the trait on each METHOD and nowhere else."
+        $failures += "a [Trait(`"Feature`", `"ReviewLogNotLoaded`")] appears ABOVE the class declaration, so it is a CLASS-level attribute. Every file here is a partial of ONE type, and a C# attribute on any partial declaration applies to the WHOLE type - so this silently widens Category=BrowserAcceptance&Feature=ReviewLogNotLoaded from this pair's tests to every browser test in the project (measured: 99 instead of 7). Put the trait on each METHOD and nowhere else."
     }
 }
 
 if ($facts.Count -ge 1 -and $traits.Count -lt $facts.Count) {
-    $failures += "$($facts.Count) [SkippableFact] method(s) but only $($traits.Count) carry [Trait(`"Feature`", `"ReviewLogUnknownPanel`")]. Put the trait on EVERY METHOD, never once on the class: Category=BrowserAcceptance sits on the shared partial class and selects all browser tests, so the Feature trait is the only selector that picks out this pair - and a class-level attribute applies to the whole partial type, widening the filter to every browser test while looking correct."
+    $failures += "$($facts.Count) [SkippableFact] method(s) but only $($traits.Count) carry [Trait(`"Feature`", `"ReviewLogNotLoaded`")]. Put the trait on EVERY METHOD, never once on the class: Category=BrowserAcceptance sits on the shared partial class and selects all browser tests, so the Feature trait is the only selector that picks out this pair - and a class-level attribute applies to the whole partial type, widening the filter to every browser test while looking correct."
 }
 
 if ($failures.Count -gt 0) {
@@ -90,5 +90,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output "$($facts.Count) [SkippableFact] method(s), all carrying the ReviewLogUnknownPanel Feature trait."
+Write-Output "$($facts.Count) [SkippableFact] method(s), all carrying the ReviewLogNotLoaded Feature trait."
 exit 0

@@ -2,17 +2,19 @@
 #          PASSES on the current tree and hides behind its genuinely-failing siblings, so a suite-level
 #          non-zero exit would certify the whole file honest (#375). One entry per enumerated behaviour,
 #          each observed Failed in the runner's OWN TRX - never merely discovered by name.
-# DECLARED EXEMPTIONS: none. The drain does not translate Unknown yet, so every row is red on the current tree. If a row here goes green before the
+# DECLARED EXEMPTIONS: none. state.log starts life as a literal empty log and hydrateLog is fire-and-forget, so nothing can tell a
+#          not-yet-loaded log from a loaded-and-empty one today. Every row is red on the current tree. If a row here goes green before the
 #          implementation lands, that test is not driving the subject: fix the test, never add an exemption.
 $ErrorActionPreference = 'Continue'
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
 
-$filter = 'Category=ReviewLogDrainUnknown&FullyQualifiedName~ReviewLogDrainUnknownTests'
+$filter = 'Category=BrowserAcceptance&Feature=ReviewLogNotLoaded'
 
 $manifest = [ordered]@{
-    'an unknown review log exits 4, not 2'                           = 'An_unknown_review_log_exits_four_not_two'
-    'a genuinely empty review log still exits 2'                     = 'A_genuinely_empty_review_log_still_exits_two'
-    'the unknown exit says unknown, not nothing-queued'              = 'The_unknown_exit_says_unknown_not_nothing_queued'
+    'a render before the first log load does not report a note gone'  = 'A_render_before_the_first_log_load_does_not_report_a_note_gone'
+    'focus is not reported unrestorable while the log is unloaded'   = 'Focus_is_not_reported_unrestorable_while_the_log_is_unloaded'
+    'the panel renders its entries once the log loads'               = 'The_panel_renders_its_entries_once_the_log_loads'
+    'a loaded and genuinely empty log still renders as empty'        = 'A_loaded_and_genuinely_empty_log_still_renders_as_empty'
 }
 
 $resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
@@ -20,7 +22,7 @@ Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never 
 
 # -c Release matches the build gates, so the configuration that is compile-checked is
 # the one the tests actually run in - and each task pays ONE build, not two (#8).
-$out = dotnet test -c Release tests/Charter.Cli.Tests/Charter.Cli.Tests.csproj --filter $filter --nologo `
+$out = dotnet test -c Release tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj --filter $filter --nologo `
        --logger 'trx;LogFileName=census.trx' --results-directory $resultsDir 2>&1
 $out | ForEach-Object { Write-Output $_ }
 
@@ -42,7 +44,7 @@ if (-not $trx) {
 $xml      = [xml](Get-Content $trx.FullName -Raw)
 $recorded = @($xml.TestRun.Results.UnitTestResult | Where-Object { $_ })
 if ($recorded.Count -lt 1) {
-    Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing (is the Category trait ReviewLogDrainUnknown on the class?), the filter is malformed, or every match is skipped. This is NOT a finding about the tests: do NOT rewrite them."
+    Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing (is the Feature trait ReviewLogNotLoaded on every test method? Category=BrowserAcceptance alone selects every browser test and cannot discriminate this pair), the filter is malformed, or every match is skipped. This is NOT a finding about the tests: do NOT rewrite them."
     exit 1
 }
 

@@ -63,6 +63,17 @@ site; another reads `.State.Comments` to find a comment by id.
 | a present read still serves its comments unchanged | `A_present_read_still_serves_its_comments` |
 | FindComment does not report not-found on an unread directory | `FindComment_does_not_report_not_found_on_an_unread_directory` |
 | FindComment still reports not-found for a genuinely absent id | `FindComment_still_reports_not_found_for_a_genuinely_absent_id` |
+| the outcome serializes under the wire name the SDK reads | `The_outcome_serializes_under_the_wire_name_the_SDK_reads` |
+
+### The wire name is a seam nothing else in this plan pins
+
+The last row exists because this plan crosses a language boundary no other guardrail watches. You are
+adding a field to a **PascalCase C# record**; `hydrateLog()` in `sdk/charter-annotate.js` reads its
+**camelCase JSON name** off the wire. Tasks 08 and 10 test the SDK side; your tests are the only ones that
+can see the C# side. **Serialize the view and assert the actual JSON property name** - not the C# property
+name - so both halves are pinned to the same string. Without it, task 06 can name the field whatever it
+likes, the browser tests can be written against a different name, and every guardrail in this plan stays
+green while the panel never sees the field at all.
 
 The two "still" rows are the discriminators: this change must not turn a correct not-found, or a correct
 empty view, into an error. Without them the fix could pass by treating everything as Unknown.
