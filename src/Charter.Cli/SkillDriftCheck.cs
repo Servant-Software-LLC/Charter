@@ -14,8 +14,21 @@ namespace Charter.Cli;
 /// </summary>
 internal static class SkillDriftCheck
 {
-    /// <summary>The bundled skill folders whose installed copies carry a version stamp.</summary>
-    private static readonly string[] SkillNames = { "charter", "charter-format" };
+    /// <summary>
+    /// The bundled skill folders whose installed copies carry a version stamp — read from
+    /// <see cref="SkillsInstaller.BundledSkillNames"/>, which derives them from the embedded resources.
+    /// </summary>
+    /// <remarks>
+    /// This was a literal, <c>{ "charter", "charter-format" }</c>, and it never learned about the third
+    /// bundled skill. The installer discovers the set from the resource glob, so <c>charter-drain</c> was
+    /// installed and stamped like the others while this check could not see it: with all three stale on
+    /// disk, <c>charter --version</c> reported two (Charter #247). It was masked because
+    /// <c>skills install --force</c> reinstalls everything the INSTALLER discovers, so following the advice
+    /// fixed the unreported skill by accident — the bite is a release that changes only that skill, where
+    /// the operator is told they are current. Deriving the set is the fix; a literal here can only ever be
+    /// a copy of a set that already exists (Charter #138's lesson, one surface further out).
+    /// </remarks>
+    private static IReadOnlyList<string> SkillNames => SkillsInstaller.BundledSkillNames;
 
     /// <summary>The top-level skill file that carries the version stamp.</summary>
     private const string SkillFileName = "SKILL.md";
@@ -25,8 +38,8 @@ internal static class SkillDriftCheck
 
     /// <summary>
     /// Scan the two standard skills roots (<c>~/.claude/skills</c> and <c>./.claude/skills</c>) for installed
-    /// <c>charter</c> / <c>charter-format</c> skills whose stamped version differs from
-    /// <paramref name="currentVersion"/>. Resolves the roots exactly as <see cref="SkillsInstaller"/> does.
+    /// copies of EVERY bundled skill whose stamped version differs from <paramref name="currentVersion"/>.
+    /// Resolves the roots — and now the skill set — exactly as <see cref="SkillsInstaller"/> does.
     /// </summary>
     public static IReadOnlyList<StaleSkill> FindStaleSkills(string currentVersion)
     {

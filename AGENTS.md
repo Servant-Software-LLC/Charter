@@ -51,6 +51,14 @@ task DAG. It combines Lavish's comment-in-place review loop with Builder.io visu
 authoring, reimplemented in C#. Charter's own format is not MDX: a `.charter.md` is CommonMark plus
 `:::` directive blocks, specified by the bundled `charter-format` skill. See `README.md`.
 
+Three skills ship inside the binary and are written to disk by `charter skills install`: **`charter`**
+(authoring and the author → review → handoff workflow), **`charter-drain`** (the agent's side of the review
+loop — what picks up a round after a reviewer clicks *Send to agent*), and **`charter-format`** (the
+normative block catalog, also read by Guardrails plan-breakdown). The set is DERIVED from the `skills/**`
+resource glob wherever it is needed — never re-list it in code; `SkillDriftCheck` held its own literal and
+could not see `charter-drain` for that skill's whole life (Charter #247). `BundledSkillsTests` fails if a
+bundled skill is undiscovered, unnamed in the README, or invisible to the drift check.
+
 ## Status
 
 Shipping on all channels. The block model, the renderer, the loopback review server, the in-place
