@@ -1,0 +1,11 @@
+{
+  "description": "Implement the three-state read: an absent .review/ is Unknown, not Empty, behind a short bounded retry",
+  "stableId": "m8p3qz",
+  "dependsOn": [
+    "01-author-tests-unknown-read"
+  ],
+  "writeScope": [
+    "src/Charter.Server/ReviewLogStore.cs",
+    "src/Charter.Server/ReviewLogPaths.cs"
+  ]
+}

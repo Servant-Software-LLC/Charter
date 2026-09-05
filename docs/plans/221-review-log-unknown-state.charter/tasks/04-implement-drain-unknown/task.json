@@ -1,0 +1,11 @@
+{
+  "description": "Make the drain translate an Unknown read into exit 4 rather than an empty queue",
+  "stableId": "h2j7ck",
+  "dependsOn": [
+    "03-author-tests-drain-unknown"
+  ],
+  "writeScope": [
+    "src/Charter.Server/ReviewLogDrain.cs",
+    "src/Charter.Cli/PollCommand.cs"
+  ]
+}

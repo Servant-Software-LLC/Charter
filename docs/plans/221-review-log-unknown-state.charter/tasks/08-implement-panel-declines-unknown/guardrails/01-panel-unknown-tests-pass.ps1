@@ -1,0 +1,49 @@
+# catches: an SDK that still assigns an Unknown view over known-good state, emptying the panel and dropping the reviewer's focus to <body> - the reported #221 symptom. These are SkippableFact tests: with no Playwright browser installed they skip, which the executed-count guard reports as certifying nothing. Install the browser rather than weakening the check. The --filter names this pair's OWN selector, never a plan-wide
+#          one - a broad filter asserts the state of every test in the plan, so the task cannot go green
+#          until a task that DEPENDS on it has run (a deadlock validate and graph --check cannot see, #455).
+#          Re-emits the failure BLOCK at the END so it reaches the retry-feedback tail (#179).
+$ErrorActionPreference = 'Continue'
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+
+# SAME filter string as this pair's inverse half - copied verbatim so the two cannot drift apart.
+$filter = 'Category=BrowserAcceptance&Feature=ReviewLogUnknownPanel'
+
+# NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual/Stack Trace block, leaving
+# only "[FAIL] <name>" for the re-emit below to find - which defeats #179 by the flag alone.
+$out = dotnet test tests/Charter.Browser.Tests/Charter.Browser.Tests.csproj --filter $filter --nologo 2>&1
+$testExit = $LASTEXITCODE                                  # capture BEFORE any other statement
+$out | ForEach-Object { Write-Output $_ }
+
+# EXIT CODE FIRST, guard second (#455): a test host that never ran exits NON-zero with no summary, so
+# checking the exit code first reports its real error instead of blaming the filter.
+if ($testExit -ne 0) {
+    # BLOCK capture, never a line allowlist (#608). An allowlist re-emits only the lines it enumerates, so
+    # it DROPS a DoesNotContain failure's String:/Found: payload and every stack frame - measured. Take the
+    # CONTIGUOUS block from the first failure marker onward, bounded to fit the ~60-line feedback tail.
+    $lines = ($out | Out-String) -split '\r?\n'
+    $first = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '\[FAIL\]|Error Message:') { $first = $i; break }
+    }
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($first -ge 0) {
+        $last = [Math]::Min($first + 55, $lines.Count - 1)
+        $lines[$first..$last] | ForEach-Object { Write-Output $_ }
+    }
+    else { Write-Output "(no failure block found - inspect the full log above)" }
+    Write-Output "The panel still applies an Unknown view, or the decline swallowed a genuinely empty one (see failure details above)."
+    exit 1
+}
+
+# ZERO-MATCH GUARD (#455): exit 0 alone does NOT mean tests passed - a --filter matching nothing, or a
+# malformed one, also exits 0. Key on the EXECUTED count (Passed+Failed); "Total:" would also count
+# [Skip]ped tests.
+$ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
+        ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+ if ($ran -lt 1) {
+    Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The --filter matched no tests, is malformed, or every matched test skipped because no Playwright browser is installed. Install it (pwsh tests/Charter.Browser.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium) rather than weakening this check."
+    exit 1
+}
+
+exit 0

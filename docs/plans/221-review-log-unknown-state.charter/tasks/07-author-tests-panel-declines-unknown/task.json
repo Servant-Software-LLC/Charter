@@ -1,0 +1,13 @@
+{
+  "description": "Author the deterministic browser reproduction: an Unknown review-log view must not empty the panel or drop the reviewer's focus",
+  "stableId": "z9c5fw",
+  "dependsOn": [
+    "06-implement-bridge-unknown"
+  ],
+  "writeScope": [
+    "tests/Charter.Browser.Tests/ReviewLogUnknownPanelTests.cs"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

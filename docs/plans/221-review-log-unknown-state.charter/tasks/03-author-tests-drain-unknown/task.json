@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests that charter poll reports exit 4 (state UNKNOWN), never exit 2 (clean-empty), on an unreadable review log",
+  "stableId": "t5w9nb",
+  "dependsOn": [
+    "02-implement-unknown-read"
+  ],
+  "writeScope": [
+    "tests/Charter.Cli.Tests/ReviewLogDrainUnknownTests.cs"
+  ]
+}

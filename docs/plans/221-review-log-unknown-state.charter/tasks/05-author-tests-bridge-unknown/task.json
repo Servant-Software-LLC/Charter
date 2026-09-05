@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests that the bridge surfaces Unknown on /api/review-log and refuses to report a comment not-found on an unread directory",
+  "stableId": "v6d1xs",
+  "dependsOn": [
+    "02-implement-unknown-read"
+  ],
+  "writeScope": [
+    "tests/Charter.Server.Tests/BridgeUnknownTests.cs"
+  ]
+}

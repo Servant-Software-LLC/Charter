@@ -1,0 +1,11 @@
+{
+  "description": "Surface the Unknown outcome in the review-log view and stop FindComment reporting not-found on an unread directory",
+  "stableId": "n4g8rt",
+  "dependsOn": [
+    "05-author-tests-bridge-unknown"
+  ],
+  "writeScope": [
+    "src/Charter.Server/ReviewLogBridge.cs",
+    "src/Charter.Server/ReviewLogView.cs"
+  ]
+}
