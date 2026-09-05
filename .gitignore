@@ -33,12 +33,3 @@ examples/**/.work/
 ## the checkout is scratch, and because a stray one left behind by an interrupted agent should never look
 ## like uncommitted work.
 .claude/worktrees/
-
-# Guardrails per-run runtime state inside a committed plan folder (rewritten every run;
-# `--fresh` clears it). The plan DEFINITION, the review marker and the review reports under
-# state/reviews/ are committed; run.json, state.json and logs/ are not.
-docs/plans/*/state/run.json
-docs/plans/*/state/state.json
-docs/plans/*/state/merge-conflicts.log
-docs/plans/*/logs/
-docs/plans/*/captured/
