@@ -829,6 +829,42 @@ window.CharterAnnotate = (function () {
   // Re-read the FOLDED review log — every author's committed comments, not only this machine's pending
   // queue. Called on load, after every write, and whenever the server reports that `.review/` changed
   // (a `git pull` landing a teammate's log mid-session).
+  //
+  // "I COULD NOT LOOK" IS NOT "THERE IS NOTHING THERE" (Charter #221).
+  //
+  // The view now carries an `outcome`: `present` (a directory read, holding logs), `empty` (a directory read,
+  // holding none) or `unknown` (there was no directory to read, after the server's bounded retry). Only the
+  // first two are ANSWERS about the review log; `unknown` is the absence of one. Assigning it over `state.log`
+  // is the same class of mistake #209 fixed one function up — trading knowledge the page already holds for a
+  // reading that never happened — and the damage is worse here, because the panel is not a badge: render()
+  // destroys and rebuilds every card, so an applied zero-comment view removes the element the reviewer was
+  // reading and focus lands on <body>.
+  //
+  // The window is ordinary, not exotic. `.review/` is created lazily on the first append and lives in the
+  // working tree, so a branch switch, a `git clean` or a `git pull` can take it out from under an in-flight
+  // read while the reviewer is mid-comment. There is nothing to wait for: the directory is gone, and the next
+  // `review-log` frame — the watcher reports the deletion too — brings another read that answers the same way.
+  //
+  // So: decline it, keep what the panel is showing, and say so. What is given up is any teammate comment
+  // committed in the moment the directory was away, until it comes back and the next read lands. What is kept
+  // is every comment already on screen and the reviewer's place among them. As in #209, the decline is
+  // announced rather than silent — `declined` is a structural fact a test can assert on, so the guard cannot
+  // rot into a branch nothing ever proves was taken.
+  //
+  // But `unknown` ALONE is not the trigger, for the same reason it is not the whole trigger for `charter poll`'s
+  // exit 4. An absent `.review/` is the ORDINARY state of a plan nobody has committed a comment on — a charter
+  // served with no review-log writer never creates the directory, so every read of it answers `unknown` from the
+  // first one. The decline is for a non-answer that would ERASE something; where the panel holds nothing from a
+  // successful read there is nothing to erase, applying it is a no-op on `state.log`, and the render it carries
+  // is load-bearing well past this panel — it sweeps every badge and marker on the page. So the drain's
+  // discrimination (Unknown is a FAILED read only where a read had succeeded before) is asked here of the state
+  // the panel is actually showing.
+  function holdingAReadLog() {
+    return state.log.comments.length > 0 ||
+      state.log.diagnostics.length > 0 ||
+      state.log.unreadable.length > 0;
+  }
+
   function hydrateLog() {
     var url = '/api/review-log?key=' + encodeURIComponent(state.key || '');
     return fetch(url, { headers: { 'Accept': 'application/json' } }).then(function (res) {
@@ -837,6 +873,16 @@ window.CharterAnnotate = (function () {
         return null;
       }
       return res.json().then(function (view) {
+        if (view && view.outcome === 'unknown' && holdingAReadLog()) {
+          // The count reported is the one the panel is STILL showing, not the zero the declined view carried.
+          emit('review-log-loaded', {
+            count: state.log.comments.length,
+            diagnostics: state.log.diagnostics.length,
+            unreadable: state.log.unreadable.length,
+            declined: true
+          });
+          return state.log;
+        }
         state.log = {
           comments: (view && view.comments) || [],
           diagnostics: (view && view.diagnostics) || [],
@@ -847,7 +893,8 @@ window.CharterAnnotate = (function () {
         emit('review-log-loaded', {
           count: state.log.comments.length,
           diagnostics: state.log.diagnostics.length,
-          unreadable: state.log.unreadable.length
+          unreadable: state.log.unreadable.length,
+          declined: false
         });
         return state.log;
       }, function () {
