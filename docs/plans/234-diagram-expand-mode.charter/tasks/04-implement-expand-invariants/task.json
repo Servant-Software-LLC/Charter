@@ -1,0 +1,7 @@
+{
+  "description": "Make the expand-mode invariants hold — zoom, pan, chrome pinning, per-node annotation, re-entrancy across render(), and focus anti-steal — in the annotation SDK",
+  "stableId": "w9h5dc",
+  "dependsOn": ["02-implement-expand-affordance", "03-author-tests-expand-invariants"],
+  "writeScope": ["sdk/charter-annotate.js"],
+  "action": { "maxTurns": 75 }
+}

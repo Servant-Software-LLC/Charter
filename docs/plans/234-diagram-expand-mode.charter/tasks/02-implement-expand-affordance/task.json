@@ -1,0 +1,7 @@
+{
+  "description": "Implement the :::diagram expand affordance in the annotation SDK — an in-place position:fixed expanded view that hides no existing chrome",
+  "stableId": "m4q8vt",
+  "dependsOn": ["01-author-tests-expand-affordance"],
+  "writeScope": ["sdk/charter-annotate.js"],
+  "action": { "maxTurns": 75 }
+}

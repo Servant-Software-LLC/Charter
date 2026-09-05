@@ -1,0 +1,30 @@
+{
+  "Version": 1,
+  "Files": {
+    "guardrails.json": "e5ef323edec020a34d74c51065097fdccc9e5b7cc13b8ce1bfdcaaa522f9854b",
+    "guardrails/01-solution-builds.ps1": "798e1f5bb1eed12efca23d2bda12d0f848596748cf861a0ce8d4bbcdbb6e642c",
+    "guardrails/02-all-tests-pass.ps1": "cd8e9aad62703fa104465b553ac85682008b80c673c951135e543879dffc996a",
+    "guardrails/03-sdk-union-verified.json": "d6a041e5d471d316364065879bfe047b6823af6e9e11b43f02ba8be7541d6117",
+    "guardrails/03-sdk-union-verified.ps1": "a101522c84c67ad31627d1486a6c9be3a1f4bd19f3c8251adbfdc9dff776cb08",
+    "tasks/01-author-tests-expand-affordance/action.prompt.md": "487b6920ca71a53cb14591a2130a3181476325b16346d898c0f5527384e6f4e7",
+    "tasks/01-author-tests-expand-affordance/guardrails/01-tests-build.ps1": "0e02beb619f037ea9869e79eb723b95dff2827531a6a86e2cd4285f537ccf59b",
+    "tasks/01-author-tests-expand-affordance/guardrails/02-tests-fail-on-current-code.ps1": "b3234b798e53c2df6e619952c334d27ef98520b4660c70fcb2bed50966f873e9",
+    "tasks/01-author-tests-expand-affordance/guardrails/03-every-test-carries-the-feature-trait.ps1": "dfe35a9b74ff72dbba8bf013809f58ffe8622fea7429d6be07ee4e5de3d1c79d",
+    "tasks/01-author-tests-expand-affordance/samples/03-every-test-carries-the-feature-trait.invalid.cs": "be09fecd68853eac43225eed4adc9eba5650779e723af952c689a8a712147266",
+    "tasks/01-author-tests-expand-affordance/samples/03-every-test-carries-the-feature-trait.valid.cs": "f32d9f008931dcf8392a4caa550136b65d12ab81dab27c4c243a4952482a2aa5",
+    "tasks/01-author-tests-expand-affordance/task.json": "e4ed67afb67c90d4121113d9408742e4fffd4a3d4b37952b61ab751d9060e233",
+    "tasks/02-implement-expand-affordance/action.prompt.md": "4aae826a7221c67e02018de0318c925839d1c8f6ef11a782471425fa934b9685",
+    "tasks/02-implement-expand-affordance/guardrails/01-expand-affordance-tests-pass.ps1": "9b7961e343d1fa9cfcdaf6596eac52c4dd8a626befe50d4e4645d79dd0e9e7e4",
+    "tasks/02-implement-expand-affordance/guardrails/02-exported-artifact-unchanged.ps1": "d23e4a8224e945ba7ea7cefc88642148290582ff8cd753ff0dd5ed8f707f680e",
+    "tasks/02-implement-expand-affordance/task.json": "42bd172cc733ab70a87eacda557f2e5d1f1cccadcf8d3faeb824f7560eed083a",
+    "tasks/03-author-tests-expand-invariants/action.prompt.md": "809948e4eac3c8d17062ad17d86c6792fcf5097d56db2d421cd8c4191760f9e4",
+    "tasks/03-author-tests-expand-invariants/guardrails/01-tests-build.ps1": "b6db9e91848da411653200a8d1de0f1569e24070e0bee47c10d15bd997723e1e",
+    "tasks/03-author-tests-expand-invariants/guardrails/02-tests-fail-on-current-code.ps1": "eb752e73fc886fdde9bf97b28b8e553a2ce7c3d8a65931b3a6579e2b5a1a19f5",
+    "tasks/03-author-tests-expand-invariants/task.json": "a4e3614527a7e302f60f1ae8597b0adccac6fac5bfa836f3acdcd4d117d9c0f1",
+    "tasks/04-implement-expand-invariants/action.prompt.md": "35283af02d5e0201974d6f136d6565434425f9e41cae71b7cbb94728723f1a55",
+    "tasks/04-implement-expand-invariants/guardrails/01-expand-invariant-tests-pass.ps1": "cee239a0d6af5b1838f512a1a1d0d884b1dc4b476876bd4cfce1dc187661a811",
+    "tasks/04-implement-expand-invariants/guardrails/02-exported-artifact-unchanged.ps1": "fae14709cf414ecb4bd4c78b20f2f8cdf586fa6a9b315eeaed1cdbbdd1edada5",
+    "tasks/04-implement-expand-invariants/guardrails/03-both-engines-pass.ps1": "cdc372e259b089ca8a6d549708c6f17cff004416b8414a17cae628e51602b807",
+    "tasks/04-implement-expand-invariants/task.json": "c38f8e1d6e92689f5359f1b671607c303ded9216627e33ffc4b9ecb55197c83f"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Author failing browser tests for the :::diagram expand affordance (button, collapse, Escape, hint, keyboard reach, and the no-hidden-chrome rule)",
+  "stableId": "x7k2p9",
+  "dependsOn": [],
+  "writeScope": ["tests/Charter.Browser.Tests/DiagramExpandAffordanceTests.cs"],
+  "action": { "maxTurns": 75 }
+}

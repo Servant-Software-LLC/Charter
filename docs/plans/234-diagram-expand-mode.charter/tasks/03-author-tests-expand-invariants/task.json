@@ -1,0 +1,7 @@
+{
+  "description": "Author failing browser tests for the invariants that must survive expansion — zoom, pan, chrome pinning, per-node annotation, re-entrancy across render(), and focus anti-steal",
+  "stableId": "b3n6zr",
+  "dependsOn": ["01-author-tests-expand-affordance"],
+  "writeScope": ["tests/Charter.Browser.Tests/DiagramExpandInvariantTests.cs"],
+  "action": { "maxTurns": 75 }
+}
