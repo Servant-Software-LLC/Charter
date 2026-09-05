@@ -5,6 +5,27 @@ using Charter.Core;
 namespace Charter.Server;
 
 /// <summary>
+/// A review-log operation was asked a question only the fold can answer, against a <c>.review/</c> that could
+/// not be read (Charter #221).
+/// </summary>
+/// <remarks>
+/// Its own type, rather than an <see cref="IOException"/>, because the two are caught for opposite reasons: the
+/// I/O exceptions this codebase catches are the ones it means to ABSORB (a log that is momentarily locked, a
+/// plan that cannot be re-read), and absorbing this one restores exactly the silence it exists to break.
+/// </remarks>
+internal sealed class ReviewLogUnreadableException : Exception
+{
+    public ReviewLogUnreadableException(string reviewDirectory)
+        : base($"The review log at '{reviewDirectory}' could not be read, so no comment can be found in it.")
+    {
+        ReviewDirectory = reviewDirectory;
+    }
+
+    /// <summary>The directory that could not be read.</summary>
+    public string ReviewDirectory { get; }
+}
+
+/// <summary>
 /// The review server's half of the git-mediated review log: it folds every author's log for the panel, and
 /// turns the panel's actions (comment / edit / retract / resolve) into appended records in THIS author's log.
 /// </summary>
@@ -93,6 +114,7 @@ internal sealed class ReviewLogBridge
     /// Replace <paramref name="commentId"/>'s body. False when there is no writer or no such comment in the
     /// fold — never a guess about which comment was meant.
     /// </summary>
+    /// <exception cref="ReviewLogUnreadableException">The fold could not be read, so neither answer is honest.</exception>
     public bool Edit(string commentId, string body)
     {
         var comment = Find(commentId);
@@ -110,6 +132,7 @@ internal sealed class ReviewLogBridge
     /// retain and report such a record without applying it, so writing one would only add noise, and the point
     /// of the rule is that a teammate cannot silently delete a blocking objection (§4.2).
     /// </summary>
+    /// <exception cref="ReviewLogUnreadableException">The fold could not be read, so authorship is unknown.</exception>
     public bool Retract(string commentId)
     {
         var comment = Find(commentId);
@@ -126,6 +149,10 @@ internal sealed class ReviewLogBridge
     /// Close <paramref name="commentId"/>. Open to anyone — review is collaborative, and the panel attributes
     /// every settlement to whoever made it (§4.2).
     /// </summary>
+    /// <exception cref="ReviewLogUnreadableException">
+    /// The fold could not be read. The alternative was <c>false</c> — the server's 404 — which tells a reviewer
+    /// looking straight at the comment in the panel that it does not exist.
+    /// </exception>
     public bool Resolve(string commentId)
     {
         var comment = Find(commentId);
@@ -138,7 +165,25 @@ internal sealed class ReviewLogBridge
         return true;
     }
 
-    /// <summary>The folded comment with this id, or null when there is no writer or no such comment.</summary>
+    /// <summary>
+    /// The folded comment with this id, or null when there is no writer or no such comment.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Null means "not in the fold", and only a fold can say that.</b> Every caller reads null as <i>no such
+    /// comment</i> and returns false, which the server turns into a 404 — so returning it for a directory that
+    /// was never read tells the reviewer their comment does not exist on the evidence of not having looked
+    /// (Charter #221). An <see cref="ReviewLogOutcome.Unknown"/> read therefore raises rather than answering:
+    /// none of the three verbs can build an honest record without the fold either, since <c>prev</c> is "what
+    /// this author had observed" and a retract turns on the comment's own authorship.
+    /// </para>
+    /// <para>
+    /// The raise reaches the request loop, which answers 500. That is not a good answer, but it is the only one
+    /// left: <c>Edit</c> / <c>Retract</c> / <c>Resolve</c> return <c>bool</c>, both of whose values are already
+    /// claims about the fold, and "I could not read it" is a third thing.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ReviewLogUnreadableException">The review directory could not be read.</exception>
     private ReviewComment? Find(string commentId)
     {
         if (_writer is null || string.IsNullOrEmpty(commentId))
@@ -146,7 +191,13 @@ internal sealed class ReviewLogBridge
             return null;
         }
 
-        return ReviewLogStore.Read(Directory).State.Comments
+        var read = ReviewLogStore.Read(Directory);
+        if (read.IsUnknown)
+        {
+            throw new ReviewLogUnreadableException(Directory);
+        }
+
+        return read.State.Comments
             .FirstOrDefault(c => string.Equals(c.Id, commentId, StringComparison.Ordinal));
     }
 

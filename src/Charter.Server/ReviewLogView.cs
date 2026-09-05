@@ -159,12 +159,38 @@ public sealed record ReviewLogView(
     IReadOnlyList<string> Unreadable,
     string? SelfEmail)
 {
-    /// <summary>The view for a plan with no logs at all.</summary>
+    /// <summary>The view for a plan whose review directory was read and holds no logs at all.</summary>
     public static ReviewLogView Empty { get; } = new(
         Array.Empty<ReviewLogCommentView>(),
         Array.Empty<ReviewLogNoticeView>(),
         Array.Empty<string>(),
-        null);
+        null)
+    {
+        Outcome = ReviewLogOutcome.Empty,
+    };
+
+    /// <summary>
+    /// What the read behind this view LEARNED — the one field the panel branches on to tell an empty comment
+    /// list apart from a comment list nobody could read (Charter #221).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It crosses the wire as <c>"outcome": "present" | "empty" | "unknown"</c> — a STRING, because the browser
+    /// SDK compares it to a literal and an ordinal would silently shift the day a member is inserted. The
+    /// camelCase name and tokens come from <see cref="AnnotationApi.JsonOptions"/>, which every route serializing
+    /// this view already uses.
+    /// </para>
+    /// <para>
+    /// Zero comments is not the answer on its own: <see cref="ReviewLogOutcome.Empty"/> says nobody has
+    /// commented, <see cref="ReviewLogOutcome.Unknown"/> says nothing was learned. Rendering the second as the
+    /// first is what emptied a populated panel while a <c>git pull</c> was replacing <c>.review/</c>.
+    /// </para>
+    /// <para>
+    /// Defaults to <see cref="ReviewLogOutcome.Present"/> to mirror <see cref="ReviewLogRead.Outcome"/>, whose
+    /// value it is always built from — the two carry the same meaning on either side of the projection.
+    /// </para>
+    /// </remarks>
+    public ReviewLogOutcome Outcome { get; init; } = ReviewLogOutcome.Present;
 
     /// <summary>
     /// Project <paramref name="read"/> for display, resolving every anchor against
@@ -182,7 +208,12 @@ public sealed record ReviewLogView(
             .Select(d => new ReviewLogNoticeView(d.Kind.ToString(), d.Message, d.FileName, d.LineNumber))
             .ToList();
 
-        return new ReviewLogView(comments, diagnostics, read.Unreadable, selfEmail);
+        // The outcome travels UNCHANGED: a projection may not upgrade "I could not look" into a finding, and a
+        // present or empty read must serve exactly what it served before this field existed.
+        return new ReviewLogView(comments, diagnostics, read.Unreadable, selfEmail)
+        {
+            Outcome = read.Outcome,
+        };
     }
 
     private static ReviewLogCommentView Project(
