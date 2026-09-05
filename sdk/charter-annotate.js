@@ -89,7 +89,15 @@ window.CharterAnnotate = (function () {
     // The FOLDED review log of every author, from GET /api/review-log — this is what makes teammates'
     // comments visible. The server reads and folds `<plan>.review/*.jsonl` itself; the browser only ever
     // sees this projection, never a file.
-    log: { comments: [], diagnostics: [], unreadable: [], selfEmail: null },
+    //
+    // `loaded` IS PART OF THE LOG, NOT BOOKKEEPING ABOUT A FETCH (Charter #221). Everything beside it here
+    // is byte-for-byte the view a server answers with when it looked and found nothing, so without the flag
+    // a render landing before the first read is indistinguishable from one drawn from an empty review — and
+    // every consumer below (mergedRecords, the panel, restoreChromeFocus) concludes with full confidence
+    // that there is nothing committed. hydrateLog() is fire-and-forget from init and from the `review-log`
+    // SSE frame, so that window is ordinary rather than exotic: it is open on every load. False until a view
+    // is APPLIED, which is the only moment the fields beside it came from an answer.
+    log: { loaded: false, comments: [], diagnostics: [], unreadable: [], selfEmail: null },
     ui: null,            // the SDK-owned chrome: { style, panel, toggle, overlay, ... }
     // The review ROUND's hand-off state, mirrored from GET /api/review. `submitted` is true while the
     // reviewer's "Send to agent" click is pending (the agent has not been told yet); `pending` is the live
@@ -884,6 +892,11 @@ window.CharterAnnotate = (function () {
           return state.log;
         }
         state.log = {
+          // The one moment the log stops being "not read yet" — set with the fields it describes, so the two
+          // cannot drift apart. An `unknown` view that reaches here has been APPLIED (the guard above let it
+          // through because there was nothing on screen for it to erase), and an applied answer is a read:
+          // a plan with no `.review/` beside it really does have no committed comments to show.
+          loaded: true,
           comments: (view && view.comments) || [],
           diagnostics: (view && view.diagnostics) || [],
           unreadable: (view && view.unreadable) || [],
@@ -2522,6 +2535,29 @@ window.CharterAnnotate = (function () {
     // counterpart" and "a counterpart that would not take focus", and the caller reported absence.
     var built = !!(target || fallback);
 
+    // ...and there is a THIRD fact, which `built: false` cannot express either (Charter #221).
+    //
+    //   the log was never read   this pass rebuilt the panel and the markers from `state.log` — and until the
+    //                            first /api/review-log answer lands, that is an empty literal rather than an
+    //                            answer. A card whose only record is a durable one is therefore missing from
+    //                            this render for a reason that has nothing to do with the note: it is in a
+    //                            file this page has not opened. Charter's own rule is that a retract HIDES a
+    //                            comment's body and KEEPS its thread, so "no longer in the list" is exactly
+    //                            wrong about the commonest way to reach here — a reviewer withdrawing their
+    //                            own note before the first load.
+    //
+    // It must borrow neither of the two sentences above. ITEM_GONE / BADGE_GONE are claims about the review,
+    // and this page has not read the review; NOT_FOCUSABLE is a claim about a control on screen, and there
+    // is none. So no sentence is written and no absence is claimed — but the refusal is announced, because a
+    // branch whose only evidence is that nothing happened is one no test can prove was taken, and because
+    // #221 was investigated by reading exactly this wire. Focus is left where the browser put it: every
+    // landing place Charter could invent is one the reviewer did not ask for, and the next load brings a
+    // render that can answer honestly.
+    if (!built && !state.log.loaded) {
+      emit('focus-restore-declined', { key: taken.focus.key, reason: 'log-not-loaded' });
+      return;
+    }
+
     if (built) {
       explain(NOT_FOCUSABLE);
     } else if (taken.focus.gone) {
@@ -3326,7 +3362,16 @@ window.CharterAnnotate = (function () {
     // that reflows the page between placing it and measuring it puts the badge somewhere it does not belong.
     for (var w = 0; w < rails.length; w++) positionRailBadge(rails[w]);
 
-    emit('markers-rendered', { blocks: order.length, rails: rails.length });
+    // EVERY RENDER SAYS WHETHER THE LOG IT DREW FROM HAD BEEN READ (Charter #221). The renders this matters
+    // most for are the ones that happen before any load has landed, so there is no `review-log-loaded` to
+    // hang the answer on — the question belongs to the render. Same shape as #209's `stale` on `list-loaded`
+    // and `declined` on `review-log-loaded`: a client that quietly went back to treating every log as unread
+    // would look identical from outside without it.
+    emit('markers-rendered', {
+      blocks: order.length,
+      rails: rails.length,
+      logLoaded: !!state.log.loaded
+    });
   }
 
   // The element the rail is inserted BEFORE, or null when this block must stay unbadged.
@@ -4602,7 +4647,9 @@ window.CharterAnnotate = (function () {
     state.pan = null;
     state.annotations = [];
     state.queueWrites = 0;
-    state.log = { comments: [], diagnostics: [], unreadable: [], selfEmail: null };
+    // Back to NOT READ, not to "read and empty": a disposed SDK has no more standing to answer questions
+    // about the review log than one that has never run (Charter #221).
+    state.log = { loaded: false, comments: [], diagnostics: [], unreadable: [], selfEmail: null };
     state.round = { submitted: false, pending: { annotations: 0, answers: 0 } };
     state.staleQueue = null;
     state.staleQueueShown = false;
