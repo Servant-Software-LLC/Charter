@@ -9,7 +9,7 @@
     "tasks/01-author-tests-expand-affordance/action.prompt.md": "487b6920ca71a53cb14591a2130a3181476325b16346d898c0f5527384e6f4e7",
     "tasks/01-author-tests-expand-affordance/guardrails/01-tests-build.ps1": "0e02beb619f037ea9869e79eb723b95dff2827531a6a86e2cd4285f537ccf59b",
     "tasks/01-author-tests-expand-affordance/guardrails/02-tests-fail-on-current-code.ps1": "b3234b798e53c2df6e619952c334d27ef98520b4660c70fcb2bed50966f873e9",
-    "tasks/01-author-tests-expand-affordance/guardrails/03-every-test-carries-the-feature-trait.ps1": "dfe35a9b74ff72dbba8bf013809f58ffe8622fea7429d6be07ee4e5de3d1c79d",
+    "tasks/01-author-tests-expand-affordance/guardrails/03-every-test-carries-the-feature-trait.ps1": "dc37eaee5dfd3df4454941ad00b1d78b8731789b7e2bf7430d2decb7e1bc14ae",
     "tasks/01-author-tests-expand-affordance/samples/03-every-test-carries-the-feature-trait.invalid.cs": "be09fecd68853eac43225eed4adc9eba5650779e723af952c689a8a712147266",
     "tasks/01-author-tests-expand-affordance/samples/03-every-test-carries-the-feature-trait.valid.cs": "f32d9f008931dcf8392a4caa550136b65d12ab81dab27c4c243a4952482a2aa5",
     "tasks/01-author-tests-expand-affordance/task.json": "e4ed67afb67c90d4121113d9408742e4fffd4a3d4b37952b61ab751d9060e233",

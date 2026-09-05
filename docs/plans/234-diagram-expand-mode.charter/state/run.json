@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "runId": "2026-09-05T07-47-36Z-2ada",
+  "planHash": "sha256:922d21049f1559ee9dae18d487f74ea6abcd89795363092db86c834be536dce4",
+  "nextMergeSequence": 1,
+  "tasks": {
+    "01-author-tests-expand-affordance": {
+      "status": "pending",
+      "mergeSequence": null,
+      "attempts": []
+    },
+    "02-implement-expand-affordance": {
+      "status": "pending",
+      "mergeSequence": null,
+      "attempts": []
+    },
+    "03-author-tests-expand-invariants": {
+      "status": "pending",
+      "mergeSequence": null,
+      "attempts": []
+    },
+    "04-implement-expand-invariants": {
+      "status": "pending",
+      "mergeSequence": null,
+      "attempts": []
+    }
+  },
+  "planPreflights": {
+    "status": "plan-preflight-failed",
+    "planHash": "sha256:922d21049f1559ee9dae18d487f74ea6abcd89795363092db86c834be536dce4",
+    "evaluatedAt": "2026-09-05T07:47:37.816752+00:00",
+    "checks": [
+      {
+        "name": "sample pair \u002703-every-test-carries-the-feature-trait\u0027",
+        "passed": false,
+        "reason": "ValidHalfFailed: Guardrail \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\guardrails\\03-every-test-carries-the-feature-trait.ps1\u0027 rejects its own valid sample \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\samples\\03-every-test-carries-the-feature-trait.valid.cs\u0027 (exit 1) \u2014 a false-red on a representative correct artifact. Its invalid sample \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\samples\\03-every-test-carries-the-feature-trait.invalid.cs\u0027 also exited non-zero (exit 1); the guardrail may not be reading the sample at all."
+      }
+    ]
+  },
+  "halt": {
+    "kind": "plan-preflight-failed",
+    "haltedAt": "2026-09-05T07:47:37.8168657+00:00",
+    "headline": "Sample-pair verification FAILED \u2014 halting before scheduling any task: sample pair \u002703-every-test-carries-the-feature-trait\u0027",
+    "failedChecks": [
+      {
+        "name": "sample pair \u002703-every-test-carries-the-feature-trait\u0027",
+        "reason": "ValidHalfFailed: Guardrail \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\guardrails\\03-every-test-carries-the-feature-trait.ps1\u0027 rejects its own valid sample \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\samples\\03-every-test-carries-the-feature-trait.valid.cs\u0027 (exit 1) \u2014 a false-red on a representative correct artifact. Its invalid sample \u0027C:\\DevAI\\Charter\\docs\\plans\\234-diagram-expand-mode.charter\\tasks\\01-author-tests-expand-affordance\\samples\\03-every-test-carries-the-feature-trait.invalid.cs\u0027 also exited non-zero (exit 1); the guardrail may not be reading the sample at all."
+      }
+    ]
+  },
+  "environment": {
+    "host": "MALTBY-SURFACE-",
+    "os": "Microsoft Windows NT 10.0.26200.0",
+    "cpuCount": 8,
+    "totalMemoryBytes": 34171887616,
+    "maxParallelism": 4,
+    "harnessVersion": "1.18.0",
+    "skillVersion": "1.18.0"
+  }
+}

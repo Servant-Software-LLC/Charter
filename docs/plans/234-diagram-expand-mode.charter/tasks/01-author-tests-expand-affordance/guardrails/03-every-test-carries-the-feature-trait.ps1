@@ -14,7 +14,18 @@
 #          ../samples/03-every-test-carries-the-feature-trait.invalid.cs -> exit 1
 $ErrorActionPreference = 'Continue'
 
-$path = 'tests/Charter.Browser.Tests/DiagramExpandAffordanceTests.cs'
+# DUAL-MODE, and this is a CONTRACT, not a convenience. `guardrails samples verify` (which the plan
+# preflight runs before scheduling any task) invokes this script with the sample file as $args[0] and
+# cwd = the workspace; it sets no GUARDRAILS_* variables. A guardrail that ignores $args[0] and only
+# ever scans its hardcoded target reads the SAME file for both halves of its pair - so both exit
+# identically and the pair proves nothing. Measured: this script did exactly that, and the harness
+# caught it with "the guardrail may not be reading the sample at all".
+$path = if ($args.Count -ge 1 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
+    $args[0]                                                        # sample-verification mode
+} else {
+    'tests/Charter.Browser.Tests/DiagramExpandAffordanceTests.cs'   # normal run
+}
+
 if (-not (Test-Path -LiteralPath $path)) {
     Write-Output "PRECONDITION: $path does not exist - this task's whole deliverable is missing. Every clause below would report a phantom gap, so nothing else is checked."
     exit 1
