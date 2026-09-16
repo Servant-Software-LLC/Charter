@@ -368,6 +368,15 @@ public enum HeadlessNoteKind
     /// framing and its anchors — never a corrupted or absent fact.
     /// </summary>
     NestedDirective,
+
+    /// <summary>
+    /// An optional <c>:::question</c> string field — <c>recommended</c> or <c>rationale</c> — that was present,
+    /// not JSON <c>null</c>, and of the wrong JSON type, so the parser dropped it and the question rendered as an
+    /// ordinary form with the field silently missing (Charter #245). A warning: it never raises
+    /// <see cref="HeadlessRecord.NeedsHuman"/>, matching the <see cref="MissingRecommendation"/> precedent — a
+    /// dropped optional field makes an escalation poorer, not wrong.
+    /// </summary>
+    WrongTypedField,
 }
 
 /// <summary>One recorded diagnostic.</summary>
@@ -393,6 +402,7 @@ public sealed record HeadlessNote(HeadlessNoteKind Kind, string Message, int? So
         HeadlessNoteKind.NestedDiff => "nested-diff",
         HeadlessNoteKind.NestedUnknownDirective => "nested-unknown-directive",
         HeadlessNoteKind.NestedDirective => "nested-directive",
+        HeadlessNoteKind.WrongTypedField => "wrong-typed-field",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown headless note kind."),
     };
 }

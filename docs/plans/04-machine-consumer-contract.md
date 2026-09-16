@@ -298,6 +298,12 @@ that file, and the documented `"schema"` against `HeadlessRecord.Schema`.
 read"* — precisely #496's query — was silently unanswerable. `missing-recommendation` and
 `untracked-deferral` now exist and neither raises `needsHuman`.
 
+The invariant that section established — **every warning `handoff` prints has a note kind** — is kept by
+adding kinds alongside the warnings, never after. `wrong-typed-field` (#245) arrived with its warning: an
+optional `recommended` or `rationale` of the wrong JSON type is dropped by the parser, the question still
+renders as a form, and without the kind the record would again read `notes: []` over a diagnostic Charter
+printed. It is a warning and does not raise `needsHuman`; per §6 a new kind is a compatible change.
+
 ### 6.2 Why `schema` is 2
 
 Adding a field is compatible and would not warrant a bump. Changing what `notes: []` **means** is not: a

@@ -152,6 +152,7 @@ the whole record over one turns a diagnostic into an outage.
 | `nested-diff` | A `:::diff` nested the same way: it flattens as blockquoted prose, where line-initial `+`/`-` are read as bullet markers (#203). | no |
 | `nested-unknown-directive` | An unrecognized `:::foo` nested the same way — it may be a misspelled `:::question` (#203). | no |
 | `nested-directive` | Any other nested `:::` directive — `comparison`, `diagram`, `note`, `warn` (#203). | no |
+| `wrong-typed-field` | An optional `:::question` string field — `recommended` or `rationale` — was present but not a string (an array, number, object or boolean), so the parser dropped it and the question rendered as an ordinary form without it (#245). JSON `null` is not reported. | no |
 
 **Why four nesting tokens and not one.** `charter handoff --fail-if-needs-human` blocks on `nested-question`,
 `nested-diff` and `nested-unknown-directive` but **not** on `nested-directive`, and the record escalates only on

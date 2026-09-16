@@ -337,6 +337,87 @@ public static class QuestionResolution
         return missing;
     }
 
+    /// <summary>The optional <c>:::question</c> fields the schema types as a plain string.</summary>
+    private static readonly string[] OptionalStringFields = { "recommended", "rationale" };
+
+    /// <summary>
+    /// <b>Optional string fields that were silently dropped because they had the wrong JSON type</b> (Charter
+    /// #245), in document order: a <c>recommended</c> or <c>rationale</c> that is present, is not JSON
+    /// <c>null</c>, and is not a string.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="QuestionSpec"/> reads both through a helper that returns null for "absent" AND for "present but
+    /// not a string", so <c>"rationale": ["the reason"]</c> parses exactly like no rationale at all. The question
+    /// renders as a perfectly ordinary form, the reasoning never appears in the review or the handoff, and
+    /// <c>render</c> exits 0 with an empty stderr. That is strictly worse than an absent field: absent is honest
+    /// and already warned about, whereas wrong-typed LOOKS authored. This lint is the other half of that null.
+    /// </para>
+    /// <para>
+    /// <b>Warned, never refused</b> — matching the <c>recommended</c> precedent rather than the required fields:
+    /// an optional field of the wrong type should not block a review, but it must not be silent. Like
+    /// <see cref="FindQuestionsMissingRecommendation"/> it reads the RAW JSON, because the parsed spec has
+    /// already collapsed the distinction this lint exists to see.
+    /// </para>
+    /// <para>
+    /// Two exclusions keep it from firing where it would mean nothing. <b>JSON <c>null</c></b> is not wrong-typed:
+    /// <c>"recommended": null</c> is the documented, deliberate opt-out, and a null rationale is simply absent.
+    /// And a question <b>the parser refuses</b> is skipped: it already renders as a visible malformed-question
+    /// placeholder, so a warning about one of its optional fields would be noise beside a louder, truer signal.
+    /// The gate is <see cref="QuestionSpec.TryParse(string, out QuestionSpec?, out string?)"/> itself — the same
+    /// call the renderer and handoff use to decide between a form and a placeholder — so "renders as a form"
+    /// here cannot drift from "renders as a form" there.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<WrongTypedQuestionField> FindWrongTypedOptionalFields(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown))
+        {
+            return Array.Empty<WrongTypedQuestionField>();
+        }
+
+        var found = new List<WrongTypedQuestionField>();
+
+        foreach (var (kind, rawContent, startLine, _) in PlanWalk.Walk(markdown).Blocks)
+        {
+            if (kind != BlockKind.Question)
+            {
+                continue;
+            }
+
+            var body = QuestionBody(rawContent);
+            if (body is null || !QuestionSpec.TryParse(body, out var spec, out _) || spec is null)
+            {
+                continue;   // refused questions already render as a visible placeholder
+            }
+
+            // TryParse succeeded, so the body is a JSON object — parsed here with the same default options.
+            using var document = JsonDocument.Parse(body);
+            foreach (var field in OptionalStringFields)
+            {
+                if (!document.RootElement.TryGetProperty(field, out var value)
+                    || value.ValueKind is JsonValueKind.Null or JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                found.Add(new WrongTypedQuestionField(spec.Id, field, JsonTypeName(value.ValueKind), startLine));
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>The JSON type a consumer would recognise, named the way the JSON spec names it.</summary>
+    private static string JsonTypeName(JsonValueKind kind) => kind switch
+    {
+        JsonValueKind.Array => "array",
+        JsonValueKind.Object => "object",
+        JsonValueKind.Number => "number",
+        JsonValueKind.True or JsonValueKind.False => "boolean",
+        _ => kind.ToString().ToLowerInvariant(),
+    };
+
     /// <summary>
     /// <b>The ids <see cref="Apply"/> can actually reach</b>, in document order, duplicates included — the id of
     /// every <c>:::question</c> the BLOCK MODEL yields whose body parses far enough to carry a string <c>id</c>.
@@ -704,4 +785,29 @@ public static class QuestionResolution
     /// <summary>True when <paramref name="line"/> is a container closing fence — three or more colons only.
     /// Read from <see cref="DirectiveFence"/> for the same reason <see cref="IsOpenFence"/> is.</summary>
     private static bool IsCloseFence(ReadOnlySpan<char> line) => DirectiveFence.IsClose(line);
+}
+
+/// <summary>
+/// An optional <c>:::question</c> string field that was present, not JSON <c>null</c>, and of the wrong JSON type,
+/// so the parser dropped it silently (Charter #245). Reported by
+/// <see cref="QuestionResolution.FindWrongTypedOptionalFields"/>.
+/// </summary>
+/// <param name="QuestionId">The id of the question carrying the field — always a valid id, since only questions
+/// the parser accepts are reported.</param>
+/// <param name="Field">The field that was dropped: <c>recommended</c> or <c>rationale</c>.</param>
+/// <param name="ActualType">The JSON type found instead of a string: <c>array</c>, <c>object</c>, <c>number</c>
+/// or <c>boolean</c>.</param>
+/// <param name="SourceLine">The 1-based markdown line the <c>:::question</c> block starts on.</param>
+public sealed record WrongTypedQuestionField(string QuestionId, string Field, string ActualType, int SourceLine)
+{
+    /// <summary>
+    /// What a reader loses because the field was dropped, as one sentence. Owned here so the headless record and
+    /// the CLI warning cannot describe the same loss two different ways.
+    /// </summary>
+    public string Consequence => Field switch
+    {
+        "rationale" => "its reasoning will not appear in the review or the handoff.",
+        "recommended" => "it carries no recommendation, so an escalation on it offers nothing to decide with.",
+        _ => "it will not appear in the review or the handoff.",
+    };
 }
