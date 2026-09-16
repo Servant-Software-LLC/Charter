@@ -36,6 +36,19 @@ if (args.Length >= 1)
     {
         if (args[0] == command.Name)
         {
+            // The skill-drift warning belongs to EVERY verb, not only `--version` (Charter #237). Wired to
+            // `--version` alone, it fired only when something told the agent to run that — and the thing that
+            // tells it is the `charter` skill's own preamble, so the binary-side check depended on the very
+            // skill it exists to catch being current. An agent going straight to `charter render` got nothing.
+            //
+            // Here, BEFORE dispatch, it prints once per process: `poll --watch` re-arms inside one invocation
+            // and a long-lived `review` does not repeat it. `skills` is the one exception — it is the remedy,
+            // and warning on the way into the fix reads as a failure of the fix.
+            if (command.Name != "skills")
+            {
+                WarnOnStaleSkills(CharterVersion.Current);
+            }
+
             return command.Build().Parse(args).Invoke();
         }
     }
@@ -83,7 +96,7 @@ static void WarnOnStaleSkills(string currentVersion)
     }
     catch (Exception)
     {
-        return; // a drift scan must never break `charter --version`
+        return; // a drift scan must never break the command it runs in front of
     }
 
     if (stale.Count == 0)

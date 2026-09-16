@@ -48,6 +48,14 @@ internal static class CharterCliRunner
             startInfo.WorkingDirectory = workingDirectory;
         }
 
+        // Isolate the skills root BY DEFAULT (Charter #237). Every verb now runs the skill-drift check against
+        // ~/.claude/skills, so on a developer machine carrying an older install every child process would print
+        // a warning a clean CI runner never sees — and a test asserting an empty stderr would pass in CI and fail
+        // at a desk. A path that does not exist reads as "no skills installed", so nothing is created. A test
+        // that needs a particular skills root passes CHARTER_SKILLS_DIR itself, which the loop below applies.
+        startInfo.Environment["CHARTER_SKILLS_DIR"] =
+            Path.Combine(Path.GetTempPath(), "charter-no-skills-" + Guid.NewGuid().ToString("N"));
+
         if (environment is not null)
         {
             foreach (var entry in environment)
