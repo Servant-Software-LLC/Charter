@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Xunit;
 using Xunit.Sdk;
@@ -18,6 +19,14 @@ internal static class CharterCliRunner
 {
     // Generous upper bound so a slow/cold CI agent never flakes; a MAX guard, not a fixed sleep.
     private const int TimeoutMs = 60_000;
+
+    // The floor under RunWith's per-child isolation: seven test files build their own `dotnet exec` launcher, and a
+    // child inherits this process's environment, so setting it here reaches every one of them (and any future one).
+    [ModuleInitializer]
+    internal static void IsolateSkillsRootForEveryChildProcess() =>
+        Environment.SetEnvironmentVariable(
+            SkillsInstaller.OverrideEnvironmentVariable,
+            Path.Combine(Path.GetTempPath(), "charter-no-skills-" + Guid.NewGuid().ToString("N")));
 
     public static (int ExitCode, string StdOut, string StdErr) Run(params string[] args) =>
         RunIn(null, args);
