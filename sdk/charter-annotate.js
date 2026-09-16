@@ -257,16 +257,24 @@ window.CharterAnnotate = (function () {
 
   // The width the review panel occupies, and the viewport below which reserving it would squeeze the plan
   // harder than the panel ever covered it. Kept next to the panel's own width so the two cannot drift.
-  // The standing caveat under the breakdown command. Held apart so the open-notes warning can be prepended
-  // to it without either half drifting from the other.
+  // The standing caveat under the breakdown command, and the stop-draining PREREQUISITE held apart from it
+  // (#243) so the prerequisite can be promoted to its own line when an agent is demonstrably draining.
   // The standing caveat under the drain command. Held apart so the skill-missing warning can be prepended to
   // it without either half drifting from the other — the same discipline BREAKDOWN_NOTE follows.
   var DRAIN_NOTE =
     'It keeps listening for the rest of the review, so this is the only time you need to send it.';
 
-  var BREAKDOWN_NOTE =
+  var BREAKDOWN_NOTE = 'This starts a breakdown you review, never a run.';
+
+  var BREAKDOWN_NOTE_WITH_PREREQUISITE =
     'Have your agent stop draining first — otherwise this queues behind that and looks like nothing ' +
-    'happened. This starts a breakdown you review, never a run.';
+    'happened. ' + BREAKDOWN_NOTE;
+
+  // Said only on POSITIVE evidence, and worded as that evidence: an agent is blocked in a long poll on this
+  // session right now (#107), which is the one presence fact that is certain.
+  var STOP_DRAINING_PREREQUISITE =
+    'An agent is listening to this review — have it stop draining before you paste this, or the breakdown ' +
+    'queues behind the drain and looks like nothing happened.';
 
   var PANEL_WIDTH = 340;
 
@@ -1904,6 +1912,12 @@ window.CharterAnnotate = (function () {
     '  background: var(--charter-code-bg, rgba(127,127,127,0.12)); border: 1px solid var(--charter-border);',
     '  border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; overflow-wrap: anywhere; }',
     '.charter-command-note { font-size: 11px; color: var(--charter-muted); margin-top: 6px; }',
+    // #243. The prerequisite decides whether pasting WORKS, so when it applies it sits ABOVE the command in the
+    // foreground colour with the warn border — read before Copy is pressed, not 11px of grey beneath it.
+    '.charter-command-prerequisite { font-size: 12px; font-weight: 600; color: var(--charter-fg);',
+    '  margin: 4px 0 6px; padding-left: 6px; border-left: 3px solid var(--charter-warn-border); }',
+    // The open-notes warning (#145) on its own line, rather than the first clause of one grey paragraph.
+    '.charter-command-warning { font-size: 11px; color: var(--charter-fg); margin-top: 6px; }',
     '.charter-item[data-charter-status="retracted"] .charter-item-note { font-style: italic;',
     '  color: var(--charter-muted); }',
     // The two "here is a fact you cannot see on the page" lines share one look on purpose: an orphan's block is
@@ -2187,10 +2201,29 @@ window.CharterAnnotate = (function () {
         'breakdown-command',
         'Ready to break this plan into tasks? Paste this to your agent:',
         '/plan-breakdown ' + quotePath(state.sourcePath),
-        BREAKDOWN_NOTE);
+        BREAKDOWN_NOTE_WITH_PREREQUISITE);
       ui.commands.appendChild(ui.breakdownCommand);
       ui.breakdownNote = ui.breakdownCommand.querySelector('[' + UI_ATTR + '="breakdown-command-note"]');
+
+      // #243 — the prerequisite on its own line ABOVE the command, so it is read before Copy is pressed.
+      ui.breakdownPrerequisite = make(
+        'div', 'charter-command-prerequisite', 'breakdown-command-prerequisite', STOP_DRAINING_PREREQUISITE);
+      ui.breakdownCommand.insertBefore(
+        ui.breakdownPrerequisite,
+        ui.breakdownCommand.querySelector('[' + UI_ATTR + '="breakdown-command-text"]'));
+
+      // #243 — the open-notes warning on its own line, apart from the standing caveat it used to be fused into.
+      ui.breakdownOpenNotes = make('div', 'charter-command-warning', 'breakdown-command-open-notes', '');
+      ui.breakdownCommand.insertBefore(ui.breakdownOpenNotes, ui.breakdownNote);
     }
+
+    // The prerequisite escalates on POSITIVE evidence and is never withdrawn on its absence. `waiting` is true
+    // only while an agent is blocked in a long poll; an agent polling in a loop reads false between cycles while
+    // still draining (#107 — presence is evidence, not proof). So without it the caveat stays in the quiet
+    // note exactly as before, and nothing here ever tells a reviewer that no agent is draining.
+    var listening = !!(state.agent && state.agent.waiting);
+    show(ui.breakdownPrerequisite, listening);
+    ui.breakdownCommand.setAttribute('data-charter-agent-listening', String(listening));
 
     // An empty QUEUE is not a finished REVIEW (#145). The queue empties the instant anything drains, so
     // gating on it alone told a reviewer their plan was ready for breakdown while their own unresolved notes
@@ -2201,10 +2234,15 @@ window.CharterAnnotate = (function () {
     // the reviewer can neither see nor account for. Some notes are informational and will never be resolved,
     // so the reviewer keeps the choice — they just stop making it uninformed.
     var open = openNoteCount();
+    var openWarning = open > 0
+      ? open + ' review note(s) are still open — a breakdown now will not include them.'
+      : '';
+    if (ui.breakdownOpenNotes.textContent !== openWarning) ui.breakdownOpenNotes.textContent = openWarning;
+    show(ui.breakdownOpenNotes, open > 0);
+
     if (ui.breakdownNote) {
-      var note = open > 0
-        ? open + ' review note(s) are still open — a breakdown now will not include them. ' + BREAKDOWN_NOTE
-        : BREAKDOWN_NOTE;
+      // While the prerequisite has its own line the standing note stops repeating it; otherwise it keeps it.
+      var note = listening ? BREAKDOWN_NOTE : BREAKDOWN_NOTE_WITH_PREREQUISITE;
       if (ui.breakdownNote.textContent !== note) ui.breakdownNote.textContent = note;
     }
 

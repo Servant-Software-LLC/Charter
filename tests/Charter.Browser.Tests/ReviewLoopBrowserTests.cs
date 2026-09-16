@@ -1657,12 +1657,15 @@ public sealed partial class ReviewLoopBrowserTests
 
             // The queue is empty, so the prompt is still offered — and now says why that is not the whole story.
             await page.WaitForSelectorAsync(Ui("breakdown-command") + "[data-charter-open-notes=\"1\"]", attached);
-            var caveat = await page.Locator(Ui("breakdown-command-note")).TextContentAsync() ?? string.Empty;
+            // On its OWN line (#243), not the first clause of one grey paragraph with the standing caveat.
+            var caveat = await page.Locator(Ui("breakdown-command-open-notes")).TextContentAsync() ?? string.Empty;
             Assert.Contains("still open", caveat, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("will not include them", caveat, StringComparison.OrdinalIgnoreCase);
 
-            // The standing caveat is not lost to the new one.
-            Assert.Contains("stop draining", caveat, StringComparison.OrdinalIgnoreCase);
+            // The standing caveat is not lost to the new one — it keeps a line of its own.
+            var standing = await page.Locator(Ui("breakdown-command-note")).TextContentAsync() ?? string.Empty;
+            Assert.Contains("stop draining", standing, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("still open", standing, StringComparison.OrdinalIgnoreCase);
 
             AssertNoBrowserErrors(instrumented);
         }
