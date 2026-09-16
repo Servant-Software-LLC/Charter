@@ -260,6 +260,32 @@ internal static class CharterCommands
                 + "declined -- an ABSENT key is indistinguishable from never having known the field exists.");
     }
 
+    // An optional `:::question` field of the wrong JSON type is dropped by the parser and the question renders as an
+    // ordinary form, so nothing on the page says anything is missing (Charter #245). Warned, never refused, matching
+    // the `recommended` precedent above: an optional field should not block a review, but it must not be silent.
+    // One line per dropped field, each naming the question, its line and what the reader loses.
+    private static void WarnOnWrongTypedFields(string verb, string markdown)
+    {
+        IReadOnlyList<WrongTypedQuestionField> dropped;
+        try
+        {
+            dropped = QuestionResolution.FindWrongTypedOptionalFields(markdown);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        // ASCII only, so the message is byte-stable across the Win/macOS/Linux console encodings CI runs on.
+        foreach (var field in dropped)
+        {
+            Console.Error.WriteLine(
+                $"charter {verb}: warning: question '{field.QuestionId}' (line {field.SourceLine}): "
+                    + $"`{field.Field}` must be a string, got {field.ActualType} -- it was dropped: "
+                    + field.Consequence);
+        }
+    }
+
     // The untracked-deferral lint (Charter #156). A deferral written in prose has no owner and no expiry:
     // the plan is handed off, executed and archived, and the deferred item survives only as a sentence in a
     // document nobody re-reads. On the page "deferred to #228, which is open" and "deferred into the void"
@@ -391,6 +417,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("render", markdown);
             WarnOnDuplicateQuestionIds("render", markdown);
             WarnOnMissingRecommendation("render", markdown);
+            WarnOnWrongTypedFields("render", markdown);
             WarnOnUntrackedDeferrals("render", markdown);
             WarnOnNestedDirectives("render", markdown);
             string html = CharterRenderer.Render(markdown);
@@ -633,6 +660,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("handoff", markdown);
             WarnOnDuplicateQuestionIds("handoff", markdown);
             WarnOnMissingRecommendation("handoff", markdown);
+            WarnOnWrongTypedFields("handoff", markdown);
             WarnOnUntrackedDeferrals("handoff", markdown);
             WarnOnNestedDirectives("handoff", markdown);
 
@@ -1205,6 +1233,7 @@ internal static class CharterCommands
             WarnOnVersionMarker("review", planMarkdown);
             WarnOnDuplicateQuestionIds("review", planMarkdown);
             WarnOnMissingRecommendation("review", planMarkdown);
+            WarnOnWrongTypedFields("review", planMarkdown);
             WarnOnUntrackedDeferrals("review", planMarkdown);
             WarnOnNestedDirectives("review", planMarkdown);
 

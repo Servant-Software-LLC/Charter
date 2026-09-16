@@ -174,6 +174,11 @@ public sealed class PlanInventory
         AddMissingRecommendationNotes(markdown, questions, notes);
         AddUntrackedDeferralNotes(markdown, notes);
 
+        // A lint `render`, `review` and `handoff` print that must not vanish from an unattended run (Charter #245):
+        // a wrong-typed optional field is invisible in the rendered form, so stderr and this record are the only
+        // places it is ever said.
+        AddWrongTypedFieldNotes(markdown, notes);
+
         return new PlanInventory(
             questions, notes, malformedQuestions, unknownDirectives, nestedQuestions, duplicates, marker);
     }
@@ -209,6 +214,22 @@ public sealed class PlanInventory
         }
 
         return nestedQuestions;
+    }
+
+    /// <summary>
+    /// The wrong-typed optional field lint (Charter #245), from its one kernel. A WARNING, never an escalation:
+    /// the question still renders and can still be answered; what it lost is its reasoning or its lean.
+    /// </summary>
+    private static void AddWrongTypedFieldNotes(string markdown, List<HeadlessNote> notes)
+    {
+        foreach (var dropped in QuestionResolution.FindWrongTypedOptionalFields(markdown))
+        {
+            notes.Add(new HeadlessNote(
+                HeadlessNoteKind.WrongTypedField,
+                $"The question '{dropped.QuestionId}' has a `{dropped.Field}` that is a JSON {dropped.ActualType}, "
+                    + $"not a string, so it was dropped: {dropped.Consequence}",
+                dropped.SourceLine));
+        }
     }
 
     /// <summary>
