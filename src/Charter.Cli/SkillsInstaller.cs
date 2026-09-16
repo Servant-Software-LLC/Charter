@@ -92,10 +92,20 @@ internal static class SkillsInstaller
     }
 
     /// <summary>
+    /// Environment variable that, when set, replaces the user-home default skills root verbatim. An additive
+    /// test/isolation seam — the sibling of <c>CHARTER_STATE_DIR</c> — so a spawned <c>charter</c> can run
+    /// against its own skills root instead of the developer's real <c>~/.claude/skills</c>. It exists because
+    /// every verb now runs the skill-drift check (Charter #237), so an older install on a developer machine
+    /// would otherwise reach every child process a test starts. When unset, the default applies, so it
+    /// changes no shipped behaviour; an explicit <c>--target</c> or <c>--project</c> still wins.
+    /// </summary>
+    public const string OverrideEnvironmentVariable = "CHARTER_SKILLS_DIR";
+
+    /// <summary>
     /// Resolve where skills should be installed, in precedence order: an explicit
     /// <paramref name="target"/> wins; else <paramref name="project"/> means <c>./.claude/skills</c> under
-    /// the current directory (a repo-scoped install); else the default <c>~/.claude/skills</c> in the user
-    /// home (available in every repo). The chosen directory is created by <see cref="InstallAll"/> if it
+    /// the current directory (a repo-scoped install); else <see cref="OverrideEnvironmentVariable"/> when set;
+    /// else the default <c>~/.claude/skills</c> in the user home (available in every repo). The chosen directory is created by <see cref="InstallAll"/> if it
     /// does not yet exist. Uses <see cref="Environment.SpecialFolder.UserProfile"/> so the home path
     /// resolves cross-platform with no hard-coded separators.
     /// </summary>
@@ -109,6 +119,12 @@ internal static class SkillsInstaller
         if (project)
         {
             return Path.Combine(Directory.GetCurrentDirectory(), ".claude", "skills");
+        }
+
+        string? overridden = Environment.GetEnvironmentVariable(OverrideEnvironmentVariable);
+        if (!string.IsNullOrEmpty(overridden))
+        {
+            return overridden;
         }
 
         string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
