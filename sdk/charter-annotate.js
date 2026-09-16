@@ -1870,7 +1870,26 @@ window.CharterAnnotate = (function () {
     '.charter-item-author { font-weight: 600; color: var(--charter-fg); }',
     '.charter-chip { border: 1px solid var(--charter-border); border-radius: 999px; padding: 0 6px;',
     '  font-size: 11px; line-height: 1.6; }',
+    // The comment STATUS chip (#242). `open` and `resolved` used to have no rule and fell through to the base
+    // chip, so the two states a reviewer most needs to tell apart were identical until each 11px word was
+    // read. Colour is reinforcement, never the signal — every chip still says its status in text. Loudest
+    // first: contested (stop) > open (still in play) > resolved (done) > retracted (withdrawn).
+    //
+    // `resolved` takes the ANSWERED pill's token pair from charter.css, so "the same green" holds by
+    // construction instead of by a hex that can drift. Its border takes the fill: borderless like that pill,
+    // but the same box size as every other chip.
+    '.charter-chip-resolved { background: var(--charter-diff-add-bg); color: var(--charter-diff-add-fg);',
+    '  border-color: var(--charter-diff-add-bg); }',
+    // `open` is the MOST COMMON state, so it has to stay quiet: a partial warn tint mixed toward the page, with
+    // the neutral border kept. `contested`'s full warn fill would dress every note in the alert colour, and the
+    // one chip that means stop would stop standing out. Mixed from tokens, so dark mode follows for free. No
+    // fallback line on purpose — without color-mix this rule is dropped and the chip shows today's neutral,
+    // whereas a warn-bg fallback would make open and contested identical, the failure this rule prevents.
+    '.charter-chip-open { background: color-mix(in srgb, var(--charter-warn-bg) 60%, var(--charter-bg)); }',
     '.charter-chip-contested { border-color: var(--charter-warn-border); background: var(--charter-warn-bg); }',
+    // `retracted` is decided rather than left to fall through: struck through, because its author withdrew
+    // it. Not italic — that is `orphaned`'s mark below, and the two can sit on the same card.
+    '.charter-chip-retracted { text-decoration: line-through; }',
     '.charter-chip-orphaned { font-style: italic; }',
     // The delivery chip (#124). Deliberately quiet — it is reassurance, not an alert; it must read at a
     // glance without competing with `contested`, which is the chip that wants the reviewer to stop.
