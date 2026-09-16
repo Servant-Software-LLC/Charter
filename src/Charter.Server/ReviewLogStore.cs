@@ -60,6 +60,16 @@ public sealed record ReviewLogRead(ReviewLogState State, IReadOnlyList<string> U
     };
 
     /// <summary>
+    /// <see cref="Unknown"/>, still NAMING the logs that could not be read and why. Reached when every log the
+    /// directory holds was unreadable (Charter #221): nothing was learned, exactly as for an absent directory,
+    /// so it must not read as "nobody commented" — but unlike an absent directory there is something to
+    /// report, and a permission error that never clears has to stay as visible as it was before.
+    /// </summary>
+    /// <param name="unreadable">The logs that could not be read, each with its reason.</param>
+    public static ReviewLogRead UnknownBecauseUnreadable(IReadOnlyList<string> unreadable) =>
+        new(NoComments(), unreadable) { Outcome = ReviewLogOutcome.Unknown };
+
+    /// <summary>
     /// What this read learned. See <see cref="ReviewLogOutcome"/>.
     /// </summary>
     /// <remarks>
@@ -86,6 +96,20 @@ public sealed record ReviewLogRead(ReviewLogState State, IReadOnlyList<string> U
     /// exits 4, the panel declines the view, and <c>FindComment</c> refuses to answer "not found".
     /// </summary>
     public bool IsUnknown => Outcome == ReviewLogOutcome.Unknown;
+
+    /// <summary>
+    /// True when the read could not complete because logs WERE there and none could be read — as opposed to a
+    /// directory that was not there at all. Both are <see cref="IsUnknown"/>: nothing was learned either way,
+    /// and a consumer that only needs "did this read learn anything?" should keep asking that.
+    /// </summary>
+    /// <remarks>
+    /// It exists for the one consumer that must tell them apart. <c>charter poll</c> treats an ABSENT directory
+    /// as the ordinary state of a solo review — no log, exit 3 — because <c>.review/</c> is created lazily. A
+    /// directory holding logs it cannot read is never that: it is a failed read, exit 4 with the reason. Named
+    /// here so the drain branches on a property instead of inferring the sub-state from the list, the same rule
+    /// <see cref="IsEmpty"/> and <see cref="ProbeResult.IsAbsent"/> exist to enforce.
+    /// </remarks>
+    public bool IsUnreadable => IsUnknown && Unreadable.Count > 0;
 
     // The state both no-comment outcomes carry. They differ in what was learned, never in what was found.
     private static ReviewLogState NoComments() => new()
@@ -143,19 +167,27 @@ public static class ReviewLogStore
         // The same budget the per-file read spends, for the same reason: the logs arrive by git, so a pull or a
         // checkout can be putting the directory back at the moment the panel refreshes. BOUNDED, and by the
         // attempt count rather than a clock — an unbounded retry would hang the panel instead of emptying it,
-        // which is worse than the bug this fixes. Only the absent case ever waits; a directory that answers is
-        // answered on the first look.
+        // which is worse than the bug this fixes.
+        //
+        // A look that answered IN FULL is answered on the first look. A look that did not — the directory was
+        // absent, or a log in it could not be read — is worth another within the same budget. That second case
+        // is the one Charter #221 kept hitting after the absent-directory fix: ReviewLogWriter appends under
+        // FileShare.None and holds the file through an fsync, the per-file retry below spends only ~30ms, and a
+        // slow CI disk outlasts it. The reviewer's one log is then EVERY log, and the panel emptied. The LATEST
+        // look is what is returned.
         for (var attempt = 1; ; attempt++)
         {
             var read = TryRead(reviewDirectory);
-            if (read is not null)
+            if (read is not null && read.Unreadable.Count == 0)
             {
                 return read;
             }
 
             if (attempt >= ReadAttempts)
             {
-                return ReviewLogRead.Unknown;
+                // Absent throughout is Unknown; every log unreadable is Unknown naming them; a PARTIAL read
+                // keeps what it could fold with the unreadable logs reported beside it, as it always has.
+                return read ?? ReviewLogRead.Unknown;
             }
 
             waitBetweenAttempts(ReadRetryDelayMs);
@@ -190,6 +222,14 @@ public static class ReviewLogStore
             }
 
             sources.Add(ReviewLogSource.FromText(fileName, text));
+        }
+
+        // Logs were there and NONE could be read, so nothing was learned. Folding the empty set would return zero
+        // comments labelled Present — "there is nothing" — which is the very silent loss this record exists to
+        // prevent, and precisely what emptied the panel in #221's recurrence.
+        if (sources.Count == 0)
+        {
+            return ReviewLogRead.UnknownBecauseUnreadable(unreadable);
         }
 
         return new ReviewLogRead(ReviewLog.Fold(sources), unreadable);

@@ -663,13 +663,18 @@ public sealed partial class ReviewLoopBrowserTests
         var trace = await page.EvaluateAsync<string[]>("() => window.__charterFocusTrace || []");
         var tail = await page.EvaluateAsync<string[]>(
             "() => (window.__charterEvents || []).slice(-12)");
+        var loads = await page.EvaluateAsync<string[]>(
+            "() => (window.__charterLogLoads || []).slice(-6)");
 
         Assert.Fail(
             $"focus was {actual}, expected {expected} ({moment})." +
             "\n\nfocus events the SDK emitted (empty = restoreChromeFocus never reported anything, which is " +
             "itself the finding):\n  " +
             (trace.Length == 0 ? "(none)" : string.Join("\n  ", trace)) +
-            "\n\nlast events on the wire:\n  " + string.Join(" -> ", tail));
+            "\n\nlast events on the wire:\n  " + string.Join(" -> ", tail) +
+            "\n\nwhat the last review-log loads carried (count=0 unreadable>0 declined=false is a read that could " +
+            "read nothing and was trusted anyway):\n  " +
+            (loads.Length == 0 ? "(none)" : string.Join("\n  ", loads)));
     }
 
     /// <summary>

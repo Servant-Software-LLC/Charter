@@ -4625,9 +4625,21 @@ public sealed partial class ReviewLoopBrowserTests
         await page.AddInitScriptAsync(
             "window.__charterEvents = [];" +
             "window.__charterFocusTrace = [];" +
+            // What each review-log load CARRIED (Charter #221, second pass). A recurrence after #252 showed the log
+            // going from two entries to zero, and the trace could not say why: it recorded that a load happened,
+            // never whether it held zero comments, reported unreadable files, or was declined. `count=0
+            // unreadable=1 declined=false` is the all-unreadable read; `unreadable=0` rules it out. Kept in its OWN
+            // array on purpose — a consumer waits on the LAST focus-trace entry being a restore, and hydrateLog emits
+            // this event immediately after rendering, so interleaving it there would break that wait.
+            "window.__charterLogLoads = [];" +
             "window.addEventListener('message', function (e) {" +
             "  if (e && e.data && e.data.channel === 'charter-annotate') {" +
             "    window.__charterEvents.push(e.data.type);" +
+            "    if (e.data.type === 'review-log-loaded') {" +
+            "      var d = e.data.detail || {};" +
+            "      window.__charterLogLoads.push('review-log-loaded count=' + d.count +" +
+            "        ' unreadable=' + d.unreadable + ' declined=' + d.declined);" +
+            "    }" +
             "    if (e.data.type === 'focus-restored' || e.data.type === 'focus-not-restored') {" +
             "      var a = document.activeElement;" +
             // Charter #221, the DISCRIMINATOR. `focus-not-restored` has two candidate mechanisms and the

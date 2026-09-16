@@ -118,6 +118,22 @@ public static class ReviewLogDrain
         var read = ReviewLogStore.Read(directory);
         var ledger = ReviewLogLedger.Load(consumedDirectory, planPath);
 
+        if (read.IsUnreadable)
+        {
+            // Logs were there and none could be read — typically one mid-append under FileShare.None (Charter
+            // #221). The directory is PRESENT, so this is never the quiet "no log" the absent case below can be:
+            // it is a failed read, reported with its reason exactly as it was before the store learned to call it
+            // Unknown. Nothing was folded, so nothing is delivered and the ledger is left as it stands.
+            return new ReviewLogDrainResult(
+                Array.Empty<Annotation>(),
+                HasLog: true,
+                DrainError: DescribeUnreadable(read.Unreadable),
+                Delivered: Array.Empty<string>())
+            {
+                LedgerReset = ledger.ResetReason,
+            };
+        }
+
         if (read.IsUnknown)
         {
             // Nothing was learned — but "the directory is not there" arrives from two directions, and only one
