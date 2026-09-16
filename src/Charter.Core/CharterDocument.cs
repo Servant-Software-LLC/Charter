@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 
 namespace Charter.Core;
@@ -25,7 +26,13 @@ public static class CharterDocument
     /// shell. When <paramref name="cspMeta"/> is non-empty it is emitted as a
     /// <c>&lt;meta http-equiv="Content-Security-Policy"&gt;</c> inside the head, before the stylesheet.
     /// </summary>
-    public static string Wrap(string body, string? cspMeta)
+    /// <param name="body">The rendered block HTML.</param>
+    /// <param name="cspMeta">An optional Content-Security-Policy to stamp into the head.</param>
+    /// <param name="title">
+    /// An optional document title, HTML-encoded. Only the SERVED review page passes one (Charter #253): <c>render</c>
+    /// and <c>export</c> pass none, so the portable artifact stays byte-identical to what it was.
+    /// </param>
+    public static string Wrap(string body, string? cspMeta, string? title = null)
     {
         body ??= string.Empty;
 
@@ -33,6 +40,11 @@ public static class CharterDocument
         sb.Append("<!doctype html>\n<html lang=\"en\">\n<head>\n");
         sb.Append("<meta charset=\"utf-8\" />\n");
         sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
+        if (!string.IsNullOrEmpty(title))
+        {
+            sb.Append("<title>").Append(WebUtility.HtmlEncode(title)).Append("</title>\n");
+        }
+
         if (!string.IsNullOrEmpty(cspMeta))
         {
             sb.Append("<meta http-equiv=\"Content-Security-Policy\" content=\"").Append(cspMeta).Append("\" />\n");
