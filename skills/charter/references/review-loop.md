@@ -35,6 +35,12 @@ Two things to do with that line:
    background so you can poll while it stays up. Pass `--no-open` when no browser should launch
    (headless or CI); the ready line still prints, so you can still drain.
 
+**The ready line never carries anything after the key — on purpose.** When `charter review` opens the browser
+itself, that URL also has `&plan=<name>` after the key, and the served page is titled with the plan's name, so a
+reviewer with several plans open can tell the tabs apart (#253). The two URLs serve the same page, because the
+server authorizes on `key` alone. Don't "fix" the difference: the ready line is what you parse, and keeping it
+exactly `http://127.0.0.1:<port>/?key=<key>` is what keeps a parser that takes everything after `?key=` correct.
+
 The server **re-renders from the source file on every read request** — so when you edit `plan.charter.md`, the
 human's next refresh shows your revision (live reload). You don't restart the server to publish a change.
 

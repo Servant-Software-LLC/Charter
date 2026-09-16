@@ -1283,16 +1283,16 @@ internal static class CharterCommands
                 stop.Set();
             };
 
-            // The capability URL: the keyless loopback Address plus the session key on the ?key= query string
-            // (the form the server authorizes and the browser opens). Address ends in '/', so this yields
-            // exactly http://127.0.0.1:<port>/?key=<key>.
-            string reviewUrl = $"{server.Address}?key={session.Key.Value}";
+            // The capability URL: exactly http://127.0.0.1:<port>/?key=<key>. Agents PARSE this line, so it never
+            // gains a parameter after the key — see ReviewSession.CapabilityUrl. The plan's name goes to the URL a
+            // human opens instead, so that tab's address bar, history and bookmarks say which plan it is (#253).
+            string reviewUrl = session.CapabilityUrl(server.Address);
             Console.WriteLine($"Charter review server ready: {reviewUrl}");
             Console.Out.Flush();
 
             if (!noOpen)
             {
-                TryOpenBrowser(reviewUrl);
+                TryOpenBrowser(session.BrowserUrl(server.Address));
             }
 
             // Keep serving until the process is stopped (Ctrl+C); remove the session descriptor on clean exit so a

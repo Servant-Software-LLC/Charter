@@ -536,7 +536,7 @@ public sealed class ReviewServer : IReviewServer
         // so the server still never writes it.
         var markdown = File.ReadAllText(_session.SourcePath);
         var served = SdkInjector.Inject(
-            CharterRenderer.Render(markdown, _answers.PendingByQuestion()), SdkScript);
+            CharterRenderer.Render(markdown, _answers.PendingByQuestion(), _session.PageTitle), SdkScript);
         var payload = Encoding.UTF8.GetBytes(served);
 
         // Security headers on the served page. This is the SERVED-PAGE CSP — deliberately looser than the

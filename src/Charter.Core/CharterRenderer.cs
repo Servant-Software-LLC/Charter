@@ -50,7 +50,16 @@ public static class CharterRenderer
     /// </para>
     /// </remarks>
     public static string Render(string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>>? pendingAnswers)
-        => CharterDocument.Wrap(RenderBody(markdown, pendingAnswers), cspMeta: null);
+        => Render(markdown, pendingAnswers, title: null);
+
+    /// <summary>
+    /// <see cref="Render(string, IReadOnlyDictionary{string, IReadOnlyList{string}})"/> with a document title — the
+    /// review server's, so several served plans are identifiable by their tabs (Charter #253). A plain
+    /// <c>render</c> passes none, so its output is unchanged.
+    /// </summary>
+    public static string Render(
+        string markdown, IReadOnlyDictionary<string, IReadOnlyList<string>>? pendingAnswers, string? title)
+        => CharterDocument.Wrap(RenderBody(markdown, pendingAnswers), cspMeta: null, title);
 
     /// <summary>
     /// Render <paramref name="markdown"/> to the block-body HTML only — the rendered blocks plus, when a
