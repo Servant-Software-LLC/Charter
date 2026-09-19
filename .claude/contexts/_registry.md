@@ -15,3 +15,7 @@ path — they are not under any topic.
 ## Dogfooding
 
 - `Dogfooding/Charter-Guardrails` — driving Charter output through Guardrails end-to-end (`/plan-breakdown` → `/guardrails-review` → `run`): the two-session lane split, cross-repo handoffs, and the bug backlog each dogfood run turns up in both tools.
+
+## Research
+
+- `Research/System-One-Jev` — researching TypeSafe's System One / Jev typed-decision models as a replacement for free-text LLM judgment calls, spans Charter #264, Guardrails #755, and epic Guardrails #756.
